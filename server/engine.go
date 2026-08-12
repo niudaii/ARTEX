@@ -92,6 +92,7 @@ type Engine struct {
 	started sync.Map // taskID -> bool, so Run is idempotent per task
 	lastAct sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
 	paused  sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
+	stopping sync.Map // taskID -> bool, task being deleted (skip activity writes; loops wind down)
 	dropCnt sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
 
 	// per-task execution context: each planner.Plan / worker.Execute runs under it,
@@ -139,6 +140,32 @@ func (e *Engine) nextPlannerRound(taskID string) int {
 func (e *Engine) Pause(taskID string) {
 	e.paused.Store(taskID, true)
 	e.cancelExec(taskID)
+}
+
+// isStopping reports whether a task is being deleted (DB rows about to be or
+// already gone). emitActivity checks this to skip writes that would FK-violate.
+func (e *Engine) isStopping(taskID string) bool {
+	v, _ := e.stopping.Load(taskID)
+	b, _ := v.(bool)
+	return b
+}
+
+// StopTask initiates task shutdown before deletion: marks the task stopping
+// (so emitActivity skips writes that would FK-violate), cancels in-flight exec,
+// and briefly drains running planner/worker calls. Activities emitted during
+// the drain window are skipped by emitActivity (stopping flag), so no FK
+// violations occur even though the exploration may already be deleted.
+func (e *Engine) StopTask(taskID string) {
+	e.stopping.Store(taskID, true)
+	e.paused.Store(taskID, true) // also paused so loops idle after drain
+	e.cancelExec(taskID)
+	// Brief drain: wait for in-flight Plan/Execute to notice cancellation and
+	// return. They may still call emit (skipped by the stopping flag). 5s grace
+	// is enough for cooperative cancellation; the rows are being deleted anyway.
+	deadline := time.Now().Add(5 * time.Second)
+	for e.inflightCount(taskID) > 0 && time.Now().Before(deadline) {
+		time.Sleep(100 * time.Millisecond)
+	}
 }
 
 // cancelExec cancels a task's current per-task exec context (any in-flight
@@ -316,6 +343,11 @@ func (e *Engine) Broadcaster() *Broadcaster { return e.bc }
 // emitActivity persists one captured step AND fans it out to live subscribers,
 // from a single point so storage and the SSE stream never diverge.
 func (e *Engine) emitActivity(t *Task, r db.Activity) {
+	// Task is being deleted: the exploration row is gone or about to go. Skip
+	// the write entirely — it would FK-violate, and the activity is lost anyway.
+	if e.isStopping(t.ID) {
+		return
+	}
 	id, err := e.appendActivity(t, r)
 	if err != nil {
 		// NO LONGER SILENT: dropping a record breaks command↔result pairing in the
@@ -365,6 +397,13 @@ func (e *Engine) appendActivity(t *Task, r db.Activity) (int64, error) {
 					t.ID, attempt, r.Worker, r.Kind, r.Tool)
 			}
 			return id, nil
+		}
+		// FK violation (23503) means the parent exploration row is permanently
+		// gone (deleted or DB reset). Retrying is futile — bail out immediately.
+		if isFKViolation(err) {
+			log.Printf("[activity] task %s 写入失败(外键,不重试 worker=%s kind=%s tool=%s expID=%d): %v",
+				t.ID, r.Worker, r.Kind, r.Tool, t.Store.ID(), err)
+			return 0, err
 		}
 		log.Printf("[activity] task %s 写入失败 (第 %d/3 次, worker=%s kind=%s tool=%s expID=%d): %v",
 			t.ID, attempt, r.Worker, r.Kind, r.Tool, t.Store.ID(), err)
