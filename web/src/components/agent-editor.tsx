@@ -12,6 +12,7 @@ import { Label } from "@/components/ui/label";
 import { Checkbox } from "@/components/ui/checkbox";
 import { Switch } from "@/components/ui/switch";
 import { Separator } from "@/components/ui/separator";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import {
   Dialog,
@@ -24,7 +25,7 @@ import {
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
 import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
-import type { AgentDetail, AgentTrigger, MCPServer, PromptVar, PromptVersion, Settings, SkillItem, Tool } from "@/lib/types";
+import type { Agent, AgentDetail, AgentTrigger, MCPServer, PromptVar, PromptVersion, Settings, SkillItem, Tool } from "@/lib/types";
 
 // Traffic tools are host tools gated by the global 流量捕获 switch: bindable, but
 // only usable when capture is on. Keep this list in sync with traffic.SeedToolMetas.
@@ -50,6 +51,9 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   const [preview, setPreview] = React.useState("");
   const [maxTurns, setMaxTurns] = React.useState("0");
   const [runSecs, setRunSecs] = React.useState("600");
+  // "" = 跟随(未绑定)；否则为 profile id 字符串
+  const [llmProfileId, setLlmProfileId] = React.useState("");
+  const [llmProfiles, setLlmProfiles] = React.useState<NonNullable<AgentDetail["llm_profiles"]>>([]);
   const [webSearch, setWebSearch] = React.useState(false);
   const [interactiveShell, setInteractiveShell] = React.useState(false);
   const [wrapup, setWrapup] = React.useState("");
@@ -86,6 +90,8 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
         setSkillVisible(d.visibility?.skill ?? []);
         setMaxTurns(String(d.agent?.max_turns ?? 0));
         setRunSecs(String(d.agent?.run_seconds ?? 600));
+        setLlmProfileId(d.agent?.llm_profile_id != null ? String(d.agent.llm_profile_id) : "");
+        setLlmProfiles(d.llm_profiles ?? []);
         setWebSearch(!!d.agent?.web_search);
         setInteractiveShell(!!d.agent?.interactive_shell);
         setWrapup(d.wrapup_prompt ?? "");
@@ -172,9 +178,17 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   }
   async function saveConfig() {
     try {
-      const n = Math.max(0, Math.floor(Number(maxTurns) || 0));
-      const rs = Math.max(0, Math.floor(Number(runSecs) || 0));
-      await api.saveAgentConfig(agentKey, { max_turns: n, run_seconds: rs, web_search: webSearch, interactive_shell: interactiveShell });
+      // 只提交本 agent 实际展示的字段，避免把未显示项(如 goals 的 max_turns)覆盖成默认。
+      const patch: Parameters<typeof api.saveAgentConfig>[1] = {
+        llm_profile_id: llmProfileId === "" ? null : Number(llmProfileId),
+      };
+      if (showConfig) {
+        patch.max_turns = Math.max(0, Math.floor(Number(maxTurns) || 0));
+        patch.run_seconds = Math.max(0, Math.floor(Number(runSecs) || 0));
+      }
+      if (showWebSearch) patch.web_search = webSearch;
+      if (showInteractiveShell) patch.interactive_shell = interactiveShell;
+      await api.saveAgentConfig(agentKey, patch);
       toast.success("已保存运行配置（立即生效）");
       reload();
     } catch (e) {
@@ -247,6 +261,8 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
   const showWebSearch = agentKey !== "goals";
   // interactive shell (持久 PTY 会话工具族) 同样对除 goals 外的 agent 开放;无全局门控。
   const showInteractiveShell = agentKey !== "goals";
+  // 每个 agent(含 goals/mainagent)都跑在某个 LLM 上,故「默认模型」绑定对所有 agent 开放。
+  const showLLM = true;
   // triggers (P3) only attach to custom agents.
   const isCustom = !!detail && !detail.agent?.builtin;
 
@@ -264,8 +280,31 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
       {/* 配置 + 提示词 */}
       <TabsContent value="prompt" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
         <div className="grid gap-4">
-          {(showConfig || showWebSearch || showInteractiveShell) && (
+          {(showLLM || showConfig || showWebSearch || showInteractiveShell) && (
             <div className="grid gap-3 rounded-md border p-3">
+              {showLLM && (
+                <div className="grid gap-1.5">
+                  <Label htmlFor="llm-profile" className="text-xs">默认模型（LLM 配置）</Label>
+                  <div className="flex flex-wrap items-center gap-3">
+                    <Select value={llmProfileId || "__follow__"} onValueChange={(v) => setLlmProfileId(v === "__follow__" ? "" : v)}>
+                      <SelectTrigger id="llm-profile" className="h-8 w-72">
+                        <SelectValue />
+                      </SelectTrigger>
+                      <SelectContent>
+                        <SelectItem value="__follow__">跟随任务 / 全局激活配置</SelectItem>
+                        {llmProfiles.map((p) => (
+                          <SelectItem key={p.id} value={String(p.id)}>
+                            {p.name}（{p.model}）{p.is_default ? " · 默认" : ""}
+                          </SelectItem>
+                        ))}
+                      </SelectContent>
+                    </Select>
+                    <span className="text-muted-foreground max-w-md text-xs">
+                      为该 Agent 绑定固定 LLM 配置（点「保存配置」生效）。优先级：Agent 绑定 &gt; 任务/会话指定 &gt; 全局激活。
+                    </span>
+                  </div>
+                </div>
+              )}
               <div className="flex flex-wrap items-end gap-3">
                 {showConfig && (
                   <>
@@ -626,7 +665,7 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
       {/* 触发(P3, 仅自定义 agent) */}
       {isCustom && (
         <TabsContent value="triggers" className="min-h-0 flex-1 overflow-y-auto px-4 pb-4">
-          <AgentTriggersTab agentKey={agentKey} />
+          <AgentTriggersTab agentKey={agentKey} agent={detail?.agent} />
         </TabsContent>
       )}
     </Tabs>
@@ -688,18 +727,46 @@ function DiffView({ oldText, newText }: { oldText: string; newText: string }) {
 }
 
 // AgentTriggersTab manages a custom agent's P3 triggers: list + add + delete.
-// Each trigger fires (定时/发现finding/目标达成，可多选) → a new conversation runs
+// Each trigger fires (定时/发现finding/目标达成/任务超时/工具调用，可多选) → a new conversation runs
 // in parallel with the base user message + auto context appended by the backend.
-function AgentTriggersTab({ agentKey }: { agentKey: string }) {
+function AgentTriggersTab({ agentKey, agent }: { agentKey: string; agent?: Agent }) {
   const [triggers, setTriggers] = React.useState<AgentTrigger[]>([]);
-  const [intervalSec, setIntervalSec] = React.useState("0");
+  const [tools, setTools] = React.useState<Tool[]>([]);
+  // 触发后处理策略(每 agent);初值来自 agent detail,改动即保存。
+  const [runMode, setRunMode] = React.useState<"serial" | "parallel">(agent?.trigger_run_mode ?? "serial");
+  const [mergeMode, setMergeMode] = React.useState<"by_task" | "all" | "none">(agent?.trigger_merge_mode ?? "by_task");
+  const [maxParallel, setMaxParallel] = React.useState(String(agent?.trigger_max_parallel ?? 5));
+  React.useEffect(() => {
+    setRunMode(agent?.trigger_run_mode ?? "serial");
+    setMergeMode(agent?.trigger_merge_mode ?? "by_task");
+    setMaxParallel(String(agent?.trigger_max_parallel ?? 5));
+  }, [agent?.trigger_run_mode, agent?.trigger_merge_mode, agent?.trigger_max_parallel]);
+
+  async function saveBehavior(patch: {
+    trigger_run_mode?: "serial" | "parallel";
+    trigger_merge_mode?: "by_task" | "all" | "none";
+    trigger_max_parallel?: number;
+  }) {
+    try {
+      await api.saveAgentConfig(agentKey, patch);
+    } catch (e) {
+      toast.error("保存策略失败：" + (e as Error).message);
+    }
+  }
+  const [onInterval, setOnInterval] = React.useState(false);
+  const [intervalSec, setIntervalSec] = React.useState("60");
   const [onFinding, setOnFinding] = React.useState(false);
   const [onGoalMet, setOnGoalMet] = React.useState(false);
   const [onTaskTimeout, setOnTaskTimeout] = React.useState(false);
+  const [onToolCall, setOnToolCall] = React.useState(false);
+  const [onTaskCreate, setOnTaskCreate] = React.useState(false);
   const [intervalMsg, setIntervalMsg] = React.useState("");
   const [findingMsg, setFindingMsg] = React.useState("");
   const [goalMsg, setGoalMsg] = React.useState("");
   const [taskTimeoutMsg, setTaskTimeoutMsg] = React.useState("");
+  const [toolCallMsg, setToolCallMsg] = React.useState("");
+  const [taskCreateMsg, setTaskCreateMsg] = React.useState("");
+  const [toolNames, setToolNames] = React.useState<string[]>([]);
   const [saving, setSaving] = React.useState(false);
 
   const reload = React.useCallback(() => {
@@ -708,11 +775,22 @@ function AgentTriggersTab({ agentKey }: { agentKey: string }) {
   React.useEffect(() => {
     reload();
   }, [reload]);
+  React.useEffect(() => {
+    api.tools().then(setTools).catch(() => setTools([]));
+  }, []);
+
+  function toggleTool(key: string) {
+    setToolNames((prev) => (prev.includes(key) ? prev.filter((k) => k !== key) : [...prev, key]));
+  }
 
   async function create() {
-    const n = Math.max(0, Math.floor(Number(intervalSec) || 0));
-    if (n === 0 && !onFinding && !onGoalMet && !onTaskTimeout) {
+    const n = onInterval ? Math.max(1, Math.floor(Number(intervalSec) || 0)) : 0;
+    if (n === 0 && !onFinding && !onGoalMet && !onTaskTimeout && !onToolCall && !onTaskCreate) {
       toast.error("至少选择一种触发条件");
+      return;
+    }
+    if (onToolCall && toolNames.length === 0) {
+      toast.error("工具调用触发至少选择一个工具");
       return;
     }
     setSaving(true);
@@ -723,20 +801,31 @@ function AgentTriggersTab({ agentKey }: { agentKey: string }) {
         on_finding: onFinding,
         on_goal_met: onGoalMet,
         on_task_timeout: onTaskTimeout,
+        on_tool_call: onToolCall,
+        on_task_create: onTaskCreate,
         interval_message: intervalMsg.trim(),
         finding_message: findingMsg.trim(),
         goal_message: goalMsg.trim(),
         task_timeout_message: taskTimeoutMsg.trim(),
+        tool_call_message: toolCallMsg.trim(),
+        task_create_message: taskCreateMsg.trim(),
+        tool_names: onToolCall ? toolNames : [],
       });
       toast.success("已添加触发器");
-      setIntervalSec("0");
+      setOnInterval(false);
+      setIntervalSec("60");
       setOnFinding(false);
       setOnGoalMet(false);
       setOnTaskTimeout(false);
+      setOnToolCall(false);
+      setOnTaskCreate(false);
       setIntervalMsg("");
       setFindingMsg("");
       setGoalMsg("");
       setTaskTimeoutMsg("");
+      setToolCallMsg("");
+      setTaskCreateMsg("");
+      setToolNames([]);
       reload();
     } catch (e) {
       toast.error("添加失败：" + (e as Error).message);
@@ -752,10 +841,15 @@ function AgentTriggersTab({ agentKey }: { agentKey: string }) {
         on_finding: t.on_finding,
         on_goal_met: t.on_goal_met,
         on_task_timeout: t.on_task_timeout,
+        on_tool_call: t.on_tool_call,
+        on_task_create: t.on_task_create,
         interval_message: t.interval_message,
         finding_message: t.finding_message,
         goal_message: t.goal_message,
         task_timeout_message: t.task_timeout_message,
+        tool_call_message: t.tool_call_message,
+        task_create_message: t.task_create_message,
+        tool_names: t.tool_names,
       });
       reload();
     } catch (e) {
@@ -777,15 +871,93 @@ function AgentTriggersTab({ agentKey }: { agentKey: string }) {
     if (t.on_finding) parts.push("发现 finding");
     if (t.on_goal_met) parts.push("目标达成");
     if (t.on_task_timeout) parts.push("任务超时");
+    if (t.on_tool_call) parts.push(`工具调用(${t.tool_names.length})`);
+    if (t.on_task_create) parts.push("任务创建");
     return parts.join(" · ") || "（无条件）";
   }
 
   return (
     <div className="grid gap-4">
       <p className="text-muted-foreground text-xs">
-        触发器让这个自定义 Agent 自动运行：每次触发都<b>新建一个会话并行运行</b>（在「对话」页可见）。
+        触发器让这个自定义 Agent 自动运行：每次触发都<b>新建一个会话运行</b>（在「对话」页可见）。
         可多选触发条件；系统会把「本次为何触发 + 相关任务/finding/目标」自动附加到你写的基础消息后面。
       </p>
+
+      {/* 触发后处理策略 */}
+      <div className="grid gap-3 rounded-md border p-3">
+        <Label className="text-muted-foreground text-xs">触发后处理策略（决定触发如何排队/合并运行）</Label>
+        <div className="flex flex-wrap items-center gap-4">
+          <div className="grid gap-1">
+            <Label className="text-xs">运行模式</Label>
+            <Select
+              value={runMode}
+              onValueChange={(v) => {
+                const rm = v as "serial" | "parallel";
+                setRunMode(rm);
+                saveBehavior({ trigger_run_mode: rm });
+              }}
+            >
+              <SelectTrigger size="sm" className="h-8 w-40">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper">
+                <SelectItem value="serial">串行（排队，一次一个）</SelectItem>
+                <SelectItem value="parallel">并行（各自并发会话）</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          <div className="grid gap-1">
+            <Label className="text-xs">合并模式</Label>
+            <Select
+              value={mergeMode}
+              disabled={runMode === "parallel"}
+              onValueChange={(v) => {
+                const mm = v as "by_task" | "all" | "none";
+                setMergeMode(mm);
+                saveBehavior({ trigger_merge_mode: mm });
+              }}
+            >
+              <SelectTrigger size="sm" className="h-8 w-44">
+                <SelectValue />
+              </SelectTrigger>
+              <SelectContent position="popper">
+                <SelectItem value="by_task">按任务合并</SelectItem>
+                <SelectItem value="all">全部合并成一条</SelectItem>
+                <SelectItem value="none">不合并</SelectItem>
+              </SelectContent>
+            </Select>
+          </div>
+
+          {runMode === "parallel" && (
+            <div className="grid gap-1">
+              <Label htmlFor="tr-maxpar" className="text-xs">最大并发（0=不限）</Label>
+              <Input
+                id="tr-maxpar"
+                type="number"
+                min={0}
+                className="h-8 w-28"
+                value={maxParallel}
+                onChange={(e) => setMaxParallel(e.target.value)}
+                onBlur={() => {
+                  const n = Math.max(0, Math.floor(Number(maxParallel) || 0));
+                  setMaxParallel(String(n));
+                  saveBehavior({ trigger_max_parallel: n });
+                }}
+              />
+            </div>
+          )}
+        </div>
+        <p className="text-muted-foreground text-xs">
+          {runMode === "parallel"
+            ? "并行：每次触发立即各开一个会话并发运行，不合并；超过最大并发的触发排队等空位。"
+            : mergeMode === "by_task"
+              ? "串行·按任务合并：同 agent 一次跑一个；排队中同一任务的事件触发合并成一条会话。"
+              : mergeMode === "all"
+                ? "串行·全部合并：同 agent 一次跑一个；取队列时把当前排队的所有触发合并成一条会话。"
+                : "串行·不合并：同 agent 一次跑一个；每条触发各自一个会话。"}
+        </p>
+      </div>
 
       {/* 新增触发器 */}
       <div className="grid gap-3 rounded-md border p-3">
@@ -793,15 +965,20 @@ function AgentTriggersTab({ agentKey }: { agentKey: string }) {
 
         {/* 定时 */}
         <div className="grid gap-1.5">
-          <div className="flex items-center gap-2">
-            <Label htmlFor="tr-interval" className="text-xs">定时触发：每</Label>
-            <Input id="tr-interval" type="number" min={0} className="h-8 w-24"
-              value={intervalSec} onChange={(e) => setIntervalSec(e.target.value)} />
-            <span className="text-muted-foreground text-xs">秒（0=关）</span>
-          </div>
-          {Number(intervalSec) > 0 && (
-            <Textarea className="text-xs" rows={2} value={intervalMsg}
-              placeholder="定时触发时发给 agent 的话，如：巡检所有任务" onChange={(e) => setIntervalMsg(e.target.value)} />
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={onInterval} onCheckedChange={(v) => setOnInterval(!!v)} /> 定时触发
+          </label>
+          {onInterval && (
+            <div className="grid gap-1.5">
+              <div className="flex items-center gap-2">
+                <Label htmlFor="tr-interval" className="text-xs">每</Label>
+                <Input id="tr-interval" type="number" min={1} className="h-8 w-24"
+                  value={intervalSec} onChange={(e) => setIntervalSec(e.target.value)} />
+                <span className="text-muted-foreground text-xs">秒</span>
+              </div>
+              <Textarea className="text-xs" rows={2} value={intervalMsg}
+                placeholder="定时触发时发给 agent 的话，如：巡检所有任务" onChange={(e) => setIntervalMsg(e.target.value)} />
+            </div>
           )}
         </div>
 
@@ -838,6 +1015,48 @@ function AgentTriggersTab({ agentKey }: { agentKey: string }) {
           )}
         </div>
 
+        {/* 工具调用 */}
+        <div className="grid gap-1.5">
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={onToolCall} onCheckedChange={(v) => setOnToolCall(!!v)} /> 工具调用时触发
+          </label>
+          {onToolCall && (
+            <div className="grid gap-1.5">
+              <div className="text-muted-foreground text-xs">
+                选择要监听的工具（至少一个）；任务执行中这些工具每次<b>调用完成</b>都会触发。已选 {toolNames.length} 个。
+              </div>
+              <div className="max-h-40 overflow-y-auto rounded-md border p-2">
+                {tools.length === 0 && <span className="text-muted-foreground text-xs">（工具列表为空）</span>}
+                <div className="grid gap-1">
+                  {tools.map((tool) => (
+                    <label key={tool.key} className="flex items-start gap-2 text-xs">
+                      <Checkbox className="mt-0.5" checked={toolNames.includes(tool.key)}
+                        onCheckedChange={() => toggleTool(tool.key)} />
+                      <span className="min-w-0">
+                        <span className="font-medium">{tool.key}</span>
+                        {tool.description && <span className="text-muted-foreground line-clamp-1"> {tool.description}</span>}
+                      </span>
+                    </label>
+                  ))}
+                </div>
+              </div>
+              <Textarea className="text-xs" rows={2} value={toolCallMsg}
+                placeholder="工具被调用时发给 agent 的话（系统会附带任务信息、工具入参与返回内容）" onChange={(e) => setToolCallMsg(e.target.value)} />
+            </div>
+          )}
+        </div>
+
+        {/* 任务创建 */}
+        <div className="grid gap-1.5">
+          <label className="flex items-center gap-2 text-sm">
+            <Checkbox checked={onTaskCreate} onCheckedChange={(v) => setOnTaskCreate(!!v)} /> 任务创建时触发
+          </label>
+          {onTaskCreate && (
+            <Textarea className="text-xs" rows={2} value={taskCreateMsg}
+              placeholder="任务被创建时发给 agent 的话（系统会附带任务编号与目标）" onChange={(e) => setTaskCreateMsg(e.target.value)} />
+          )}
+        </div>
+
         <div>
           <Button size="sm" onClick={create} disabled={saving}>
             <SaveIcon /> 添加触发器
@@ -864,6 +1083,13 @@ function AgentTriggersTab({ agentKey }: { agentKey: string }) {
                 {t.on_finding && t.finding_message && <div className="line-clamp-1">finding：{t.finding_message}</div>}
                 {t.on_goal_met && t.goal_message && <div className="line-clamp-1">目标：{t.goal_message}</div>}
                 {t.on_task_timeout && t.task_timeout_message && <div className="line-clamp-1">超时：{t.task_timeout_message}</div>}
+                {t.on_task_create && t.task_create_message && <div className="line-clamp-1">任务创建：{t.task_create_message}</div>}
+                {t.on_tool_call && (
+                  <>
+                    <div className="line-clamp-1">工具：{t.tool_names.join("、") || "（未选）"}</div>
+                    {t.tool_call_message && <div className="line-clamp-1">消息：{t.tool_call_message}</div>}
+                  </>
+                )}
               </div>
             </div>
             <Button variant="ghost" size="icon-sm" className="text-muted-foreground hover:text-destructive"

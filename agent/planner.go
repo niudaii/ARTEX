@@ -6,14 +6,13 @@ import (
 	"fmt"
 	"strings"
 	"sync"
-	"time"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
-	"github.com/Autumn-27/artex/db"
 )
 
 // Planner is the event-driven LLM planner (docs §4.3): each time the asset or
@@ -152,7 +151,7 @@ const plannerDefaultTmpl = `你是一个授权渗透测试系统的"规划者"�
    - 待该步产出 fact 后，下一次唤醒（提示里会带上你的待办清单）再派下一步，并把已满足的步骤标 completed；
    - 判断"同一件事"别拆两条（如"确认触发点"和"触发触发点"是同一步）。**平行的探索维度**（如同时枚举多个不相关端点）才用多意图并行。
 4. 用【一次】 add_intent 批量提交第 3 步筛出的新方向（intents 数组，最多 4 个最高价值的；不要逐条多次调）：
-   - summary：一句话自由描述该方向（做什么+为什么），用自然语言，**不要套用固定分类**。方向要在 summary 里写清楚，去重主要靠它与已有意图比对。
+   - summary：一句话自由描述该方向（测试目标完整地址+做什么+为什么），用自然语言，**不要套用固定分类**。方向要在 summary 里写清楚，去重主要靠它与已有意图比对。
    - asset_ids：本方向要**测试/攻击的目标资产 id**（**尽量传**，0/1/多个；是 list_assets 里的资产 id）。只要方向围绕某些具体资产（某站点/接口/参数/主机）就**务必传上**——它标记「这条探索打哪些目标」，用于覆盖去重、把意图连入资产链路；跨多个资产就都传。仅当纯全局侦察、确实没有具体目标资产时才留空。
    - parent_ids：本方向由哪些【上游节点】综合得出（可选，0/1/多个）。**多个事实结合产生一个新意图，就把这些事实 id 都传上**；派生自某上游意图/发现也传其 id；顶层全新方向留空。
 
@@ -160,7 +159,7 @@ const plannerDefaultTmpl = `你是一个授权渗透测试系统的"规划者"�
 宁可不生成，也不要重复或硬凑。简洁、克制、高效。`
 
 func plannerSystem(goal, workDir string) string {
-	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, Now: time.Now().Format("2006-01-02 15:04:05 MST")})
+	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, Now: nowStr()})
 	return body + artifactSpec(workDir)
 }
 
@@ -197,7 +196,9 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	if tc.Final {
 		situational += "\n\n【任务终局收尾（本轮特殊指令，覆盖上面的常规规划流程）】：" + resolveTaskTimeoutWrapup("planner")
 	}
-	system, boundary := deferredSystem(plannerSystem(goal, p.workDir)+situational, def)
+	// 本任务的工作目录 <workDir>/<taskID>，先建好。
+	taskDir := ensureRunDir(p.workDir, taskID, 0)
+	system, boundary := deferredSystem(plannerSystem(goal, taskDir)+situational, def)
 	// planner 无自身墙钟预算;有 deadline 时把 MaxDuration 夹逼到剩余,让在跑的规划轮在
 	// 任务到点时进收尾(因超时→任务超时词,因步数→per-run 词)。
 	maxDur, clamped := clampMaxDuration(tc.DeadlineUnix, 0)
@@ -223,10 +224,12 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 		BraveSearchAPIKey:  p.webSearch.BraveKey,
 		TavilySearchAPIKey: p.webSearch.TavilyKey,
 		WebSearchProxy:     p.webSearch.Proxy,
-		BashEnv:           proxyEnv(p.proxyAddr, p.proxyCACert), // Bash 子命令默认走代理+信任 CA
-		MaxTurns:          p.maxTurns,                           // 0 = unlimited (configurable in agent management)
-		MaxDuration:       maxDur,                               // 0=不限;有 deadline 时=距 deadline 剩余
-		Compaction:        compactionConfig(p.window),
+		BashEnv:            proxyEnv(p.proxyAddr, p.proxyCACert), // Bash 子命令默认走代理+信任 CA
+		WorkingDir:         taskDir,                              // 本任务工作目录 <workDir>/<taskID>
+		ToolOutputDir:      cmdOutDir(taskDir),
+		MaxTurns:           p.maxTurns, // 0 = unlimited (configurable in agent management)
+		MaxDuration:        maxDur,     // 0=不限;有 deadline 时=距 deadline 剩余
+		Compaction:         compactionConfig(p.window),
 		// 跨唤醒共享的规划待办：让串行链在多轮之间保留（session 是新的，store 不是）。
 		Todos: p.todoFor(ts.ID()),
 		// 命中【本轮】步数预算→ SDK 跑收尾:把本轮已想清楚的结论落地(该派的 add_intent、

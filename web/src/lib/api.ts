@@ -7,11 +7,13 @@ import { MOCK } from "@/lib/mock/enabled";
 import { mockHandle } from "@/lib/mock/handler";
 import type {
   Task, Stats, Asset, AssetNode, Edge, Company, TaskNode, Finding, Activity,
-  Audit, TrafficResp, TrafficDetail, Settings, LLMProfile, Agent, AgentDetail, PromptVar,
+  Audit, TrafficResp, TrafficDetail, TrafficHost, Settings, LLMProfile, Agent, AgentDetail, PromptVar,
   PromptVersion, MCPServer, MCPTool, SkillItem, TokenUsage, TokenTotal, DailyTokenBucket,
   Tool, Conversation, AgentTrigger,
   InterceptRule, InterceptPending, InterceptApprovalRow,
-  TaskAssetView, SSProject, SSTask, ConvTokenSummary,
+  TaskAssetView, SSProject, SSTask, ConvTokenSummary, CoverageGraphData, CoverageAssetRefs,
+  WorkspaceListing, WorkspaceFile,
+  CommandRecord, LLMRecordItem, LLMRecordDetail, LLMTask,
 } from "@/lib/types";
 
 function getToken(): string | null {
@@ -89,7 +91,7 @@ const get = <T>(p: string) => http<T>(p);
 const post = <T>(p: string, body?: unknown) => http<T>(p, { method: "POST", body: body ? JSON.stringify(body) : undefined });
 const put = <T>(p: string, body?: unknown) => http<T>(p, { method: "PUT", body: body ? JSON.stringify(body) : undefined });
 const patch = <T>(p: string, body?: unknown) => http<T>(p, { method: "PATCH", body: body ? JSON.stringify(body) : undefined });
-const del = <T>(p: string) => http<T>(p, { method: "DELETE" });
+const del = <T>(p: string, body?: unknown) => http<T>(p, { method: "DELETE", body: body ? JSON.stringify(body) : undefined });
 
 // Go serializes nil slices as JSON null — coerce to [].
 const arr = <T>(x: T[] | null | undefined): T[] => x ?? [];
@@ -107,13 +109,80 @@ export const api = {
 
   // ---- tasks ----
   tasks: () => get<{ tasks: Task[]; active: string }>("/tasks").then((r) => ({ tasks: arr(r.tasks), active: r.active ?? "" })),
-  createTask: (description: string, goal: string, llmProfileId?: number, timeoutSeconds?: number) =>
-    post<Task>("/tasks", { description, goal, llm_profile_id: llmProfileId ?? null, timeout_seconds: timeoutSeconds ?? 0 }),
+  createTask: (description: string, goal: string, llmProfileId?: number, timeoutSeconds?: number, seedFirstIntent?: boolean) =>
+    post<Task>("/tasks", {
+      description,
+      goal,
+      llm_profile_id: llmProfileId ?? null,
+      timeout_seconds: timeoutSeconds ?? 0,
+      seed_first_intent: seedFirstIntent ?? true,
+    }),
   deleteTask: (id: string) => del<{ deleted: number }>(`/tasks/${id}`),
   controlTask: (id: string, action: "pause" | "resume") => post<{ id: string; paused: boolean }>(`/tasks/${id}/control`, { action }),
   setActive: (id: string) => post<{ active: string }>("/active", { id }),
   // ---- stats ----
   stats: (task?: string) => get<Stats>(`/stats${tq(task)}`),
+  // 资产测试覆盖度(粗估，供参考)：范围内资产被 fact 碰过的占比 + 按类型的 总数/已测。
+  taskCoverage: (id: string) =>
+    get<{
+      scope_rows: number;
+      denominator: number;
+      tested: number;
+      pct: number | null;
+      by_type: { type: string; total: number; tested: number }[];
+    }>(`/tasks/${id}/coverage`),
+  // 资产覆盖图：范围内全部资产 + 连接用的根域名/公司节点，含 tested/in_scope。
+  taskCoverageGraph: (id: string) =>
+    get<CoverageGraphData>(`/tasks/${id}/coverage-graph`),
+  // 某资产在本任务里关联的意图 / 事实 / 发现（覆盖图节点抽屉用）。
+  taskAssetRefs: (id: string, assetId: number) =>
+    get<CoverageAssetRefs>(`/tasks/${id}/asset-refs?asset_id=${assetId}`),
+
+  // ---- workspace file manager (workDir) ----
+  workspaceList: (path = "") =>
+    get<WorkspaceListing>(`/workspace/list?path=${encodeURIComponent(path)}`),
+  workspaceRead: (path: string) =>
+    get<WorkspaceFile>(`/workspace/read?path=${encodeURIComponent(path)}`),
+  workspaceWrite: (path: string, content: string) =>
+    post<{ ok: boolean; path: string }>(`/workspace/write`, { path, content }),
+  workspaceMkdir: (path: string) =>
+    post<{ ok: boolean; path: string }>(`/workspace/mkdir`, { path }),
+  workspaceDelete: (path: string) =>
+    del<{ ok: boolean }>(`/workspace/delete?path=${encodeURIComponent(path)}`),
+  workspaceUpload: async (dir: string, files: File[]) => {
+    if (MOCK) return { uploaded: files.length };
+    const fd = new FormData();
+    for (const f of files) fd.append("file", f);
+    const token = getToken();
+    const r = await fetch(`/api/workspace/upload?path=${encodeURIComponent(dir)}`, {
+      method: "POST",
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: fd,
+    });
+    if (!r.ok) throw new Error(`上传失败: ${r.status}`);
+    return r.json() as Promise<{ uploaded: number }>;
+  },
+  workspaceDownload: async (path: string) => {
+    let blob: Blob;
+    if (MOCK) {
+      blob = new Blob([`（demo）${path} 的下载内容示例。`], { type: "text/plain" });
+    } else {
+      const token = getToken();
+      const r = await fetch(`/api/workspace/download?path=${encodeURIComponent(path)}`, {
+        headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      });
+      if (!r.ok) throw new Error(`下载失败: ${r.status}`);
+      blob = await r.blob();
+    }
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl;
+    a.download = path.split("/").pop() || "download";
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objUrl);
+  },
 
   // ---- assets ----
   // Server-side paginated: pass limit/offset, get back the page + full match total.
@@ -178,6 +247,36 @@ export const api = {
     return get<{ items: Activity[]; cursor: number }>(`/exploration/activity?${q.toString()}`).then((r) => ({ items: arr(r.items), cursor: r.cursor ?? 0 }));
   },
   activityDetail: (id: number, task?: string) => get<{ detail: string }>(`/exploration/activity/${id}${tq(task)}`),
+  // Reverse-paginated session history. session = "main" | "plan" | "intent:<id>".
+  // before=0 → latest page; before=<id> → the older page ending before that id.
+  // snapshotCursor is the TASK-level max id at query time — open the task SSE at
+  // since=snapshotCursor so history (id≤cursor) and the live tail (id>cursor) meet
+  // gap-free. hasMore = still-older steps exist (drives scroll-up loading).
+  activityHistory: (task: string, session: string, before = 0, limit = 200) => {
+    const q = new URLSearchParams({ session, limit: String(limit) });
+    if (task) q.set("task", task);
+    if (before > 0) q.set("before", String(before));
+    return get<{ items: Activity[]; snapshot_cursor: number; earliest_cursor: number; has_more: boolean }>(
+      `/exploration/activity/history?${q.toString()}`,
+    ).then((r) => ({
+      items: arr(r.items),
+      snapshotCursor: r.snapshot_cursor ?? 0,
+      earliestCursor: r.earliest_cursor ?? 0,
+      hasMore: !!r.has_more,
+    }));
+  },
+  // Paged worker (intent) session list — reaches past the legacy fixed 300 cap.
+  // before=0 → newest page; before=<id> → older page. has_more = older intents exist.
+  intentsPage: (task: string, before = 0, limit = 300) => {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (task) q.set("task", task);
+    q.set("before", String(before > 0 ? before : 0));
+    q.set("page", "1"); // marker so the backend returns the paged {items,has_more} shape
+    return get<{ items: TaskNode[]; has_more: boolean }>(`/exploration/intents?${q.toString()}`).then((r) => ({
+      items: arr(r.items),
+      hasMore: !!r.has_more,
+    }));
+  },
 
   // ---- traffic / audit / report / chat ----
   audit: (task?: string) => get<Audit>(`/audit${tq(task)}`),
@@ -190,6 +289,11 @@ export const api = {
     ),
   trafficExchange: (id: string) =>
     get<TrafficDetail>(`/traffic/exchange?id=${encodeURIComponent(id)}`),
+  trafficHosts: () => get<{ hosts: TrafficHost[] }>(`/traffic/hosts`),
+  trafficDeleteHost: (host: string) =>
+    del<{ deleted: number }>(`/traffic?host=${encodeURIComponent(host)}`),
+  trafficDeleteHosts: (hosts: string[]) =>
+    del<{ deleted: number }>(`/traffic/hosts`, { hosts }),
 
   // ---- app settings (runtime toggles) ----
   settings: () => get<Settings>(`/settings`),
@@ -248,6 +352,14 @@ export const api = {
   }) => post<{ id: number }>("/llm/profiles", p),
   deleteLLMProfile: (id: string) => del<{ deleted: number }>(`/llm/profiles/${id}`),
   activateLLMProfile: (id: string) => post<{ ok: boolean }>("/llm/profiles/active", { id: Number(id) }),
+  fetchLLMModels: (provider: string, base_url: string, api_key: string, proxy = "", profile_id?: number) =>
+    post<{ ok: boolean; error?: string; models?: string[] }>("/llm/models", {
+      provider,
+      base_url,
+      api_key,
+      proxy,
+      profile_id,
+    }),
 
   // ---- agents ----
   agents: () => get<{ agents: Agent[] }>("/agents").then((r) => arr(r.agents)),
@@ -266,10 +378,20 @@ export const api = {
   updateConversationProfile: (id: number, llm_profile_id: number | null) =>
     patch<{ ok: boolean }>(`/conversations/${id}/profile`, { llm_profile_id }),
   deleteConversation: (id: number) => del<{ deleted: number }>(`/conversations/${id}`),
+  // Incremental tail: steps after `since` (id ASC) — live poll + post-send fetch.
   conversationMessages: (id: number, since = 0) =>
     get<{ items: Activity[]; cursor: number; running: boolean }>(`/conversations/${id}/messages?since=${since}`).then(
       (r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running }),
     ),
+  // Reverse pagination: the latest `limit` steps (before=0) or the page of older
+  // steps ending before id `before`. hasMore = still-older steps exist.
+  conversationHistory: (id: number, before = 0, limit = 200) => {
+    const q = new URLSearchParams({ limit: String(limit) });
+    if (before > 0) q.set("before", String(before));
+    return get<{ items: Activity[]; cursor: number; running: boolean; hasMore: boolean }>(
+      `/conversations/${id}/messages?${q.toString()}`,
+    ).then((r) => ({ items: arr(r.items), cursor: r.cursor ?? 0, running: !!r.running, hasMore: !!r.hasMore }));
+  },
   conversationMsgDetail: (id: number, seq: number) =>
     get<{ detail: string }>(`/conversations/${id}/messages/${seq}`).then((r) => r.detail ?? ""),
   sendConversationMessage: (id: number, message: string) =>
@@ -296,8 +418,19 @@ export const api = {
   updateTrigger: (id: number, t: Omit<AgentTrigger, "id" | "agent_key" | "last_fire">) =>
     patch<{ ok: boolean }>(`/triggers/${id}`, t),
   deleteTrigger: (id: number) => del<{ deleted: number }>(`/triggers/${id}`),
-  saveAgentConfig: (key: string, patch: { max_turns: number; run_seconds?: number; web_search?: boolean; interactive_shell?: boolean }) =>
-    put<{ ok: boolean }>(`/agents/${key}/config`, patch),
+  saveAgentConfig: (
+    key: string,
+    patch: {
+      llm_profile_id?: number | null; // number=绑定；null=解绑(跟随任务/全局)；缺省=不动
+      max_turns?: number;
+      run_seconds?: number;
+      web_search?: boolean;
+      interactive_shell?: boolean;
+      trigger_run_mode?: "serial" | "parallel";
+      trigger_merge_mode?: "by_task" | "all" | "none";
+      trigger_max_parallel?: number;
+    },
+  ) => put<{ ok: boolean }>(`/agents/${key}/config`, patch),
   agentPromptVersions: (key: string) => get<{ versions: PromptVersion[] }>(`/agents/${key}/prompts`).then((r) => arr(r.versions)),
   agentVariables: (key: string) => get<{ variables: PromptVar[] }>(`/agents/${key}/variables`).then((r) => arr(r.variables)),
   previewAgentPrompt: (key: string, template: string, sample?: Record<string, string>) =>
@@ -440,4 +573,29 @@ export const api = {
     });
     if (!r.ok) throw new Error(await r.text());
   },
+
+  // ---- commands (tool execution history, any tool) ----
+  commands: (params?: { task?: string; q?: string; page?: number; size?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.task) sp.set("task", params.task);
+    if (params?.q) sp.set("q", params.q);
+    sp.set("page", String(params?.page ?? 0));
+    sp.set("size", String(params?.size ?? 50));
+    return get<{ commands: CommandRecord[]; total: number }>(`/commands?${sp}`);
+  },
+
+  // ---- LLM records ----
+  llmRecords: (params?: { model?: string; session?: string; task?: string; page?: number; size?: number }) => {
+    const sp = new URLSearchParams();
+    if (params?.model) sp.set("model", params.model);
+    if (params?.session) sp.set("session", params.session);
+    if (params?.task) sp.set("task", params.task);
+    if (params?.page !== undefined) sp.set("page", String(params.page));
+    sp.set("size", String(params?.size ?? 50));
+    return get<{ records: LLMRecordItem[]; total: number }>(`/llm/records?${sp}`);
+  },
+  llmRecordDetail: (id: number) => get<LLMRecordDetail>(`/llm/records/${id}`),
+  llmTasks: () => get<{ tasks: LLMTask[] }>(`/llm/records/tasks`),
+  llmRecordsDeleteTask: (task: string) =>
+    del<{ deleted: number }>(`/llm/records?task=${encodeURIComponent(task)}`),
 };

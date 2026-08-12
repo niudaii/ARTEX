@@ -4,7 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"os"
 	"path/filepath"
+	"strconv"
 	"time"
 
 	"github.com/Autumn-27/artex/db"
@@ -154,22 +156,57 @@ func workerTrafficBlock(proxyAddr string) string {
 // artifactSpec is 段 [C]: the code-owned, non-editable tail appended to every
 // pentest agent's prompt — intermediate artifacts must land in the shared work
 // dir, never /tmp. Guaranteed present regardless of how the DB body is edited.
-func artifactSpec(workDir string) string {
-	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到共享工作目录 " + workDir + "**（这是所有 agent 共用的 CWD，相对路径即写在这里，也可用该绝对路径）——**不要写 /tmp、不要用其它绝对路径**。"
+func artifactSpec(dir string) string {
+	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本任务工作目录 " + dir + "**（相对路径即写在这里，也可用该绝对路径）——**不要写 /tmp、不要用其它绝对路径**。"
 }
 
-// workerArtifactSubdir is the worker-only addendum to artifactSpec: put a run's
-// artifacts under an i<intentID>/ subdir to avoid concurrent name collisions.
-const workerArtifactSubdir = "为避免与其他 work 撞名，把本次产物放到子目录 i<意图id>/ 下（如 i123/exploit.py）。"
+// workerArtifactSpec is the worker's 段 [C]: its per-intent run dir is pre-created
+// by the engine (ensureRunDir), so it just writes relative paths there — no manual
+// mkdir, no cross-worker name collisions.
+func workerArtifactSpec(runDir string) string {
+	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本次意图的专属工作目录 " + runDir + "**（已自动建好，直接用相对路径写在这里即可，无需再手动建目录）——**不要写 /tmp、不要用其它绝对路径**。"
+}
 
-func workerSystem(proxyAddr, workDir string) string {
-	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr})
-	return body + workerTrafficBlock(proxyAddr) + artifactSpec(workDir) + workerArtifactSubdir
+// ensureRunDir builds and creates an agent's working directory under base:
+// <base>/<taskID> for planner/main; <base>/<taskID>/i<intentID> for a worker
+// (intentID<=0 → task dir only). Best-effort mkdir — on failure, writes fail the
+// same way an unwritable CWD would.
+func ensureRunDir(base string, taskID, intentID int64) string {
+	dir := filepath.Join(base, strconv.FormatInt(taskID, 10))
+	if intentID > 0 {
+		dir = filepath.Join(dir, "i"+strconv.FormatInt(intentID, 10))
+	}
+	_ = os.MkdirAll(dir, 0o755)
+	return dir
+}
+
+// cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
+func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
+
+func workerSystem(proxyAddr, runDir string) string {
+	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, Now: nowStr()})
+	return body + workerTrafficBlock(proxyAddr) + workerArtifactSpec(runDir)
 }
 
 // renderIntentTask formats the claimed intent for the worker's SYSTEM prompt: the
 // intent is the worker's whole job, so — like the planner's situational block — it
 // belongs in system, where compaction can never drop it during a long run.
+// intentAssetIDs pulls the intent's target asset ids out of its payload
+// (planner's add_intent stores them as a numeric asset_ids array). nil on absence
+// or malformed payload.
+func intentAssetIDs(intent *db.Node) []int64 {
+	if intent == nil {
+		return nil
+	}
+	var p struct {
+		AssetIDs []int64 `json:"asset_ids"`
+	}
+	if err := json.Unmarshal(intent.Payload, &p); err != nil {
+		return nil
+	}
+	return p.AssetIDs
+}
+
 func renderIntentTask(intent *db.Node) string {
 	return fmt.Sprintf("\n\n【你领到的意图（本次唯一任务：只做这一条、只产生事实、做完即停）】：\n%s\n意图 id: %d（写回 record_fact / report_finding 时传它）", string(intent.Payload), intent.ID)
 }
@@ -180,12 +217,17 @@ func renderIntentTask(intent *db.Node) string {
 // purpose is letting the worker read context (existing facts/assets/hints)
 // so it avoids redundant work and doesn't re-derive what others already found.
 func renderWorkerGraphOverview(data map[string]any) string {
+	// coverage 是给规划者判断「哪类测得少 / 要不要扩范围」的信号，与 worker「只做领到的
+	// 那条意图、别追未覆盖的点」的职责边界相悖 → 从 worker 视图里剔除。data 是本次 worker
+	// 专属的新 map，删键不影响 planner。
+	delete(data, "coverage")
 	b, err := json.Marshal(data)
 	if err != nil {
 		return "" // fall back silently: the worker just won't have the global context
 	}
 	return "\n\n【全局探索态势（仅供你了解大局，不是你的任务清单）】：\n" +
 		"下面是整个任务当前的探索概况。给你的**唯一目的**是让你了解全局动态、复用已有结论、避免重复别人已做过的事。\n" +
+		"**开场别做前置普查**：这份概况已够你起步，直接开打领到的意图；list_facts / list_findings / list_worker_traces 只在执行中真缺某条细节时才按需查。\n" +
 		"**它绝不扩大你的职责边界**：你仍然只做上面领到的那一条意图。看到这里有别的 open 意图 / 未覆盖的点 / 其它可打方向，也**绝不要自己去动手**——那些是别的 worker 的事，由规划者调度。你若发现相关新线索，最多写进 fact 让规划者知道，不要自己追。\n" +
 		string(b)
 }
@@ -215,8 +257,10 @@ func (w *Worker) Execute(ctx context.Context, name string, taskID int64, as *db.
 	// 意图是 worker 的全部任务，放进 system prompt（抗 compaction、整轮常驻），而不是
 	// user 输入——与 planner 把关键态势放 system 一致。落在指令之后、deferred 块之前。
 	// 全局态势(graphOverviewData)也带上，但仅供了解大局；意图放在最后、最醒目的位置。
+	// 本次意图的专属工作目录 <workDir>/<taskID>/i<intentID>，引擎侧先建好。
+	runDir := ensureRunDir(w.workDir, taskID, intent.ID)
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
-	system, boundary := deferredSystem(workerSystem(w.proxyAddr, w.workDir)+overview+renderIntentTask(intent), def)
+	system, boundary := deferredSystem(workerSystem(w.proxyAddr, runDir)+overview+renderIntentTask(intent), def)
 	// 任务级 deadline(经 ctx 注入)夹逼本 run 的墙钟预算 + 决定收尾词(见 taskclock.go)。
 	tc := taskClockFrom(ctx)
 	maxDur, clamped := clampMaxDuration(tc.DeadlineUnix, w.runTimeout)
@@ -246,7 +290,7 @@ func (w *Worker) Execute(ctx context.Context, name string, taskID int64, as *db.
 		WebSearchProxy:     w.webSearch.Proxy,
 		// Bash 子命令的 HTTP 默认走记录代理 + 信任其 CA（工具无需 -x/-k）。
 		BashEnv:    proxyEnv(w.proxyAddr, w.proxyCACert),
-		WorkingDir: w.workDir,
+		WorkingDir: runDir,
 		MaxTurns:   w.maxTurns, // 0 = unlimited (configurable in agent management)
 		// 墙钟预算,轮边界判,不打断半路;0 = 不限。有任务级 deadline 时夹逼到 min(自身预算,
 		// 距 deadline 剩余),让本 run 在任务到点时自然进收尾(见 taskclock.go)。
@@ -257,7 +301,7 @@ func (w *Worker) Execute(ctx context.Context, name string, taskID int64, as *db.
 		Settlement: settle,
 		// large tool output spills to cmd-output/ with a head + pointer (SDK tool.Capture);
 		// full output preserved on disk. 截断上限用 SDK 默认(30000 字符)。
-		ToolOutputDir: filepath.Join(w.workDir, "cmd-output"),
+		ToolOutputDir: cmdOutDir(runDir),
 		Compaction:    compactionConfig(w.window), // long tool-heavy runs stay within the window
 		Todos:         actool.NewTodoStore(),      // 会话级临时待办（TodoWrite），纯规划用，退出即丢
 	}
@@ -278,8 +322,24 @@ func (w *Worker) Execute(ctx context.Context, name string, taskID int64, as *db.
 			emit(r)
 		}
 	}
-	// 意图已在 system 里。user 输入只放启动指令。
+	// 意图已在 system 里。user 输入只放启动指令 + 意图锚定资产的原始数据（供 worker 直接
+	// 用，省去开场再查一次 list_assets）。原始 JSON 直接附上，不做提取/格式化。
 	input := "开始执行 system 提示里的这条意图：只做它、只产生事实、做完即停。"
+	if as != nil {
+		if ids := intentAssetIDs(intent); len(ids) > 0 {
+			if assets, err := as.GetByIDs(ids); err == nil && len(assets) > 0 {
+				if b, err := json.Marshal(assets); err == nil {
+					input += "\n\n本意图 asset_ids 对应的目标资产：\n" + string(b)
+				}
+				// 意图明确针对的这些资产 → 自动纳入任务测试范围（与 insertAssets 同一套
+				// 保守粒度）。upsertTaskScope 的 ON CONFLICT DO NOTHING + uq_task_scope
+				// 唯一索引保证不会重复添加；重跑/重试同样是幂等 no-op。
+				for _, a := range assets {
+					_ = as.AddAutoScope(taskID, a.Type, a.Domain, a.URL, a.IP)
+				}
+			}
+		}
+	}
 
 	s := agentcore.NewSession(opts)
 	defer s.Close() // release the session's background-task manager (temp dir + processes)

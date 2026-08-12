@@ -2,19 +2,67 @@ package server
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
-	"github.com/Autumn-27/norma/harness"
-	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/intercept"
+	"github.com/Autumn-27/norma/harness"
+	"github.com/Autumn-27/norma/llm"
+	"github.com/jackc/pgx/v5/pgconn"
 )
+
+// isFKViolation reports whether err is a Postgres foreign-key violation (SQLSTATE
+// 23503) — e.g. an activity insert whose exploration_id has no parent row.
+func isFKViolation(err error) bool {
+	var pgErr *pgconn.PgError
+	return errors.As(err, &pgErr) && pgErr.Code == "23503"
+}
+
+// dropReason classifies why an activity write was dropped, so the log can be
+// grouped/analysed by cause rather than by raw error text.
+func dropReason(err error) string {
+	var pgErr *pgconn.PgError
+	if errors.As(err, &pgErr) {
+		switch pgErr.Code {
+		case "23503":
+			return "fk_violation(23503,父exploration不存在)"
+		case "23505":
+			return "unique_violation(23505)"
+		default:
+			return "pg_error(" + pgErr.Code + ")"
+		}
+	}
+	return "write_error"
+}
+
+// bumpDrop increments and returns the running count of dropped (unpersistable)
+// activity records for a task. Concurrent planner + worker emits race here, so the
+// counter is an atomic behind sync.Map. The count in the log shows loss scale at a
+// glance instead of forcing a grep-and-count.
+func (e *Engine) bumpDrop(taskID string) int64 {
+	v, _ := e.dropCnt.LoadOrStore(taskID, new(int64))
+	return atomic.AddInt64(v.(*int64), 1)
+}
+
+// preview collapses newlines and trims s to a short rune-safe snippet for one-line
+// log output (avoids dumping a multi-KB summary/detail into the log).
+func preview(s string, n int) string {
+	s = strings.ReplaceAll(s, "\r", " ")
+	s = strings.ReplaceAll(s, "\n", " ")
+	r := []rune(s)
+	if len(r) > n {
+		return string(r[:n]) + "…"
+	}
+	return string(r)
+}
 
 // model_error（provider/API 故障：LLM 层瞬时重试耗尽，或流已开始后中途断流）
 // 收场的 work 不是「试过没做完」也不是真失败，而是外部抖动。默认把它当永久
@@ -44,6 +92,7 @@ type Engine struct {
 	started sync.Map // taskID -> bool, so Run is idempotent per task
 	lastAct sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
 	paused  sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
+	dropCnt sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
 
 	// per-task execution context: each planner.Plan / worker.Execute runs under it,
 	// so pausing can CANCEL an in-flight run (not just skip the next one). Recreated
@@ -270,9 +319,26 @@ func (e *Engine) emitActivity(t *Task, r db.Activity) {
 	id, err := e.appendActivity(t, r)
 	if err != nil {
 		// NO LONGER SILENT: dropping a record breaks command↔result pairing in the
-		// trace — a tool_use whose tool_result was lost shows as "执行中" forever.
-		log.Printf("[activity] task %s 重试后仍失败、丢弃该记录 (kind=%s tool=%s tuid=%s): %v",
-			t.ID, r.Kind, r.Tool, r.ToolUseID, err)
+		// trace — a tool_use whose tool_result was lost shows as "执行中" forever, and
+		// a lost 'result'/'round' record leaves the session with no summary ("无总结").
+		// Everything needed to分析根因 goes into ONE error-level line: reason class,
+		// summary preview, running drop count for this task, and — on the FK case — a
+		// live probe of WHY the parent exploration is unreachable.
+		n := e.bumpDrop(t.ID)
+		diag := ""
+		// On the FK-parent failure (23503) probe the live DB so the log records WHY the
+		// exploration is unreachable (row gone / wrong expID) instead of just that it is.
+		if isFKViolation(err) {
+			storeID := t.Store.ID()
+			if exists, refs, maxID, dErr := e.m.pg.ExplorationDiag(storeID); dErr != nil {
+				diag = fmt.Sprintf(" | FK诊断查询失败(store.expID=%d task.ExpID=%d): %v", storeID, t.ExpID, dErr)
+			} else {
+				diag = fmt.Sprintf(" | FK诊断: store.expID=%d task.ExpID=%d exploration存在=%v 引用它的task数=%d MAX(exploration.id)=%d",
+					storeID, t.ExpID, exists, refs, maxID)
+			}
+		}
+		log.Printf("[activity] task %s 丢弃活动记录(该任务累计第 %d 条) worker=%s kind=%s tool=%s tuid=%s reason=%s summary=%q: %v%s",
+			t.ID, n, r.Worker, r.Kind, r.Tool, r.ToolUseID, dropReason(err), preview(r.Summary, 80), err, diag)
 		e.touch(t.ID)
 		return
 	}
@@ -300,8 +366,8 @@ func (e *Engine) appendActivity(t *Task, r db.Activity) (int64, error) {
 			}
 			return id, nil
 		}
-		log.Printf("[activity] task %s 写入失败 (第 %d/3 次, worker=%s kind=%s tool=%s): %v",
-			t.ID, attempt, r.Worker, r.Kind, r.Tool, err)
+		log.Printf("[activity] task %s 写入失败 (第 %d/3 次, worker=%s kind=%s tool=%s expID=%d): %v",
+			t.ID, attempt, r.Worker, r.Kind, r.Tool, t.Store.ID(), err)
 		time.Sleep(time.Duration(attempt) * 25 * time.Millisecond)
 	}
 	return 0, err
@@ -367,7 +433,12 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 		go e.workerLoop(ctx, t, fmt.Sprintf("work#%d", i+1))
 	}
 	e.startDeadlineCoordinator(ctx, t) // 任务级超时定时器(仅 timeout>0;去重)
-	t.Notify()                         // kick the first planning round (acted on once LLM is ready)
+	// 仅在 frontier 为空时才 kick 首轮规划:普通任务(空 frontier)照常触发;带种子意图的
+	// 任务 frontier 已非空 → 跳过首轮 planner,worker 直接领种子意图开跑,跑完由 NotifyDone
+	// 唤醒 planner。重启自动恢复时 frontier 通常也非空 → 顺带避免白烧一轮。
+	if fr, _ := t.Store.Frontier(1); len(fr) == 0 {
+		t.Notify() // kick the first planning round (acted on once LLM is ready)
+	}
 }
 
 func (e *Engine) plannerLoop(ctx context.Context, t *Task) {

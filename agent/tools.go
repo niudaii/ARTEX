@@ -7,9 +7,9 @@ import (
 	"strconv"
 	"strings"
 
+	"github.com/Autumn-27/artex/db"
 	acperm "github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
-	"github.com/Autumn-27/artex/db"
 )
 
 // compactIntents distills intents to {id, summary, state, asset_ids, parents,
@@ -324,6 +324,43 @@ func (t *ToolSet) graphOverviewData() map[string]any {
 		if description, goal, err := t.ts.Root(); err == nil {
 			out["task"] = map[string]any{"description": description, "goal": goal}
 		}
+		// coverage：粗略的资产测试覆盖度参考——范围(task_scope)内的资产里，被 fact 碰过的
+		// 占比 + by_type(按类型的 总数/已测)。要看未测的具体资产由 agent 按需调 list_untested_assets 自行判断。仅任务上下文有。
+		if t.as != nil && t.ts != nil && t.taskID > 0 {
+			if cov, err := t.as.TaskCoverage(t.taskID, t.ts.ID()); err == nil {
+				m := map[string]any{
+					"denominator": cov.Denominator,
+					"tested":      cov.Tested,
+					"by_type":     cov.ByType,
+					"note":        "coverage资产测试覆盖度（包括接口等各种相关资产），粗略估计、仅供参考：容器型资产/大量枚举会让它偏低，勿据此认为已测完；scope 是当前任务测试范围的根资产（root_domain/subdomain/ip/cidr/company 原始行），即覆盖度分母的边界、本任务授权/圈定的目标本身；可用 add_task_scope 增补范围、list_untested_assets 看未测的具体资产【通常不调用list_untested_assets，按照任务推进即可】；",
+				}
+				if cov.ScopeRows == 0 {
+					m["pct"] = nil
+					m["status"] = "范围未锚定"
+				} else {
+					m["pct"] = cov.Pct
+				}
+				// scope：当前测试范围的根资产（task_scope 原始行），让 agent 知道这个任务到底
+				// 圈定了哪些目标（不是全部测试资产，而是范围边界本身）。
+				if rows, err := t.as.ListTaskScope(t.taskID); err == nil && len(rows) > 0 {
+					scope := make([]map[string]any, 0, len(rows))
+					for _, r := range rows {
+						e := map[string]any{"kind": r.Kind, "source": r.Source}
+						switch {
+						case r.Domain != "":
+							e["value"] = r.Domain
+						case r.Net != "":
+							e["value"] = r.Net
+						case r.CompanyID != nil:
+							e["company_id"] = *r.CompanyID
+						}
+						scope = append(scope, e)
+					}
+					m["scope"] = scope
+				}
+				out["coverage"] = m
+			}
+		}
 		return out
 	}
 }
@@ -606,7 +643,7 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 // --- worker write tools ---
 
 func (t *ToolSet) addFinding() actool.CoreTool {
-	return writeTool("report_finding", "发现漏洞时必须调用该工具!记录一个确认的漏洞发现。在任务上下文中 intent_id 必填（当前正在执行的意图 id）；在会话上下文中 intent_id 可不填。",
+	return writeTool("report_finding", "[重要]发现漏洞时必须调用该工具进行记录!记录一个确认的漏洞发现。在任务上下文中 intent_id 必填（当前正在执行的意图 id）；在会话上下文中 intent_id 可不填。",
 		obj(map[string]any{
 			"vulnclass":   str("漏洞类"),
 			"severity":    str("high|medium|low"),
@@ -1011,8 +1048,9 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 // summaries (≤100 chars), each tagged with its intent_id for follow-up drill-down.
 func (t *ToolSet) searchAllWorkerTraces() actool.CoreTool {
 	return readTool("search_all_worker_traces",
-		"在【本任务所有 work 的执行过程】里按关键字(q)检索——用于找回某个 worker 见过、却没写进 fact 的东西（某路径/token/报错等）。"+
-			"只返回命中步骤的摘要(summary≤100字)，每条带 intent_id；据此再用 get_worker_trace(intent_id, step_ids=[...]) 取完整内容。不含思考(thinking)步骤。",
+		"【通常不推荐使用，因为系统中已经给了大部分信息了】在【本任务其他 work 的执行过程】里按关键字(q)检索——用于找回某个 worker 见过、却没写进 fact 的东西（某路径/token/报错等）。"+
+			"已自动排除你自己这条意图的步骤（那些本就在你上下文里）。"+
+			"只返回命中步骤的摘要(summary≤100字)，每条带 intent_id；据此再用 get_worker_trace(intent_id, step_ids=[...]) 取完整内容。",
 		obj(map[string]any{
 			"q":     str("关键字（在所有 work 步骤的摘要+完整输出里搜）"),
 			"limit": intp("返回上限，默认 100（可选）"),
@@ -1026,7 +1064,8 @@ func (t *ToolSet) searchAllWorkerTraces() actool.CoreTool {
 			if strings.TrimSpace(a.Q) == "" {
 				return actool.Errorf("q 必填"), nil
 			}
-			acts, err := t.ts.ActivityTraceSearch(nil, a.Q, a.Limit)
+			// 排除调用者自身这条意图的步骤（worker 的自有 trace 已在其上下文里）。
+			acts, err := t.ts.ActivityTraceSearchExcluding(t.ownerNode, a.Q, a.Limit)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
@@ -1054,7 +1093,7 @@ func (t *ToolSet) searchAllWorkerTraces() actool.CoreTool {
 // no process to inspect).
 func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 	return readTool("list_worker_traces",
-		"列出本任务里【已跑过的 work（意图）】索引：intent_id + 一句话方向(summary) + 状态。"+
+		"【通常不推荐使用，因为系统中已经给了大部分信息了】列出本任务里【已跑过的 work（意图）】索引：intent_id + 一句话方向(summary) + 状态。"+
 			"你(worker)看不到探索图，用它来发现有哪些 work 值得翻看——再用 get_worker_trace(intent_id) 看其步骤、get_worker_trace(intent_id, step_ids=[...]) 取详情。"+
 			"只列已执行的(running/done/exhausted/blocked/stopped)，不含还没跑的 open。注意：你的任务边界仍是你领到的那条意图，看别的 work 只为复用观察/避免重复劳动。",
 		obj(map[string]any{
@@ -1108,5 +1147,9 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.addFinding(),
 		// list_companies：查看企业列表 + scope + 资产数（拿 company_id / 理解归属范围）。
 		t.listCompanies(),
+		// add_task_scope：主动把整根域/整公司/某子域/IP 纳入本任务测试范围(覆盖度分母)。
+		t.addTaskScope(),
+		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。
+		t.listUntestedAssets(),
 	}
 }

@@ -187,6 +187,9 @@ CREATE TABLE IF NOT EXISTS activity (
 );
 CREATE INDEX IF NOT EXISTS idx_act_node  ON activity(exploration_id, node_id, id);
 CREATE INDEX IF NOT EXISTS idx_act_since ON activity(exploration_id, id);
+-- Main/Plan history pages filter by worker (both carry NULL node_id, so idx_act_node
+-- can't distinguish them); this covers reverse pagination of those sessions.
+CREATE INDEX IF NOT EXISTS idx_act_worker ON activity(exploration_id, worker, id);
 
 -- =====================================================================
 -- C. LLM profiles
@@ -248,6 +251,30 @@ DROP TRIGGER IF EXISTS trg_tasks_upd ON tasks;
 CREATE TRIGGER trg_tasks_upd BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- 任务测试范围（资产覆盖度的分母 + 授权边界）。
+--   自动填(source='auto')：insertAssets 顶层按 worker 显式插入的资产类型加保守范围
+--     （root_domain→root_domain，subdomain/service/endpoint→subdomain(host)，ip→ip）；
+--     side-effect 派生的资产不入范围（钩子在 handler 顶层，派生在 db 层内部）。
+--   agent 填(source='agent')：add_task_scope 加 company/root_domain/subdomain/ip。
+-- 覆盖度 = 匹配 active 行的 assets（分母）中，被 fact 节点锚定过的占比（分子）。
+CREATE TABLE IF NOT EXISTS task_scope (
+    id          BIGSERIAL PRIMARY KEY,
+    task_id     BIGINT NOT NULL REFERENCES tasks(id) ON DELETE CASCADE,
+    kind        TEXT NOT NULL CHECK (kind IN ('company','root_domain','subdomain','ip','cidr')),
+    company_id  BIGINT REFERENCES companies(id) ON DELETE CASCADE,  -- kind='company'
+    domain      TEXT,          -- root_domain / subdomain
+    net         CIDR,          -- ip / cidr
+    source      TEXT NOT NULL DEFAULT 'auto' CHECK (source IN ('auto','agent','manual')),
+    reason      TEXT,
+    created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
+);
+-- 去重：同一 task 的同一条范围只存一次（自动填批量插入靠它幂等）。
+CREATE UNIQUE INDEX IF NOT EXISTS uq_task_scope ON task_scope(
+    task_id, kind, COALESCE(domain,''), COALESCE(net::text,''), COALESCE(company_id,0));
+CREATE INDEX IF NOT EXISTS idx_ts_domain  ON task_scope(domain) WHERE kind IN ('root_domain','subdomain');
+CREATE INDEX IF NOT EXISTS idx_ts_net     ON task_scope USING GIST(net inet_ops) WHERE kind IN ('ip','cidr');
+CREATE INDEX IF NOT EXISTS idx_ts_company ON task_scope(company_id) WHERE kind = 'company';
+
 -- =====================================================================
 -- E. Agents / 提示词模板 / 变量目录
 -- =====================================================================
@@ -269,10 +296,19 @@ CREATE TABLE IF NOT EXISTS agents (
     wrapup_max_turns  INTEGER NOT NULL DEFAULT 0,
     task_timeout_wrapup_prompt    TEXT NOT NULL DEFAULT '',
     task_timeout_wrapup_max_turns INTEGER NOT NULL DEFAULT 0,
+    trigger_run_mode     TEXT    NOT NULL DEFAULT 'serial'  CHECK (trigger_run_mode IN ('serial','parallel')),
+    trigger_merge_mode   TEXT    NOT NULL DEFAULT 'by_task' CHECK (trigger_merge_mode IN ('by_task','all','none')),
+    trigger_max_parallel INTEGER NOT NULL DEFAULT 5,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     CONSTRAINT agents_role_ck CHECK (role IN ('goals','main','planner','worker','assistant'))
 );
+-- 加列迁移(已发版,旧库升级补列;新库 CREATE 已含。迁移不带 CHECK:旧库存量安全 + 后端写入白名单兜底)。
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS trigger_run_mode     TEXT    NOT NULL DEFAULT 'serial';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS trigger_merge_mode   TEXT    NOT NULL DEFAULT 'by_task';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS trigger_max_parallel INTEGER NOT NULL DEFAULT 5;
+-- per-agent LLM 绑定(agent 级默认模型):列自初版即在上方 CREATE 中,此 ALTER 仅为极旧库兜底(幂等)。
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS llm_profile_id BIGINT REFERENCES llm_profiles(id) ON DELETE SET NULL;
 DROP TRIGGER IF EXISTS trg_agents_upd ON agents;
 CREATE TRIGGER trg_agents_upd BEFORE UPDATE ON agents
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
@@ -425,15 +461,26 @@ CREATE TABLE IF NOT EXISTS agent_triggers (
     on_finding                  BOOLEAN NOT NULL DEFAULT false,
     on_goal_met                 BOOLEAN NOT NULL DEFAULT false,
     on_task_timeout             BOOLEAN NOT NULL DEFAULT false,
+    on_tool_call                BOOLEAN NOT NULL DEFAULT false,
+    on_task_create              BOOLEAN NOT NULL DEFAULT false,
     interval_message            TEXT NOT NULL DEFAULT '',
     finding_message             TEXT NOT NULL DEFAULT '',
     goal_message                TEXT NOT NULL DEFAULT '',
     task_timeout_message        TEXT NOT NULL DEFAULT '',
+    tool_call_message           TEXT NOT NULL DEFAULT '',
+    task_create_message         TEXT NOT NULL DEFAULT '',
+    tool_names                  TEXT NOT NULL DEFAULT '',
     last_fire                   TIMESTAMPTZ,
     created_at                  TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at                  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_agent_triggers_agent ON agent_triggers(agent_key);
+-- 加列迁移(已发版,旧库升级补列;新库 CREATE 已含这些列,ALTER 为 no-op)。幂等,每次启动可重复执行。
+ALTER TABLE agent_triggers ADD COLUMN IF NOT EXISTS on_tool_call        BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE agent_triggers ADD COLUMN IF NOT EXISTS tool_call_message   TEXT    NOT NULL DEFAULT '';
+ALTER TABLE agent_triggers ADD COLUMN IF NOT EXISTS tool_names          TEXT    NOT NULL DEFAULT '';
+ALTER TABLE agent_triggers ADD COLUMN IF NOT EXISTS on_task_create      BOOLEAN NOT NULL DEFAULT false;
+ALTER TABLE agent_triggers ADD COLUMN IF NOT EXISTS task_create_message TEXT    NOT NULL DEFAULT '';
 DROP TRIGGER IF EXISTS trg_agent_triggers_upd ON agent_triggers;
 CREATE TRIGGER trg_agent_triggers_upd BEFORE UPDATE ON agent_triggers
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();

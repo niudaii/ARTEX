@@ -3,10 +3,11 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"strconv"
 	"strings"
 
-	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/artex/db"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 // =====================================================================
@@ -79,7 +80,7 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 			"auth/technologies/params 都是【追加合并】(append)，不会覆盖原有值。\n"+
 			"返回：{results:[{index,id,type}], errors:[{index,error}]}",
 		obj(map[string]any{
-			"task_id": intp("任务 id（可选，用于关联 task_ids）"),
+			// task_id 不暴露给模型：worker 归属哪个 task 由程序经 SetTaskID 权威赋值(见 handler)。
 			"assets": map[string]any{
 				"type":        "array",
 				"description": "资产数组，每个元素对应一条资产记录",
@@ -90,16 +91,16 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 						"description": "资产类型",
 					},
 					// root_domain / subdomain
-					"domain":       str("根域名或子域名（root_domain/subdomain 必填）"),
-					"icp":          str("ICP 备案号（可选）"),
-					"record_type":  str("DNS 解析类型：A/AAAA/CNAME/MX 等（subdomain 可选）"),
+					"domain":      str("根域名或子域名（root_domain/subdomain 必填）"),
+					"icp":         str("ICP 备案号（可选）"),
+					"record_type": str("DNS 解析类型：A/AAAA/CNAME/MX 等（subdomain 可选）"),
 					"record_value": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
 						"description": "DNS 解析值列表（subdomain 可选，如 [\"1.2.3.4\",\"2.3.4.5\"]）",
 					},
 					// ip
-					"ip":           str("IP 地址（ip 类型必填；service/endpoint 类型可填，用于关联 IP）"),
+					"ip": str("IP 地址（ip 类型必填；service/endpoint 类型可填，用于关联 IP）"),
 					"bound_domains": map[string]any{
 						"type":        "array",
 						"items":       map[string]any{"type": "string"},
@@ -121,8 +122,8 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 					"app_icp":     str("应用 ICP 备案（可选）"),
 					"company_id":  intp("归属企业 id（app 类型可选；app 无法靠 scope 自动归因，需显式指定。id 由 add_company_scope 返回）"),
 					// service (http)
-					"url":           str("完整 URL，含协议和端口（HTTP 服务必填；service_type 自动设为 http）"),
-					"status_code":   intp("HTTP 响应状态码，如 200/301/403/404（可选）"),
+					"url":         str("完整 URL，含协议和端口（HTTP 服务必填；service_type 自动设为 http）"),
+					"status_code": intp("HTTP 响应状态码，如 200/301/403/404（可选）"),
 					"content_length": map[string]any{
 						"type":        "integer",
 						"description": "HTTP 响应体字节数（可选）",
@@ -158,16 +159,13 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 			}
 			var a struct {
 				Assets []assetInputItem `json:"assets"`
-				TaskID int64            `json:"task_id"`
 			}
 			if err := json.Unmarshal(in, &a); err != nil {
 				return actool.Errorf("invalid input: " + err.Error()), nil
 			}
-			// use ToolSet.taskID as fallback
-			taskID := a.TaskID
-			if taskID == 0 {
-				taskID = t.taskID
-			}
+			// task_id 由程序权威赋值(worker: SetTaskID)，不接受模型传入——避免模型漏传/错传
+			// 导致资产未归任务或归错任务。无任务上下文的调用方(auto/pentest/chat)其 t.taskID=0。
+			taskID := t.taskID
 
 			type result struct {
 				Index int    `json:"index"`
@@ -274,6 +272,13 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				results = append(results, result{Index: i, ID: id, Type: typ})
 				t.writes.Assets++
 				t.anchorOwner(id)
+				// 自动入测试范围(source='auto')：只对 worker 顶层显式插入的这一项，按其
+				// 类型加保守范围；side-effect 派生的资产不经此处，故范围不盲目扩大。taskID=0 时无操作。
+				svcIP := item.ServiceIP
+				if svcIP == "" {
+					svcIP = item.IP
+				}
+				_ = t.as.AddAutoScope(taskID, typ, item.Domain, item.URL, svcIP)
 			}
 
 			return jsonResult(map[string]any{
@@ -331,6 +336,109 @@ func (t *ToolSet) addCompanyScope() actool.CoreTool {
 				out["errors"] = errMsgs
 			}
 			return jsonResult(out)
+		},
+	)
+}
+
+// addTaskScope lets the plan agent add test scope to THE CURRENT TASK — the coverage
+// denominator and the task's authorization edge. Worker discoveries are auto-scoped
+// (precise host) by insertAssets; this tool is for DELIBERATELY WIDENING: pull a whole
+// root domain or whole company into scope, or add a specific subdomain / ip.
+func (t *ToolSet) addTaskScope() actool.CoreTool {
+	return writeTool(
+		"add_task_scope",
+		"把测试范围加入【本任务】——这是资产测试覆盖度的分母，也是本任务的授权边界。\n"+
+			"kind 支持：company(整个公司名下资产) / root_domain(整个根域，含所有子域) / subdomain(单个精确子域) / ip / cidr。\n"+
+			"说明：worker 逐个碰到的主机会被系统【自动】加进范围(精确子域)；本工具用于【主动扩大】——把整个根域/整个公司纳入，或补充指定某子域/IP。\n"+
+			"value：company 传公司名或 id(公司须已存在)；root_domain/subdomain 传域名；ip/cidr 传 IP 或网段。\n"+
+			"务必给 reason 说明依据(可审计)。多条用 entries 数组。",
+		obj(map[string]any{
+			"entries": map[string]any{"type": "array", "description": "批量：[{kind, value}]。kind∈company/root_domain/subdomain/ip/cidr；value=公司名或id / 域名 / IP / CIDR。", "items": map[string]any{"type": "object"}},
+			"kind":    str("[单条] company / root_domain / subdomain / ip / cidr"),
+			"value":   str("[单条] 公司名或id / 域名 / IP / CIDR"),
+			"reason":  str("加入依据(用于审计)，务必填写"),
+		}),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.as == nil {
+				return actool.Errorf("add_task_scope 未启用: AssetStore 未初始化"), nil
+			}
+			if t.taskID <= 0 {
+				return actool.Errorf("add_task_scope 需要任务上下文(当前无 task)"), nil
+			}
+			type scopeEntry struct {
+				Kind  string `json:"kind"`
+				Value string `json:"value"`
+			}
+			var a struct {
+				Entries    []scopeEntry `json:"entries"`
+				scopeEntry              // 单条模式
+				Reason     string       `json:"reason"`
+			}
+			_ = json.Unmarshal(in, &a)
+			items := a.Entries
+			if len(items) == 0 {
+				items = []scopeEntry{a.scopeEntry}
+			}
+			var added []map[string]any
+			errs := map[string]string{}
+			for i, e := range items {
+				ts, err := t.as.AddAgentScope(t.taskID, strings.TrimSpace(e.Kind), e.Value, a.Reason)
+				if err != nil {
+					errs[strconv.Itoa(i)] = err.Error()
+					continue
+				}
+				added = append(added, map[string]any{"kind": ts.Kind, "domain": ts.Domain, "net": ts.Net, "company_id": ts.CompanyID})
+			}
+			out := map[string]any{"added": added}
+			if len(errs) > 0 {
+				out["errors"] = errs
+			}
+			return jsonResult(out)
+		},
+	)
+}
+
+// listUntestedAssets lets the plan agent pull the CURRENT TASK's in-scope, not-yet-
+// tested assets on demand (filter by type, paginated) — so it can decide what to
+// test next itself, instead of coverage pushing a backlog list into every prompt.
+func (t *ToolSet) listUntestedAssets() actool.CoreTool {
+	return readTool(
+		"list_untested_assets",
+		"查询【本任务】范围内、还没被测过的资产（供你自己判断要不要补测，不代替你决策）。\n"+
+			"可选按资产类型过滤：root_domain/subdomain/service/app/endpoint/ip。\n"+
+			"分页：page 从 1 起、page_size 默认 10。返回 {assets:[{id,type,label}], total, page, page_size}。仅任务上下文可用。",
+		obj(map[string]any{
+			"type":      str("资产类型过滤（可选）：root_domain/subdomain/service/app/endpoint/ip"),
+			"page":      intp("页码，从 1 起（默认 1）"),
+			"page_size": intp("每页数量（默认 10）"),
+		}),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.as == nil {
+				return actool.Errorf("list_untested_assets 未启用: AssetStore 未初始化"), nil
+			}
+			if t.taskID <= 0 || t.ts == nil {
+				return actool.Errorf("list_untested_assets 需要任务上下文"), nil
+			}
+			var a struct {
+				Type     string `json:"type"`
+				Page     int    `json:"page"`
+				PageSize int    `json:"page_size"`
+			}
+			_ = json.Unmarshal(in, &a)
+			if a.Page <= 0 {
+				a.Page = 1
+			}
+			if a.PageSize <= 0 {
+				a.PageSize = 10
+			}
+			offset := (a.Page - 1) * a.PageSize
+			assets, total, err := t.as.ListUntestedAssets(t.taskID, t.ts.ID(), strings.TrimSpace(a.Type), a.PageSize, offset)
+			if err != nil {
+				return actool.Errorf(err.Error()), nil
+			}
+			return jsonResult(map[string]any{
+				"assets": assets, "total": total, "page": a.Page, "page_size": a.PageSize,
+			})
 		},
 	)
 }
@@ -489,6 +597,10 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.addHint(), t.addIntent(),
 		// asset management (handlers guard nil store internally)
 		t.insertAssets(), t.addCompanyScope(), t.listAssets(),
+		t.addFinding(), t.recordFact(),
+		t.addTaskScope(),
+		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。
+		t.listUntestedAssets(),
 	}
 }
 

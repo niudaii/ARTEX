@@ -133,6 +133,71 @@ export interface Asset {
   last_seen: string;
 }
 
+// ---- Asset coverage graph (per task) ----
+// 力导向「资产覆盖图」的一个节点。key 唯一：资产="a:<id>"、公司="c:<id>"、
+// 无资产行的根域名="r:<domain>"。in_scope=false 的是仅用于连线的灰色上下文节点。
+export interface CoverageGraphNode {
+  key: string;
+  kind: "company" | "root_domain" | "subdomain" | "ip" | "service" | "app" | "endpoint";
+  label: string;
+  tested: boolean;
+  in_scope: boolean;
+  asset_id?: number;
+  company_id?: number;
+  domain?: string;
+  root_domain?: string;
+  ip?: string;
+  url?: string;
+  port?: number;
+  service_type?: string;
+  app_name?: string;
+  page_title?: string;
+  status_code?: number;
+}
+
+export interface CoverageGraphEdge {
+  src: string;
+  dst: string;
+}
+
+export interface CoverageGraphData {
+  nodes: CoverageGraphNode[];
+  edges: CoverageGraphEdge[];
+}
+
+// 某资产在本任务探索图里关联到的意图/事实/发现（覆盖图节点抽屉用）。
+export interface CoverageAssetRef {
+  id: number;
+  kind: string;
+  state: string;
+  summary: string;
+}
+export interface CoverageAssetRefs {
+  intents: CoverageAssetRef[];
+  facts: CoverageAssetRef[];
+  findings: CoverageAssetRef[];
+}
+
+// ---- Workspace file manager (workDir) ----
+export interface WorkspaceEntry {
+  name: string;
+  path: string; // workspace-relative, forward slashes
+  dir: boolean;
+  size: number;
+  mtime: number; // unix millis
+}
+export interface WorkspaceListing {
+  path: string;
+  entries: WorkspaceEntry[];
+}
+export interface WorkspaceFile {
+  path: string;
+  size: number;
+  binary: boolean;
+  too_large?: boolean;
+  content?: string;
+}
+
 // 公司资产范围规则的一条（归属唯一真值来源）。
 export interface ScopeRow {
   id: number;
@@ -228,10 +293,15 @@ export interface AgentTrigger {
   on_finding: boolean; // 任意任务发现 finding 时触发
   on_goal_met: boolean; // 任意任务达成目标时触发
   on_task_timeout: boolean; // 任意任务超时时触发
+  on_tool_call: boolean; // 选中工具被调用(执行完成)时触发
+  on_task_create: boolean; // 任意任务被创建时触发
   interval_message: string; // 各触发条件的独立用户消息
   finding_message: string;
   goal_message: string;
   task_timeout_message: string;
+  tool_call_message: string;
+  task_create_message: string;
+  tool_names: string[]; // on_tool_call 选中的工具 key(至少一个)
   last_fire?: string;
 }
 
@@ -336,9 +406,16 @@ export interface TrafficDetail {
   resp: string;
 }
 
+// One distinct recorded host with its exchange count (target picker).
+export interface TrafficHost {
+  host: string;
+  count: number;
+}
+
 // ---- App settings (runtime toggles) ----
 export interface Settings {
   traffic_capture: boolean;
+  llm_record: boolean; // LLM 录制开关（默认关）；关闭时不记录任何 LLM 调用
   // Web search. brave_key_set / tavily_key_set reflect whether a key is stored
   // (the values are never returned). On PUT, send the corresponding field to set/clear.
   web_search_enabled: boolean;
@@ -380,10 +457,15 @@ export interface Agent {
   role: string;
   builtin: boolean;
   enabled: boolean;
+  llm_profile_id?: number | null; // 绑定的 LLM 配置；null/absent = 跟随任务/会话/全局
   max_turns?: number; // 0 = 无限制
   run_seconds?: number; // worker 单次运行墙钟上限(秒)；0 = 无限制
   web_search?: boolean; // 是否启用网络搜索(受系统全局开关门控)
   interactive_shell?: boolean; // 是否启用交互式 shell(持久 PTY 会话工具族)
+  // P3 触发后处理策略(仅自定义 agent 有意义)
+  trigger_run_mode?: "serial" | "parallel"; // 串行排队 / 每次触发各自并发一个会话
+  trigger_merge_mode?: "by_task" | "all" | "none"; // 仅 serial：同任务合并 / 全部合并 / 不合并
+  trigger_max_parallel?: number; // 仅 parallel：每 agent 并发上限；0=不限
   // 绑定数量(仅列表接口返回)：可见 MCP / 可见 Skill / 绑定工具
   mcp_count?: number;
   skill_count?: number;
@@ -410,6 +492,8 @@ export interface AgentDetail {
   variables: PromptVar[];
   versions: PromptVersion[];
   visibility: { mcp: number[]; skill: string[] };
+  // 可绑定的 LLM 配置候选(供「默认模型」下拉)；当前绑定见 agent.llm_profile_id
+  llm_profiles?: { id: number; name: string; model: string; is_default: boolean }[];
   wrapup_prompt?: string; // 已保存的收尾提示词(空=用内置默认)
   wrapup_default?: string; // 内置默认收尾提示词(占位/恢复默认)
   wrapup_max_turns?: number; // 已保存的收尾轮数(0=用内置默认)
@@ -549,4 +633,45 @@ export interface ConvTokenSummary {
   output_tokens: number;
   cache_read_tokens: number;
   cache_write_tokens: number;
+}
+
+// ---- Command recording (Bash execution history) ----
+export interface CommandRecord {
+  id: number;
+  exploration_id: number;
+  worker: string;
+  tool: string;
+  command: string; // raw tool input (JSON)
+  output: string;
+  is_error: boolean;
+  created_at: string;
+}
+
+// ---- LLM recording ----
+export interface LLMRecordItem {
+  id: number;
+  ts: string;
+  model: string;
+  profile_name: string;
+  session_id: string;
+  task_id: string;
+  worker: string;
+  latency_ms: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read: number;
+  cache_write: number;
+  status: string;
+  error?: string;
+}
+
+export interface LLMRecordDetail extends LLMRecordItem {
+  request_body: string;
+  response_body: string;
+}
+
+// One distinct task with its LLM-record count (task picker on the records page).
+export interface LLMTask {
+  task_id: string;
+  count: number;
 }

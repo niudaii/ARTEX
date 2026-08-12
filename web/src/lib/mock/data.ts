@@ -8,7 +8,7 @@ import type {
   ConvTokenSummary, DailyTokenBucket, Edge, Finding, InterceptApprovalRow,
   InterceptPending, InterceptRule, LLMProfile, MCPServer, MCPTool, PromptVar,
   PromptVersion, Settings, SkillItem, Stats, TaskNode, Task, TokenTotal,
-  TokenUsage, Tool, TrafficResp, TrafficDetail,
+  TokenUsage, Tool, TrafficResp, TrafficDetail, TrafficHost, LLMTask,
 } from "@/lib/types";
 
 const T = (iso: string) => iso; // readability helper for timestamps
@@ -341,6 +341,11 @@ export const traffic: TrafficResp = {
   })),
 };
 
+// Distinct hosts with counts, derived from the exchanges above (target picker).
+const hostCounts: Record<string, number> = {};
+for (const [, host] of exchanges) hostCounts[host] = (hostCounts[host] ?? 0) + 1;
+export const trafficHosts: TrafficHost[] = Object.entries(hostCounts).map(([host, count]) => ({ host, count }));
+
 export const trafficDetail: TrafficDetail = {
   req: `GET /v1/orders?id=1002 HTTP/1.1
 Host: api.acme.com
@@ -379,7 +384,7 @@ export const audit: Audit = {
 // ── LLM profiles ─────────────────────────────────────────────────────────────
 export const llmProfiles: LLMProfile[] = [
   { id: "1", name: "Claude Opus 4.8", format: "anthropic", model: "claude-opus-4-8", api_key_hint: "…a3f2", rate_per_second: 0, rate_per_minute: 0, context_window_k: 1000, reasoning_effort: "high", is_default: true },
-  { id: "2", name: "DeepSeek V4", format: "openai", base_url: "https://api.deepseek.com/v1", model: "deepseek-v4-flash", api_key_hint: "…9c11", rate_per_second: 0, rate_per_minute: 60, context_window_k: 128, reasoning_effort: "", is_default: false },
+  { id: "2", name: "DeepSeek V4", format: "openai", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash", api_key_hint: "…9c11", rate_per_second: 0, rate_per_minute: 60, context_window_k: 128, reasoning_effort: "", is_default: false },
 ];
 
 export const llmConfig = {
@@ -464,6 +469,7 @@ export const tools: Tool[] = [
 // ── Settings ─────────────────────────────────────────────────────────────────
 export const settings: Settings = {
   traffic_capture: true,
+  llm_record: false,
   web_search_enabled: true,
   web_search_backend: "ddgs",
   brave_key_set: false,
@@ -516,3 +522,162 @@ export const conversationMessages: Record<number, Activity[]> = {
     { seq: 7, worker: "mainagent", ts: T("2026-07-24T16:01:00Z"), kind: "text", summary: "越权面有两条：① /v1/orders?id= 是自增数字 id → 典型 IDOR，改 id 试读他人订单；② JWT 用 HS256，试 john/hashcat 爆密钥→可伪造任意 sub 越权。我把这两条各派生成一个意图。建议先做 IDOR（成本低、影响直接）。" },
   ],
 };
+
+// ── 资产测试覆盖度（/tasks/{id}/coverage）──
+export const coverage = {
+  scope_rows: 4,
+  denominator: 26,
+  tested: 11,
+  pct: 11 / 26,
+  by_type: [
+    { type: "subdomain", total: 6, tested: 4 },
+    { type: "service", total: 9, tested: 4 },
+    { type: "endpoint", total: 8, tested: 2 },
+    { type: "ip", total: 3, tested: 1 },
+  ],
+};
+
+// ── 资产覆盖图（/tasks/{id}/coverage-graph）──
+export const coverageGraph = {
+  nodes: [
+    { key: "c:1", kind: "company", label: "Acme Corp", tested: false, in_scope: false, company_id: 1 },
+    { key: "a:1", kind: "root_domain", label: "acme.com", tested: false, in_scope: false, asset_id: 1, domain: "acme.com", company_id: 1 },
+    { key: "a:2", kind: "subdomain", label: "www.acme.com", tested: true, in_scope: true, asset_id: 2, domain: "www.acme.com", root_domain: "acme.com" },
+    { key: "a:3", kind: "subdomain", label: "api.acme.com", tested: true, in_scope: true, asset_id: 3, domain: "api.acme.com", root_domain: "acme.com" },
+    { key: "a:4", kind: "subdomain", label: "admin.acme.com", tested: false, in_scope: true, asset_id: 4, domain: "admin.acme.com", root_domain: "acme.com" },
+    { key: "a:5", kind: "service", label: "www.acme.com", tested: true, in_scope: true, asset_id: 5, domain: "www.acme.com", url: "https://www.acme.com", port: 443, page_title: "Acme 首页", status_code: 200 },
+    { key: "a:6", kind: "endpoint", label: "https://www.acme.com/search", tested: true, in_scope: true, asset_id: 6, url: "https://www.acme.com/search?q=", domain: "www.acme.com" },
+    { key: "a:7", kind: "service", label: "api.acme.com", tested: true, in_scope: true, asset_id: 7, domain: "api.acme.com", url: "https://api.acme.com", port: 443, page_title: "API Gateway", status_code: 401 },
+    { key: "a:8", kind: "endpoint", label: "https://api.acme.com/v1/orders", tested: false, in_scope: true, asset_id: 8, url: "https://api.acme.com/v1/orders?id=", domain: "api.acme.com" },
+    { key: "a:9", kind: "service", label: "admin.acme.com", tested: false, in_scope: true, asset_id: 9, domain: "admin.acme.com", url: "https://admin.acme.com", port: 443, page_title: "后台登录", status_code: 200 },
+    { key: "a:10", kind: "ip", label: "203.0.113.10", tested: true, in_scope: true, asset_id: 10, ip: "203.0.113.10", company_id: 1 },
+  ],
+  edges: [
+    { src: "a:1", dst: "c:1" },
+    { src: "a:2", dst: "a:1" },
+    { src: "a:3", dst: "a:1" },
+    { src: "a:4", dst: "a:1" },
+    { src: "a:5", dst: "a:2" },
+    { src: "a:6", dst: "a:5" },
+    { src: "a:7", dst: "a:3" },
+    { src: "a:8", dst: "a:7" },
+    { src: "a:9", dst: "a:4" },
+    { src: "a:10", dst: "c:1" },
+  ],
+};
+
+// ── 资产在本任务关联的意图/事实/发现（/tasks/{id}/asset-refs）──
+export function assetRefsFor(_assetId: number) {
+  return {
+    intents: [
+      { id: 12, kind: "intent", state: "done", summary: "对 www.acme.com 搜索接口做 SQL 注入探测" },
+      { id: 18, kind: "intent", state: "running", summary: "枚举 api.acme.com 的对象越权 (IDOR)" },
+    ],
+    facts: [
+      { id: 34, kind: "fact", state: "confirmed", summary: "search?q= 参数可注入，报错回显 MySQL 语法错误" },
+    ],
+    findings: [
+      { id: 41, kind: "finding", state: "confirmed", summary: "[高] SQL 注入 www.acme.com/search?q=" },
+    ],
+  };
+}
+
+// ── 工作空间文件管理器（/workspace/*，demo：静态示例树）──
+const WS_TREE: Record<string, { name: string; dir: boolean; size: number; content?: string }[]> = {
+  "": [
+    { name: "t-001", dir: true, size: 0 },
+    { name: "transcripts", dir: true, size: 0 },
+    { name: "notes.md", dir: false, size: 96, content: "# 工作区笔记\n\n（demo）这是工作空间根目录下的示例文件，可在线编辑并保存。\n" },
+  ],
+  "t-001": [
+    { name: "i12", dir: true, size: 0 },
+    { name: "recon.txt", dir: false, size: 64, content: "acme.com\nwww.acme.com\napi.acme.com\nadmin.acme.com\n" },
+  ],
+  "t-001/i12": [
+    { name: "exploit.py", dir: false, size: 220, content: "#!/usr/bin/env python3\n# (demo) SQLi PoC — www.acme.com/search?q=\nimport requests\n\nr = requests.get('https://www.acme.com/search', params={'q': \"1' OR '1'='1\"})\nprint(r.status_code, len(r.text))\n" },
+    { name: "response.html", dir: false, size: 180, content: "<!-- (demo) 抓到的响应体片段 -->\n<html><body>MySQL error near ''1'='1'</body></html>\n" },
+  ],
+  transcripts: [
+    { name: "exp1-worker-i12.jsonl", dir: false, size: 512, content: "（demo）原始 LLM 对话记录示例，此处省略。" },
+  ],
+};
+
+const wsClean = (p: string) => p.replace(/^\/+|\/+$/g, "");
+
+export function workspaceList(path: string) {
+  const key = wsClean(path);
+  const items = WS_TREE[key] ?? [];
+  const now = Date.parse("2026-08-09T03:00:00Z");
+  return {
+    path: key,
+    entries: items.map((it, i) => ({
+      name: it.name,
+      path: key ? `${key}/${it.name}` : it.name,
+      dir: it.dir,
+      size: it.size,
+      mtime: now - i * 3_600_000,
+    })),
+  };
+}
+
+export function workspaceRead(path: string) {
+  const key = wsClean(path);
+  const slash = key.lastIndexOf("/");
+  const parent = slash >= 0 ? key.slice(0, slash) : "";
+  const name = slash >= 0 ? key.slice(slash + 1) : key;
+  const f = (WS_TREE[parent] ?? []).find((x) => x.name === name && !x.dir);
+  return { path: key, size: f?.size ?? 0, binary: false, content: f?.content ?? "" };
+}
+
+// ── 工具执行历史（/commands）──
+export const commandRecords = [
+  { id: 1, exploration_id: 1, worker: "worker-1", tool: "bash", command: JSON.stringify({ command: "curl -s 'https://www.acme.com/search?q=test'" }), output: "HTTP/1.1 200 OK\nContent-Length: 12034\n<html>… 搜索结果页 …</html>", is_error: false, created_at: T("2026-08-09T02:10:00Z") },
+  { id: 2, exploration_id: 1, worker: "worker-1", tool: "bash", command: JSON.stringify({ command: "sqlmap -u 'https://www.acme.com/search?q=1' --batch --dbs" }), output: "[*] available databases [2]:\n[*] acme_prod\n[*] information_schema\nback-end DBMS: MySQL >= 5.7", is_error: false, created_at: T("2026-08-09T02:12:30Z") },
+  { id: 3, exploration_id: 1, worker: "worker-2", tool: "bash", command: JSON.stringify({ command: "ffuf -u https://api.acme.com/FUZZ -w common.txt -mc 200,401,403" }), output: "v1       [Status: 200]\nhealth   [Status: 200]\norders   [Status: 401]\nadmin    [Status: 403]", is_error: false, created_at: T("2026-08-09T02:15:00Z") },
+  { id: 4, exploration_id: 1, worker: "worker-2", tool: "bash", command: JSON.stringify({ command: "nmap -sV -p- 203.0.113.10" }), output: "PORT    STATE SERVICE VERSION\n22/tcp  open  ssh     OpenSSH 8.9\n443/tcp open  https   nginx 1.24", is_error: false, created_at: T("2026-08-09T02:18:00Z") },
+  { id: 5, exploration_id: 1, worker: "worker-1", tool: "bash", command: JSON.stringify({ command: "curl -s https://admin.acme.com/login --data 'user=admin&pass=admin123'" }), output: "curl: (28) Operation timed out after 10000 ms", is_error: true, created_at: T("2026-08-09T02:20:00Z") },
+];
+
+// ── LLM 录制（/llm/records、/llm/records/{id}）──
+export const llmRecords = [
+  { id: 1, ts: T("2026-08-09T02:10:02Z"), model: "claude-opus-4-8", profile_name: "默认", session_id: "exp1-worker-i12", task_id: "t-001", worker: "worker-1", latency_ms: 3210, input_tokens: 8421, output_tokens: 512, cache_read: 6000, cache_write: 1200, status: "ok" },
+  { id: 2, ts: T("2026-08-09T02:11:40Z"), model: "claude-opus-4-8", profile_name: "默认", session_id: "exp1-planner", task_id: "t-001", worker: "planner", latency_ms: 4180, input_tokens: 12044, output_tokens: 733, cache_read: 9000, cache_write: 1500, status: "ok" },
+  { id: 3, ts: T("2026-08-09T02:15:20Z"), model: "claude-opus-4-8", profile_name: "默认", session_id: "exp1-worker-i18", task_id: "t-001", worker: "worker-2", latency_ms: 2890, input_tokens: 7311, output_tokens: 421, cache_read: 5200, cache_write: 900, status: "ok" },
+  { id: 4, ts: T("2026-08-09T02:16:05Z"), model: "claude-opus-4-8", profile_name: "默认", session_id: "exp1-worker-i18", task_id: "t-001", worker: "worker-2", latency_ms: 900, input_tokens: 7600, output_tokens: 0, cache_read: 5200, cache_write: 0, status: "error", error: "429 Too Many Requests（已退避重试）" },
+];
+
+// Distinct tasks with counts, derived from llmRecords above (task picker).
+const llmTaskCounts: Record<string, number> = {};
+for (const r of llmRecords) if (r.task_id) llmTaskCounts[r.task_id] = (llmTaskCounts[r.task_id] ?? 0) + 1;
+export const llmTasks: LLMTask[] = Object.entries(llmTaskCounts).map(([task_id, count]) => ({ task_id, count }));
+
+export function llmRecordDetail(id: number) {
+  const item = llmRecords.find((r) => r.id === id) ?? llmRecords[0];
+  return {
+    ...item,
+    request_body: JSON.stringify(
+      {
+        model: item.model,
+        system: "你是一个授权渗透测试系统的「执行者」…（省略）",
+        messages: [
+          { role: "user", content: "开始执行 system 提示里的这条意图：只做它、只产生事实、做完即停。" },
+        ],
+        tools: ["bash", "insert_assets", "record_fact", "report_finding"],
+      },
+      null,
+      2,
+    ),
+    response_body: JSON.stringify(
+      {
+        stop_reason: item.status === "error" ? "error" : "tool_use",
+        content: [
+          { type: "text", text: "对 search?q= 做注入探测，先用报错型 payload 验证。" },
+          { type: "tool_use", name: "bash", input: { command: "curl -s 'https://www.acme.com/search?q=1%27'" } },
+        ],
+        usage: { input_tokens: item.input_tokens, output_tokens: item.output_tokens },
+      },
+      null,
+      2,
+    ),
+  };
+}

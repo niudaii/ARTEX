@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"path"
 	"path/filepath"
@@ -19,9 +20,9 @@ import (
 	"text/template/parse"
 	"time"
 
-	"github.com/Autumn-27/norma/skill"
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/norma/skill"
 )
 
 // reSkillName is the base character-set pattern; validSkillName enforces
@@ -211,24 +212,53 @@ func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
 	if !ok {
 		return
 	}
-	// run_seconds is optional (pointer) so omitting it leaves the stored value
-	// untouched rather than resetting it to 0/unlimited.
+	// All fields optional (pointers) so a partial patch (e.g. the triggers tab sending
+	// only trigger_* fields) leaves the untouched settings alone instead of resetting
+	// max_turns/run_seconds to 0.
 	var req struct {
-		MaxTurns         int   `json:"max_turns"`
+		MaxTurns         *int  `json:"max_turns"`
 		RunSeconds       *int  `json:"run_seconds"`
 		WebSearch        *bool `json:"web_search"`
 		InteractiveShell *bool `json:"interactive_shell"`
+		// llm_profile_id 三态:字段缺省=不动;显式 null=解绑(跟随任务/全局);数字=绑定该 profile。
+		LLMProfileID json.RawMessage `json:"llm_profile_id"`
+		// P3 触发后处理策略(三者一起可选,提供任一即整体写入;未提供则不动)。
+		TriggerRunMode     *string `json:"trigger_run_mode"`
+		TriggerMergeMode   *string `json:"trigger_merge_mode"`
+		TriggerMaxParallel *int    `json:"trigger_max_parallel"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
 		return
 	}
-	if req.MaxTurns < 0 {
-		req.MaxTurns = 0
+	profileChanged := false
+	if req.LLMProfileID != nil { // key present (数字 或 null)
+		var id *int64
+		if err := json.Unmarshal(req.LLMProfileID, &id); err != nil {
+			writeErr(w, 400, "llm_profile_id 格式错误")
+			return
+		}
+		if id != nil { // 绑定:校验目标 profile 有效
+			if _, ok := s.loadProfileConfig(*id); !ok {
+				writeErr(w, 400, "指定的 LLM 配置不存在或无效")
+				return
+			}
+		}
+		if err := pg.SetAgentLLMProfile(a.Key, id); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		profileChanged = true
 	}
-	if err := pg.SetAgentMaxTurns(a.Key, req.MaxTurns); err != nil {
-		writeErr(w, 500, err.Error())
-		return
+	if req.MaxTurns != nil {
+		mt := *req.MaxTurns
+		if mt < 0 {
+			mt = 0
+		}
+		if err := pg.SetAgentMaxTurns(a.Key, mt); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
 	}
 	if req.RunSeconds != nil {
 		rs := *req.RunSeconds
@@ -252,14 +282,40 @@ func (s *Server) pgSaveAgentConfig(w http.ResponseWriter, r *http.Request) {
 			return
 		}
 	}
-	// rebuild the live agents so the new max_turns/run_seconds apply without a restart.
+	// P3 触发策略:三者作为一组写入(SetAgentTriggerBehavior 一次写三列),缺的字段用
+	// 当前存量值回填,避免只传一个把另两个覆盖成默认。
+	if req.TriggerRunMode != nil || req.TriggerMergeMode != nil || req.TriggerMaxParallel != nil {
+		runMode, mergeMode, maxPar := a.TriggerRunMode, a.TriggerMergeMode, a.TriggerMaxParallel
+		if req.TriggerRunMode != nil {
+			runMode = *req.TriggerRunMode
+		}
+		if req.TriggerMergeMode != nil {
+			mergeMode = *req.TriggerMergeMode
+		}
+		if req.TriggerMaxParallel != nil {
+			maxPar = *req.TriggerMaxParallel
+		}
+		if err := pg.SetAgentTriggerBehavior(a.Key, runMode, mergeMode, maxPar); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	// an agent's LLM binding change also invalidates pinned-task / per-profile caches
+	// so their next round re-resolves each agent's bound model.
+	if profileChanged {
+		s.invalidateProfileAgents()
+	}
+	// rebuild the live agents so the new max_turns/run_seconds/binding apply without a restart.
 	s.cfgMu.Lock()
 	cfg, on := s.llmCfg, s.llmOn
 	s.cfgMu.Unlock()
 	if on {
 		_ = s.applyLLM(cfg)
 	}
-	resp := map[string]any{"ok": true, "max_turns": req.MaxTurns}
+	resp := map[string]any{"ok": true}
+	if req.MaxTurns != nil {
+		resp["max_turns"] = *req.MaxTurns
+	}
 	if req.RunSeconds != nil {
 		resp["run_seconds"] = *req.RunSeconds
 	}
@@ -273,6 +329,7 @@ func (s *Server) pgGetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	cur, _ := pg.CurrentPrompt(a.ID)
 	vars, _ := pg.PromptVars(a.ID)
+	vars = withGlobalVars(vars)
 	vers, _ := pg.ListPromptVersions(a.ID)
 	if vers == nil {
 		vers = []db.PromptVersion{}
@@ -282,9 +339,19 @@ func (s *Server) pgGetAgent(w http.ResponseWriter, r *http.Request) {
 	if sk == nil {
 		sk = []string{}
 	}
+	// 可选 LLM 配置列表(id/name/model/是否默认),供前端渲染 "默认模型" 下拉;当前绑定见 agent.llm_profile_id。
+	profs, _ := pg.ListProfiles()
+	llmProfiles := make([]map[string]any, 0, len(profs))
+	for _, p := range profs {
+		llmProfiles = append(llmProfiles, map[string]any{
+			"id": p.ID, "name": p.Name, "model": p.Model, "is_default": p.IsDefault,
+		})
+	}
 	writeJSON(w, 200, map[string]any{
 		"agent": agentDTO(a), "prompt": cur, "variables": vars, "versions": vers,
 		"visibility":               map[string]any{"mcp": mcp, "skill": sk},
+		"llm_profiles":             llmProfiles, // 可绑定的 LLM 配置候选
+
 		"wrapup_prompt":            a.WrapupPrompt,                  // 已保存的收尾提示词(空=用内置默认)
 		"wrapup_default":           agent.WrapupDefault(a.Key),      // 内置默认(供占位/恢复默认)
 		"wrapup_max_turns":         a.WrapupMaxTurns,                // 已保存的收尾轮数(0=用内置默认)
@@ -309,7 +376,7 @@ func (s *Server) pgSavePrompt(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	vars, _ := pg.PromptVars(a.ID)
-	if bad := validateTemplate(body.Template, vars); bad != "" {
+	if bad := validateTemplate(body.Template, withGlobalVars(vars)); bad != "" {
 		writeErr(w, 400, bad)
 		return
 	}
@@ -465,7 +532,7 @@ func (s *Server) pgPromptVars(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"variables": vars})
+	writeJSON(w, 200, map[string]any{"variables": withGlobalVars(vars)})
 }
 
 func (s *Server) pgPreviewPrompt(w http.ResponseWriter, r *http.Request) {
@@ -482,7 +549,7 @@ func (s *Server) pgPreviewPrompt(w http.ResponseWriter, r *http.Request) {
 	if body.Template == "" {
 		body.Template, _ = pg.CurrentPrompt(a.ID)
 	}
-	rendered, err := renderPrompt(body.Template, vars, body.Sample)
+	rendered, err := renderPrompt(body.Template, withGlobalVars(vars), body.Sample)
 	if err != nil {
 		writeJSON(w, 200, map[string]any{"rendered": "", "error": err.Error()})
 		return
@@ -1537,7 +1604,158 @@ func (s *Server) pgActivateProfile(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"ok": true})
 }
 
+// pgListModels fetches available models from the provider's API endpoint.
+// Supports OpenAI-format (GET /models) and Anthropic-format (GET /v1/models); for
+// Anthropic-compatible third parties (e.g. DeepSeek) whose model list lives only on
+// the OpenAI path, it falls back to the OpenAI endpoint at the stripped root.
+func (s *Server) pgListModels(w http.ResponseWriter, r *http.Request) {
+	var req struct {
+		Provider  string `json:"provider"` // "openai" | "anthropic"
+		BaseURL   string `json:"base_url"`
+		APIKey    string `json:"api_key"`
+		Proxy     string `json:"proxy"`
+		ProfileID *int64 `json:"profile_id"` // fallback: use stored key from this profile
+	}
+	if err := decode(r, &req); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	// Resolve API key: form input > profile stored key.
+	apiKey := strings.TrimSpace(req.APIKey)
+	if apiKey == "" && req.ProfileID != nil {
+		if p, err := s.m.pg.ProfileByID(*req.ProfileID); err == nil && p != nil {
+			apiKey = p.APIKey
+		}
+	}
+	if apiKey == "" {
+		writeJSON(w, 200, map[string]any{"ok": false, "error": "未提供 API Key"})
+		return
+	}
+
+	baseURL := strings.TrimRight(strings.TrimSpace(req.BaseURL), "/")
+	provider := strings.TrimSpace(req.Provider)
+
+	// Candidate endpoints to try in order. Some Anthropic-compatible providers
+	// (e.g. DeepSeek) implement /v1/messages under an /anthropic path but expose
+	// the model list only on their OpenAI-format path — so for anthropic we fall
+	// back to the OpenAI endpoint at the stripped root.
+	type candidate struct {
+		url string
+		hdr http.Header
+	}
+	bearerHdr := func() http.Header {
+		h := http.Header{}
+		h.Set("Authorization", "Bearer "+apiKey)
+		return h
+	}
+	anthropicHdr := func() http.Header {
+		h := http.Header{}
+		h.Set("x-api-key", apiKey)
+		h.Set("anthropic-version", "2023-06-01")
+		return h
+	}
+
+	var candidates []candidate
+	switch provider {
+	case "openai":
+		if baseURL == "" {
+			baseURL = "https://api.openai.com/v1"
+		}
+		b := strings.TrimRight(strings.TrimSuffix(baseURL, "/chat/completions"), "/")
+		candidates = append(candidates, candidate{b + "/models", bearerHdr()})
+	default: // anthropic
+		if baseURL == "" {
+			baseURL = "https://api.anthropic.com"
+		}
+		b := strings.TrimRight(strings.TrimSuffix(baseURL, "/v1/messages"), "/")
+		candidates = append(candidates, candidate{b + "/v1/models", anthropicHdr()})
+		// Fallback for Anthropic-compatible third parties whose model list lives on
+		// the OpenAI path: strip a trailing /anthropic and try the OpenAI endpoint.
+		if root := strings.TrimRight(strings.TrimSuffix(b, "/anthropic"), "/"); root != b {
+			candidates = append(candidates,
+				candidate{root + "/models", bearerHdr()},
+				candidate{root + "/v1/models", bearerHdr()},
+			)
+		}
+	}
+
+	// Build HTTP client with optional proxy.
+	transport := &http.Transport{}
+	if p := strings.TrimSpace(req.Proxy); p != "" {
+		if pu, err := url.Parse(p); err == nil {
+			transport.Proxy = http.ProxyURL(pu)
+		}
+	}
+	client := &http.Client{Transport: transport, Timeout: 30 * time.Second}
+
+	// Try each candidate; return the first that yields a non-empty model list.
+	var lastErr string
+	emptyOK := false
+	for _, c := range candidates {
+		httpReq, err := http.NewRequestWithContext(r.Context(), http.MethodGet, c.url, nil)
+		if err != nil {
+			lastErr = "构建请求失败: " + err.Error()
+			continue
+		}
+		httpReq.Header = c.hdr
+		resp, err := client.Do(httpReq)
+		if err != nil {
+			lastErr = "请求失败: " + err.Error()
+			continue
+		}
+		body, _ := io.ReadAll(io.LimitReader(resp.Body, 4<<20))
+		resp.Body.Close()
+		if resp.StatusCode != http.StatusOK {
+			lastErr = fmt.Sprintf("API 返回 %d: %s", resp.StatusCode, string(body[:min(len(body), 512)]))
+			continue
+		}
+		// Both OpenAI and Anthropic return {"data": [{"id": "..."},...]}.
+		var parsed struct {
+			Data []struct {
+				ID string `json:"id"`
+			} `json:"data"`
+		}
+		if err := json.Unmarshal(body, &parsed); err != nil {
+			lastErr = "解析响应失败: " + err.Error()
+			continue
+		}
+		models := make([]string, 0, len(parsed.Data))
+		for _, m := range parsed.Data {
+			if m.ID != "" {
+				models = append(models, m.ID)
+			}
+		}
+		if len(models) > 0 {
+			writeJSON(w, 200, map[string]any{"ok": true, "models": models})
+			return
+		}
+		emptyOK = true // 200 but no model ids — keep trying other candidates
+	}
+	if emptyOK {
+		writeJSON(w, 200, map[string]any{"ok": true, "models": []string{}})
+		return
+	}
+	if lastErr == "" {
+		lastErr = "未获取到模型列表"
+	}
+	writeJSON(w, 200, map[string]any{"ok": false, "error": lastErr})
+}
+
 // --- prompt template helpers (Go text/template + catalog 白名单) ---
+
+// globalPromptVars are runtime variables available to EVERY agent (built-in and
+// custom) regardless of its per-agent catalog. Each agent's render path fills them
+// (see agent.nowStr, rendered fresh each turn), so a prompt may always reference
+// {{.Now}} — e.g. subtract it from a fixed start stamp to reason about elapsed time.
+var globalPromptVars = []db.PromptVar{
+	{Name: "Now", Description: "服务端当前时间（每次运行实时刷新；可与固定起始时间相减判断已用时长）", Example: "2026-08-11 14:30:00 CST", Source: "runtime"},
+}
+
+// withGlobalVars appends the universal runtime vars onto an agent's own catalog,
+// so validation / the UI variable list / preview all recognize {{.Now}} etc.
+func withGlobalVars(vars []db.PromptVar) []db.PromptVar {
+	return append(append([]db.PromptVar{}, vars...), globalPromptVars...)
+}
 
 // validateTemplate parses the template and rejects any {{.Var}} not in the catalog.
 // Returns "" if valid, otherwise an error message.

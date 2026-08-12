@@ -267,6 +267,32 @@ WHERE exploration_id=$1 AND kind=$2 ORDER BY id DESC LIMIT $3`, s.expID, kind, l
 	return scanNodes(rows)
 }
 
+// ListByKindPage returns one newest-first page of nodes of a kind for reverse
+// pagination: up to `limit` nodes with id < `before` (before<=0 = the newest page).
+// hasMore reports whether still-older nodes exist, so a client (e.g. the worker
+// session list) can page past the old fixed cap instead of losing older intents.
+func (s *ExplorationStore) ListByKindPage(kind string, before int64, limit int) ([]*Node, bool, error) {
+	if limit <= 0 {
+		limit = 300
+	}
+	rows, err := s.db.Query(`SELECT `+nodeCols+` FROM exploration_nodes
+WHERE exploration_id=$1 AND kind=$2 AND ($3 <= 0 OR id < $3)
+ORDER BY id DESC LIMIT $4`, s.expID, kind, before, limit+1)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	nodes, err := scanNodes(rows)
+	if err != nil {
+		return nil, false, err
+	}
+	hasMore := len(nodes) > limit
+	if hasMore {
+		nodes = nodes[:limit]
+	}
+	return nodes, hasMore, nil
+}
+
 // GetNode returns one node of this exploration by id (nil, nil if not found).
 func (s *ExplorationStore) GetNode(id int64) (*Node, error) {
 	n, err := scanNode(s.db.QueryRow(`SELECT `+nodeCols+` FROM exploration_nodes WHERE id=$1 AND exploration_id=$2`, id, s.expID))
@@ -396,6 +422,23 @@ VALUES ($1,$2,NULLIF($3,''),NULLIF($4,''),NULLIF($5,''),NULLIF($6,''),$7,NULLIF(
 RETURNING id`, s.expID, a.NodeID, utf8Clean(a.Worker), utf8Clean(a.Kind), utf8Clean(a.Tool), utf8Clean(a.ToolUseID), a.IsError, utf8Clean(a.Summary), utf8Clean(a.Detail),
 		a.InputTokens, a.OutputTokens, a.CacheReadTokens, a.CacheWriteTokens).Scan(&id)
 	return id, err
+}
+
+// ExplorationDiag probes, at the moment of an activity FK violation (23503), why the
+// parent row is unreachable. It reports whether the exploration row still exists, how
+// many task rows reference it (a live task should keep exactly 1 — and RESTRICT on
+// tasks.exploration_id means the exploration CANNOT be deleted while that row lives),
+// and the current MAX(explorations.id). Together these tell apart the failure modes:
+//   - expExists=false, taskRefs=0 → the whole row set is gone (DB reset / wrong DB).
+//   - expExists=false, taskRefs=1 → impossible under RESTRICT; would mean a broken FK.
+//   - expExists=true              → the write's expID is NOT this exploration (stale/
+//     wrong id in the in-memory store); compare against Store.ID().
+func (d *DB) ExplorationDiag(expID int64) (expExists bool, taskRefs int, maxExpID int64, err error) {
+	err = d.QueryRow(`SELECT
+		EXISTS(SELECT 1 FROM explorations WHERE id=$1),
+		(SELECT COUNT(*) FROM tasks WHERE exploration_id=$1),
+		COALESCE((SELECT MAX(id) FROM explorations),0)`, expID).Scan(&expExists, &taskRefs, &maxExpID)
+	return
 }
 
 // TokenTotal sums token usage across ALL workers for this exploration (whole-task
@@ -543,6 +586,90 @@ FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id LIMIT $3`, s.expID, 
 	return out, cursor, rows.Err()
 }
 
+// ActivitySessionFilter selects one UI "session" within a task's activity stream.
+// Exactly one field is meaningful:
+//   - Worker != ""  → filter by worker name (Main = "mainagent", Plan = "planner").
+//     Goal Agent 的第 0 轮拆解也以 worker="planner" 落库，故 Plan 会话完整覆盖 Goal+Planner。
+//   - NodeID != nil → a Worker session, filtered by node_id (= intent id).
+// A zero value (both empty) matches the whole task (no session filter).
+type ActivitySessionFilter struct {
+	Worker string
+	NodeID *int64
+}
+
+func (f ActivitySessionFilter) cond(argStart int) (string, []any) {
+	switch {
+	case f.NodeID != nil:
+		return fmt.Sprintf(" AND node_id=$%d", argStart), []any{*f.NodeID}
+	case f.Worker != "":
+		return fmt.Sprintf(" AND worker=$%d", argStart), []any{f.Worker}
+	default:
+		return "", nil
+	}
+}
+
+// ActivityPage returns one page for reverse (newest-first) pagination of a session:
+// up to `limit` steps ending before id `before` (exclusive; before<=0 = the latest
+// page), returned in ASCENDING id order for direct display. hasMore reports whether
+// still-older steps exist before the returned window (so the client can stop loading
+// on scroll-up). Summary-only columns — detail is lazy-loaded via ActivityDetail.
+func (s *ExplorationStore) ActivityPage(f ActivitySessionFilter, before int64, limit int) ([]Activity, bool, error) {
+	if limit <= 0 {
+		limit = 200
+	}
+	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens`
+	args := []any{s.expID}
+	cond, cargs := f.cond(len(args) + 1)
+	args = append(args, cargs...)
+	beforeArg := len(args) + 1
+	args = append(args, before)
+	limitArg := len(args) + 1
+	args = append(args, limit+1) // one extra row to detect older history
+	q := fmt.Sprintf(`SELECT `+cols+`
+FROM activity WHERE exploration_id=$1%s AND ($%d <= 0 OR id < $%d)
+ORDER BY id DESC LIMIT $%d`, cond, beforeArg, beforeArg, limitArg)
+	rows, err := s.db.Query(q, args...)
+	if err != nil {
+		return nil, false, err
+	}
+	defer rows.Close()
+	desc := []Activity{}
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
+			return nil, false, err
+		}
+		desc = append(desc, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, false, err
+	}
+	hasMore := len(desc) > limit
+	if hasMore {
+		desc = desc[:limit]
+	}
+	// reverse the newest-first window into ascending id order for display.
+	out := make([]Activity, len(desc))
+	for i, a := range desc {
+		out[len(desc)-1-i] = a
+	}
+	return out, hasMore, nil
+}
+
+// ActivityMaxID returns the task's current maximum activity id (0 when empty). It is
+// the task-level snapshot cursor handed to the SSE stream so history (id<=cursor) and
+// the live tail (id>cursor) meet with no gap — deliberately task-level, not per
+// session, since one SSE covers the whole task.
+func (s *ExplorationStore) ActivityMaxID() (int64, error) {
+	var max sql.NullInt64
+	err := s.db.QueryRow(`SELECT MAX(id) FROM activity WHERE exploration_id=$1`, s.expID).Scan(&max)
+	if err != nil {
+		return 0, err
+	}
+	return max.Int64, nil
+}
+
 // ActivityDetail lazily returns the full detail blob for one step.
 func (s *ExplorationStore) ActivityDetail(id int64) (string, error) {
 	var d sql.NullString
@@ -608,6 +735,74 @@ AND (summary ILIKE $3 OR detail ILIKE $3) ORDER BY id LIMIT $4`, s.expID, *nodeI
 FROM activity WHERE exploration_id=$1 AND node_id IS NOT NULL AND kind NOT IN ('thinking','usage')
 AND (summary ILIKE $2 OR detail ILIKE $2) ORDER BY id LIMIT $3`, s.expID, like, limit)
 	}
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	return scanTrace(rows)
+}
+
+// AssetRef is a compact exploration node (intent/fact/finding) that references an
+// asset via an anchor — for the coverage graph's node drawer.
+type AssetRef struct {
+	ID      int64  `json:"id"`
+	Kind    string `json:"kind"`
+	State   string `json:"state"`
+	Summary string `json:"summary"`
+}
+
+// AssetRefs returns the intents / facts / findings in THIS exploration anchored to
+// the given asset id (newest first) — what this task tested / concluded about it.
+func (s *ExplorationStore) AssetRefs(assetID int64) ([]AssetRef, error) {
+	if assetID <= 0 {
+		return []AssetRef{}, nil
+	}
+	rows, err := s.db.Query(`
+SELECT en.id, en.kind, en.state, en.payload
+FROM exploration_anchors ea
+JOIN exploration_nodes en ON en.id = ea.node_id
+WHERE ea.asset_id = $1 AND en.exploration_id = $2 AND en.kind IN ('intent','fact','finding')
+ORDER BY en.id DESC`, assetID, s.expID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	out := []AssetRef{}
+	for rows.Next() {
+		var r AssetRef
+		var payload []byte
+		if err := rows.Scan(&r.ID, &r.Kind, &r.State, &payload); err != nil {
+			return nil, err
+		}
+		var p map[string]any
+		_ = json.Unmarshal(payload, &p)
+		for _, k := range []string{"summary", "text"} {
+			if v, ok := p[k].(string); ok && strings.TrimSpace(v) != "" {
+				r.Summary = v
+				break
+			}
+		}
+		out = append(out, r)
+	}
+	return out, rows.Err()
+}
+
+// ActivityTraceSearchExcluding keyword-searches every node's steps in this
+// exploration EXCEPT one node's own (excludeNodeID) — so a worker's
+// search_all_worker_traces doesn't return its own in-progress trace (which is
+// already in its context). excludeNodeID<=0 → no exclusion (searches all nodes).
+func (s *ExplorationStore) ActivityTraceSearchExcluding(excludeNodeID int64, q string, limit int) ([]Activity, error) {
+	if excludeNodeID <= 0 {
+		return s.ActivityTraceSearch(nil, q, limit)
+	}
+	if limit <= 0 {
+		limit = 100
+	}
+	like := "%" + q + "%"
+	rows, err := s.db.Query(`SELECT `+traceCols+`
+FROM activity WHERE exploration_id=$1 AND node_id IS NOT NULL AND node_id <> $2
+AND kind NOT IN ('thinking','usage')
+AND (summary ILIKE $3 OR detail ILIKE $3) ORDER BY id LIMIT $4`, s.expID, excludeNodeID, like, limit)
 	if err != nil {
 		return nil, err
 	}
