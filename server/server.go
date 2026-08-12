@@ -664,7 +664,10 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	}
 	last := s.engine.LastActivity(t.ID)
 	paused := s.engine.IsPaused(t.ID)
-	running := s.engine.Ready() && s.engine.Started(t.ID) && !paused
+	// terminal tasks (done/failed/timeout) are never "running" even if the
+	// engine goroutines are still alive — they just spin on the terminal gate.
+	terminal := isTerminalStatus(s.m.TaskStatus(t.ID))
+	running := !terminal && s.engine.Ready() && s.engine.Started(t.ID) && !paused
 	// stalled: running but no activity for a while and nothing in flight.
 	stalled := running && inFlight == 0 && last > 0 && time.Now().Unix()-last > 60
 
@@ -760,6 +763,11 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
+		return
+	}
+	// Reject pause/resume on terminal tasks — they're already finished.
+	if isTerminalStatus(t.Status) {
+		writeErr(w, 409, "task is already finished")
 		return
 	}
 	switch req.Action {
@@ -1329,12 +1337,21 @@ func (s *Server) streamActivity(w http.ResponseWriter, r *http.Request) {
 		flusher.Flush()
 	}
 
-	items, cursor, _ := t.Store.ActivityList(intentPtr, since, 2000)
-	for _, a := range items {
-		sendSSE(a)
-	}
-	if cursor > since {
-		since = cursor
+	// Replay the full history: page through ActivityList until exhausted so
+	// tasks with more than one page of rows (long completed runs) fully
+	// populate the session log instead of truncating at the first 2000 rows.
+	for {
+		items, cursor, _ := t.Store.ActivityList(intentPtr, since, 2000)
+		for _, a := range items {
+			sendSSE(a)
+		}
+		flusher.Flush()
+		if cursor > since {
+			since = cursor
+		}
+		if len(items) < 2000 || r.Context().Err() != nil {
+			break
+		}
 	}
 	flusher.Flush()
 

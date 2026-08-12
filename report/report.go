@@ -22,23 +22,25 @@ type Input struct {
 }
 
 type findingView struct {
-	VulnClass string
-	Severity  string
-	Summary   string
-	PoC       string
+	VulnClass  string
+	Severity   string
+	Summary    string
+	PoC        string
+	SourceFile string
 }
 
 func parseFinding(n *db.Node) findingView {
 	var p struct {
-		VulnClass string `json:"vulnclass"`
-		Severity  string `json:"severity"`
-		Summary   string `json:"summary"`
-		Evidence  struct {
+		VulnClass  string `json:"vulnclass"`
+		Severity   string `json:"severity"`
+		Summary    string `json:"summary"`
+		SourceFile string `json:"source_file"`
+		Evidence   struct {
 			PoC string `json:"poc"`
 		} `json:"evidence"`
 	}
 	_ = json.Unmarshal(n.Payload, &p)
-	return findingView{p.VulnClass, p.Severity, p.Summary, p.Evidence.PoC}
+	return findingView{p.VulnClass, p.Severity, p.Summary, p.Evidence.PoC, p.SourceFile}
 }
 
 var sevRank = map[string]int{"high": 0, "medium": 1, "low": 2, "": 3}
@@ -82,6 +84,9 @@ func Markdown(in Input) string {
 			fmt.Fprintf(&b, "%s\n\n", nz(f.Summary, ""))
 			if f.PoC != "" {
 				fmt.Fprintf(&b, "**PoC / 证据：**\n\n```\n%s\n```\n\n", f.PoC)
+			}
+			if f.SourceFile != "" {
+				fmt.Fprintf(&b, "**泄露源文件：**\n\n`%s`\n\n", f.SourceFile)
 			}
 		}
 	}

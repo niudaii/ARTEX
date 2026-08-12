@@ -518,10 +518,29 @@ func (t *ToolSet) listGoals() actool.CoreTool {
 			g, _ := t.ts.ListByKind(db.KindGoal, 100)
 			return jsonResult(g)
 		})
+	}
+
+// goalTextSuggestsTotal reports whether a goal text implies ALL items must be
+// completed, used by the premature-completion guard in proveGoal.
+func goalTextSuggestsTotal(text string) bool {
+	low := strings.ToLower(text)
+	return strings.Contains(text, "全部") || strings.Contains(text, "所有") ||
+		strings.Contains(low, "all ") || strings.Contains(low, "every") ||
+		strings.Contains(low, "each")
+}
+
+// reasonSuggestsSingle reports whether a reason only cites a single sub-item,
+// implying partial completion rather than total.
+func reasonSuggestsSingle(reason string) bool {
+	low := strings.ToLower(reason)
+	return strings.Contains(reason, "单个") || strings.Contains(reason, "一个") ||
+		strings.Contains(reason, "单道") || strings.Contains(reason, "仅") ||
+		strings.Contains(low, "single") || strings.Contains(low, "just one") ||
+		strings.Contains(low, "one ")
 }
 
 func (t *ToolSet) proveGoal() actool.CoreTool {
-	return writeTool("prove_goal", "当你判断某个发现/事实证明了某个目标达成时调用：把证据节点连到目标节点，并标记目标 met。",
+	return writeTool("prove_goal", "当你判断某个发现/事实证明了某个目标达成时调用：把证据节点连到目标节点，并标记目标 met。⚠️**仅在目标的全部条件已满足时才调本工具**：若目标含'全部'/'所有'/'all'等字样，仅完成其中一个子项（单个 flag/单道题/单个漏洞）【不算达成】——必须所有子项都完成才算 met。只取得部分进展时用 record_fact 记录，不要 prove_goal。",
 		obj(map[string]any{
 			"goal_id":     idp("目标节点 id"),
 			"evidence_id": idp("证明它的发现/事实节点 id"),
@@ -537,6 +556,18 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 			goal, ev := pid(a.GoalID), pid(a.EvidenceID)
 			if goal == 0 || ev == 0 {
 				return actool.Errorf("goal_id 和 evidence_id 必填"), nil
+			}
+			// Guard against premature completion: if the goal text mentions
+			// all/total but the reason only cites a single item, reject.
+			if gn, err := t.ts.GetNode(goal); err == nil && gn != nil {
+				var gp map[string]any
+				if json.Unmarshal(gn.Payload, &gp) == nil {
+					if gt, _ := gp["text"].(string); goalTextSuggestsTotal(gt) {
+						if reasonSuggestsSingle(a.Reason) {
+							return actool.Errorf("目标含'全部/所有'但 reason 仅提及单个子项达成——该目标尚未全部完成。请改用 record_fact 记录此部分进展，待全部子项完成后再 prove_goal。"), nil
+						}
+					}
+				}
 			}
 			_ = t.ts.Link(ev, db.RelProves, goal)
 			_ = t.ts.SetNodeState(goal, "met")
@@ -577,22 +608,26 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 func (t *ToolSet) addFinding() actool.CoreTool {
 	return writeTool("report_finding", "发现漏洞时必须调用该工具!记录一个确认的漏洞发现。在任务上下文中 intent_id 必填（当前正在执行的意图 id）；在会话上下文中 intent_id 可不填。",
 		obj(map[string]any{
-			"vulnclass": str("漏洞类"),
-			"severity":  str("high|medium|low"),
-			"summary":   str("发现摘要"),
-			"intent_id": idp("产生本发现的意图 id（任务上下文必填；会话上下文可不填）"),
-			"asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "受影响资产 id（可选，0/1/多个）：参数/端点/站点等。一个漏洞影响多处可全填，纯观察可不填。"},
-			"evidence":  str("证据/PoC 文本"),
+			"vulnclass":   str("漏洞类"),
+			"severity":    str("high|medium|low"),
+			"summary":     str("发现摘要"),
+			"intent_id":   idp("产生本发现的意图 id（任务上下文必填；会话上下文可不填）"),
+			"asset_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "受影响资产 id（可选，0/1/多个）：参数/端点/站点等。一个漏洞影响多处可全填，纯观察可不填。"},
+			"evidence":    str("证据/PoC 文本"),
+			"source_file": str("泄露源文件（可选）：当漏洞涉及前端 JS 凭证泄露或算法泄露时，填写泄露了密钥/签名算法/加密逻辑的具体 JS 文件 URL 或路径（如 https://example.com/static/js/main.abc123.js）。非此类漏洞不填。"),
 		}, "vulnclass", "severity", "summary"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
-				VulnClass, Severity, Summary, Evidence string
-				IntentID                               json.RawMessage   `json:"intent_id"`
-				AssetIDs                               []json.RawMessage `json:"asset_ids"`
+				VulnClass, Severity, Summary, Evidence, SourceFile string
+				IntentID                                           json.RawMessage   `json:"intent_id"`
+				AssetIDs                                           []json.RawMessage `json:"asset_ids"`
 			}
 			_ = json.Unmarshal(in, &a)
 			payload := map[string]any{"vulnclass": a.VulnClass, "severity": a.Severity, "summary": a.Summary,
 				"evidence": map[string]any{"by": t.worker, "poc": a.Evidence}}
+			if a.SourceFile != "" {
+				payload["source_file"] = a.SourceFile
+			}
 			var anchors []int64
 			for _, raw := range a.AssetIDs {
 				if p := pid(raw); p > 0 {
@@ -609,7 +644,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 				if intent := pid(a.IntentID); intent > 0 {
 					_ = t.ts.Link(intent, db.RelYields, id) // chain: intent -> finding
 				}
-				_, _ = t.ts.AddStandaloneFinding(t.taskID, id, a.VulnClass, a.Severity, a.Summary, a.Evidence, t.worker, anchors)
+				_, _ = t.ts.AddStandaloneFinding(t.taskID, id, a.VulnClass, a.Severity, a.Summary, a.Evidence, t.worker, anchors, a.SourceFile)
 			} else {
 				// conversation context: no exploration store available, cannot record finding
 				return actool.Errorf("report_finding 需要任务上下文（exploration store 未初始化）"), nil

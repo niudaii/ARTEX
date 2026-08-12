@@ -102,3 +102,6 @@ export type StatusDomain = keyof typeof maps;
 export function statusMeta(domain: StatusDomain, key: string): StatusMeta {
   return maps[domain][key] ?? { label: key, tone: "neutral" };
 }
+export function isTerminalTaskStatus(status: string): boolean {
+  return status === "done" || status === "failed" || status === "timeout";
+}

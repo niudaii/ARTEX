@@ -18,6 +18,7 @@ import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
 import { api } from "@/lib/api";
 import type { Task } from "@/lib/types";
+import { isTerminalTaskStatus } from "@/lib/status";
 
 import { SessionsTab } from "./_tabs/sessions-tab";
 import { OverviewTab } from "./_tabs/overview-tab";
@@ -108,6 +109,8 @@ function TaskDetailInner() {
 
   const engineMode = paused ? "paused" : task.engine_mode ?? "idle";
 
+  const terminal = isTerminalTaskStatus(task.status);
+
   return (
     <Tabs
       value={tab}
@@ -134,12 +137,17 @@ function TaskDetailInner() {
           <span className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs">
             <BrainIcon className="size-3.5 text-emerald-500" /> LLM 已配置
           </span>
-          <StatusBadge domain="engine" value={engineMode} dot />
+          {terminal ? (
+            <StatusBadge domain="task" value={task.status} dot />
+          ) : (
+            <StatusBadge domain="engine" value={engineMode} dot />
+          )}
           <div className="ml-auto">
             <Button
               size="sm"
               variant={paused ? "default" : "outline"}
               onClick={togglePause}
+              disabled={terminal}
             >
               {paused ? <PlayIcon /> : <PauseIcon />}
               {paused ? "恢复" : "暂停"}

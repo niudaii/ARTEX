@@ -39,6 +39,16 @@ function Row({ f }: { f: Finding }) {
           <pre className="overflow-auto rounded-md border bg-background p-3 font-mono text-xs whitespace-pre-wrap">
             {f.evidence}
           </pre>
+          {f.source_file && (
+            <div className="mt-2">
+              <div className="mb-1 text-xs font-medium text-muted-foreground">
+                泄露源文件
+              </div>
+              <code className="block overflow-x-auto rounded-md border bg-background p-2 font-mono text-xs">
+                {f.source_file}
+              </code>
+            </div>
+          )}
         </div>
       )}
     </div>

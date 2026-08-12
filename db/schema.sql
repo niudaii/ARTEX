@@ -493,12 +493,14 @@ CREATE TABLE IF NOT EXISTS findings (
     severity    TEXT NOT NULL DEFAULT '',
     summary     TEXT NOT NULL DEFAULT '',
     evidence    TEXT NOT NULL DEFAULT '',
+    source_file TEXT NOT NULL DEFAULT '',
     worker      TEXT NOT NULL DEFAULT '',
     asset_ids   JSONB NOT NULL DEFAULT '[]',
     created_at  TIMESTAMPTZ NOT NULL DEFAULT now()
 );
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS source_file TEXT NOT NULL DEFAULT '';
 
 -- =====================================================================
 -- M. 后端日志持久化

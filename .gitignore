@@ -1,5 +1,6 @@
 # backend
 /data/
+/logs/
 *.db
 *.db-wal
 *.db-shm
@@ -40,3 +41,17 @@ Thumbs.db
 
 # Docker 部署生成的本地环境（含密码/密钥，不提交）
 .env
+.codemap/
+.codemaker/codemap/
+.codemaker/codeindex/
+.mcp.json
+.claude/skills/codemap-*/
+.claude/skills/code-index-*/
+.claude/settings.local.json
+.codemaker/rules/codemap.mdc
+.codemaker/mcps.json
+.codemaker/hooks.json
+opencode.json
+.codex/
+.agents/skills/codemap-*/
+.agents/skills/code-index-*/

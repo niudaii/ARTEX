@@ -272,6 +272,14 @@ export default function FindingsPage() {
                               <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap">
                                 {f.evidence}
                               </pre>
+                              {f.source_file && (
+                                <div className="mt-1">
+                                  <span className="text-xs font-medium text-muted-foreground">泄露源文件：</span>
+                                  <code className="ml-1 rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
+                                    {f.source_file}
+                                  </code>
+                                </div>
+                              )}
                             </div>
                           </TableCell>
                         </TableRow>

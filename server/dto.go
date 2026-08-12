@@ -176,6 +176,7 @@ type FindingDTO struct {
 	Severity        string `json:"severity"`
 	Summary         string `json:"summary"`
 	Evidence        string `json:"evidence"`
+	SourceFile      string `json:"source_file,omitempty"`
 	IntentID        string `json:"intent_id,omitempty"`
 	ParamID         string `json:"param_id,omitempty"`
 	TaskID          string `json:"task_id,omitempty"`
@@ -186,22 +187,24 @@ type FindingDTO struct {
 // findingPayload mirrors the JSON written by the worker's report_finding tool
 // (agent/tools.go addFinding): {vulnclass, severity, summary, evidence:{by,poc}}.
 type findingPayload struct {
-	VulnClass string          `json:"vulnclass"`
-	Severity  string          `json:"severity"`
-	Summary   string          `json:"summary"`
-	Evidence  json.RawMessage `json:"evidence"`
+	VulnClass  string          `json:"vulnclass"`
+	Severity   string          `json:"severity"`
+	Summary    string          `json:"summary"`
+	SourceFile string          `json:"source_file"`
+	Evidence   json.RawMessage `json:"evidence"`
 }
 
 func findingDTO(n *db.Node) FindingDTO {
 	var p findingPayload
 	_ = json.Unmarshal(n.Payload, &p)
 	return FindingDTO{
-		ID:        i64s(n.ID),
-		VulnClass: p.VulnClass,
-		Severity:  p.Severity,
-		Summary:   p.Summary,
-		Evidence:  rawString(p.Evidence),
-		TS:        rfc3339(n.CreatedAt),
+		ID:         i64s(n.ID),
+		VulnClass:  p.VulnClass,
+		Severity:   p.Severity,
+		Summary:    p.Summary,
+		Evidence:   rawString(p.Evidence),
+		SourceFile: p.SourceFile,
+		TS:         rfc3339(n.CreatedAt),
 	}
 }
 
@@ -222,12 +225,13 @@ func findingDTOsForTask(t *Task, in []*db.Node) []FindingDTO {
 // task_description are empty when the originating task has been deleted (NULL).
 func findingFromDB(f *db.DBFinding) FindingDTO {
 	d := FindingDTO{
-		ID:        i64s(f.ID),
-		VulnClass: f.VulnClass,
-		Severity:  f.Severity,
-		Summary:   f.Summary,
-		Evidence:  f.Evidence,
-		TS:        rfc3339(f.CreatedAt),
+		ID:         i64s(f.ID),
+		VulnClass:  f.VulnClass,
+		Severity:   f.Severity,
+		Summary:    f.Summary,
+		Evidence:   f.Evidence,
+		SourceFile: f.SourceFile,
+		TS:         rfc3339(f.CreatedAt),
 	}
 	if f.TaskID != nil {
 		d.TaskID = i64s(*f.TaskID)

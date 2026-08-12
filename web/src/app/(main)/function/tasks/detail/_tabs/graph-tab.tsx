@@ -30,7 +30,7 @@ import {
   Target,
 } from "lucide-react";
 
-import { cn } from "@/lib/utils";
+import { cn, copyToClipboard } from "@/lib/utils";
 import { Card, CardContent } from "@/components/ui/card";
 import { StatusBadge } from "@/components/status-badge";
 import { ScrollArea } from "@/components/ui/scroll-area";
@@ -394,11 +394,11 @@ function NodeDetailSheet({
   const Icon = meta?.icon;
   const raw = node ? JSON.stringify(node, null, 2) : "";
 
-  const copy = () => {
-    void navigator.clipboard?.writeText(raw).then(() => {
+  const copy = async () => {
+    if (await copyToClipboard(raw)) {
       setCopied(true);
       window.setTimeout(() => setCopied(false), 1500);
-    });
+    }
   };
 
   return (

@@ -180,6 +180,7 @@ export interface Finding {
   severity: Severity;
   summary: string;
   evidence: string;
+  source_file?: string;
   intent_id?: string;
   param_id?: string;
   task_id?: string;

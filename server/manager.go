@@ -283,9 +283,12 @@ const browserMCPName = "browser"
 
 // syncBrowserMCPProxy reconciles the seeded browser MCP's proxy args + CA env with
 // the current traffic-capture state: capture on → route Playwright through the
-// recording proxy (--proxy-server) and trust its MITM CA (NODE_EXTRA_CA_CERTS);
-// capture off → strip both. Idempotent, and a no-op if the user deleted/renamed the
-// MCP. Must be called WITHOUT m.mu held (ProxyAddr/ProxyCACert take the lock).
+// recording proxy (--proxy-server), accept its MITM-re-signed certs
+// (--ignore-https-errors, since NODE_EXTRA_CA_CERTS only affects the Node.js
+// process, not Chromium's TLS stack), and trust its MITM CA (NODE_EXTRA_CA_CERTS);
+// capture off → strip all three. Idempotent, and a no-op if the user
+// deleted/renamed the MCP. Must be called WITHOUT m.mu held (ProxyAddr/ProxyCACert
+// take the lock).
 func (m *Manager) syncBrowserMCPProxy() {
 	servers, err := m.pg.ListMCP()
 	if err != nil {
@@ -311,6 +314,7 @@ func (m *Manager) syncBrowserMCPProxy() {
 	delete(env, "NODE_EXTRA_CA_CERTS")
 	if proxy != "" {
 		args = append(args, "--proxy-server", proxy)
+		args = append(args, "--ignore-https-errors")
 		if cert != "" {
 			env["NODE_EXTRA_CA_CERTS"] = cert
 		}
@@ -328,8 +332,9 @@ func (m *Manager) syncBrowserMCPProxy() {
 	}
 }
 
-// stripProxyArgs removes any --proxy-server/--proxy-bypass flags (both "--flag val"
-// and "--flag=val" forms) so they can be re-added cleanly from current state,
+// stripProxyArgs removes proxy/MITM-related flags (--proxy-server,
+// --proxy-bypass as "--flag val" or "--flag=val", and the boolean
+// --ignore-https-errors) so they can be re-added cleanly from current state,
 // without mutating the input slice.
 func stripProxyArgs(args []string) []string {
 	out := make([]string, 0, len(args))
@@ -340,6 +345,9 @@ func stripProxyArgs(args []string) []string {
 			continue
 		}
 		if strings.HasPrefix(a, "--proxy-server=") || strings.HasPrefix(a, "--proxy-bypass=") {
+			continue
+		}
+		if a == "--ignore-https-errors" || strings.HasPrefix(a, "--ignore-https-errors=") {
 			continue
 		}
 		out = append(out, a)
