@@ -392,8 +392,14 @@ func (s *Server) seedOrchestrationTools() {
 	}
 	for _, t := range s.platformTools() {
 		schema, _ := json.Marshal(t.InputSchema())
-		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, autoAgents)
+		// send_me 也绑给 pentest：漏洞复测 skill 要求复测未通过时调用它通知主人。
+		agents := autoAgents
+		if t.Name() == "send_me" {
+			agents, _ = json.Marshal([]string{"auto", "pentest"})
+		}
+		_ = s.m.PG().SeedTool(t.Name(), t.Description(), schema, agents)
 	}
+	s.seedSendMePentestBinding()
 	s.refreshBuiltinToolSchemas()
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
@@ -401,6 +407,21 @@ func (s *Server) seedOrchestrationTools() {
 	// 注：pentest 的默认工具绑定无需迁移——BuiltinToolSeeds 在全新初始化时就把
 	// list_assets/insert_assets/report_finding/list_findings/list_companies 连同
 	// pentest 一起 seed 好了（项目尚无旧库，不做迁移）。
+}
+
+// seedSendMePentestBinding adds the send_me tool to the pentest agent's binding
+// on existing DBs where SeedTool already inserted it with auto-only binding. One-time
+// migration gated by a settings flag (AddAgentToToolBinding is idempotent).
+func (s *Server) seedSendMePentestBinding() {
+	const flag = "send_me_pentest_binding_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	if err := s.m.pg.AddAgentToToolBinding("pentest", []string{"send_me"}); err != nil {
+		log.Printf("[tools] send_me → pentest 绑定失败: %v", err)
+		return
+	}
+	_ = s.m.pg.SetSetting(flag, "true")
 }
 
 // refreshBuiltinToolSchemas propagates code schema/description changes on the
