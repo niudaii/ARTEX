@@ -28,8 +28,30 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/artex/db"
 	mproxy "github.com/lqqyt2423/go-mitmproxy/proxy"
+	"github.com/sirupsen/logrus"
 	_ "modernc.org/sqlite"
 )
+
+// mitmNoiseFormatter wraps the logrus standard logger's formatter (go-mitmproxy
+// logs through it) to drop the recurring "tls: unknown certificate" errors from
+// Proxy.attacker.httpsTlsDial. These are expected when scanning self-signed HTTPS
+// targets whose MITM handshake the connecting tool rejects — the request still
+// fails-open (target unreachable or passthrough), so the log line is pure noise.
+type mitmNoiseFormatter struct{ inner logrus.Formatter }
+
+func (f *mitmNoiseFormatter) Format(e *logrus.Entry) ([]byte, error) {
+	if e.Data["in"] == "Proxy.attacker.httpsTlsDial" {
+		m := strings.ToLower(e.Message)
+		if strings.Contains(m, "unknown certificate") || strings.Contains(m, "tls:") {
+			return nil, nil // suppress — see comment above
+		}
+	}
+	return f.inner.Format(e)
+}
+
+func init() {
+	logrus.SetFormatter(&mitmNoiseFormatter{inner: logrus.StandardLogger().Formatter})
+}
 
 const indexSchema = `
 CREATE TABLE IF NOT EXISTS exchanges (

@@ -8,6 +8,10 @@ const isMock = process.env.NEXT_PUBLIC_MOCK === "1";
 
 const nextConfig = {
   reactCompiler: true,
+  // @antv/g6 v5 的 ESM side-effect import（preset 注册）在 Turbopack 下可能被 tree-shake
+  // 或模块解析异常，导致 context.transform 为 undefined → getTransformInstance 报错。
+  // transpilePackages 强制 SWC 转译，保证 side-effect import 正常执行。
+  transpilePackages: ["@antv/g6"],
   // 允许从局域网 IP 访问 dev 资源（HMR），按需增删。
   // dev 阶段放开任意 IPv4 来源访问 /_next/* 与 HMR（局域网 IP 变动也不受影响）。
   // 注意：Next 出于安全禁止裸 "*"，需用分段通配；"*.*.*.*" 匹配任意 IPv4。

@@ -301,14 +301,39 @@ export const api = {
   // Run a real "test" search with the given (or saved) config to verify it works.
   testWebSearch: (patch: { web_search_backend?: string; web_search_proxy?: string; brave_search_api_key?: string; tavily_search_api_key?: string }) =>
     post<{ ok: boolean; error?: string; count?: number; backend?: string }>(`/settings/web-search/test`, patch),
-  report: async (task?: string) => {
+  report: async (task?: string, nofilter?: boolean) => {
     if (MOCK) return mockReport(task);
     const token = getToken();
-    const r = await fetch(`/api/report${tq(task)}`, {
+    let qs = tq(task);
+    if (nofilter) qs += qs ? "&nofilter=1" : "?nofilter=1";
+    const r = await fetch(`/api/report${qs}`, {
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
     if (!r.ok) throw new Error(`report: ${r.status}`);
     return r.text();
+  },
+  filterReport: async (task?: string) => {
+    const token = getToken();
+    const r = await fetch(`/api/report/filter${tq(task)}`, {
+      method: "POST",
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!r.ok) throw new Error(`filter: ${r.status}`);
+    return r.json() as Promise<{ status: string }>;
+  },
+  reportWithStatus: async (task?: string, nofilter?: boolean) => {
+    const token = getToken();
+    let qs = tq(task);
+    if (nofilter) qs += qs ? "&nofilter=1" : "?nofilter=1";
+    const r = await fetch(`/api/report${qs}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!r.ok) throw new Error(`report: ${r.status}`);
+    return {
+      text: await r.text(),
+      filtering: r.headers.get("X-Report-Filtering") === "1",
+      filtered: r.headers.get("X-Report-Filtered") === "1",
+    };
   },
   chat: (message: string, task?: string) => post<{ reply: string; mode: string }>(`/chat${tq(task)}`, { message }),
   stopChat: (taskId: string) => post<{ status: string }>(`/tasks/${taskId}/chat/stop`, {}),

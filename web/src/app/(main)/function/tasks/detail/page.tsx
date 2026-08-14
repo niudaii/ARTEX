@@ -68,11 +68,12 @@ function TaskDetailInner() {
       .then(([r, s]) => {
         const base = r.tasks.find((t) => t.id === id) ?? null;
         const at = (s as { active_task?: Partial<Task> & { paused?: boolean } } | null)?.active_task;
+        const sem = (s as { engine_mode?: Task["engine_mode"] } | null)?.engine_mode;
         if (base && at) {
           base.in_flight = at.in_flight;
           base.goals_total = at.goals_total;
           base.goals_met = at.goals_met;
-          base.engine_mode = at.engine_mode;
+          base.engine_mode = sem ?? at.engine_mode;
           base.paused = at.paused;
         }
         setTask(base);

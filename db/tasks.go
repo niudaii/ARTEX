@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
 	"time"
 )
@@ -133,6 +134,27 @@ UPDATE tasks
  WHERE id = $2`, status, id)
 	return err
 }
+
+// SaveReport persists the final report Markdown for a completed task.
+func (d *DB) SaveReport(taskID int64, md string) error {
+	_, err := d.Exec(`UPDATE tasks SET report_md = $1 WHERE id = $2`, md, taskID)
+	return err
+}
+
+// GetReport returns the persisted report Markdown for a task.
+// Returns "" and false when no report has been persisted.
+func (d *DB) GetReport(taskID int64) (string, bool, error) {
+	var md string
+	err := d.QueryRow(`SELECT report_md FROM tasks WHERE id = $1`, taskID).Scan(&md)
+	if err == sql.ErrNoRows {
+		return "", false, nil
+	}
+	if err != nil {
+		return "", false, err
+	}
+	return md, md != "", nil
+}
+
 
 // SetTerminalStatusGuarded sets a terminal status only when the task is NOT already
 // terminal, so a completed↔timeout race resolves to the first writer (won=true).

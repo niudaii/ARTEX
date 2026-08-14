@@ -14,11 +14,12 @@ import (
 
 // Input bundles what the report needs.
 type Input struct {
-	Title       string
-	Goal        string
-	GeneratedAt time.Time
-	AssetCounts map[string]int
-	Findings    []*db.Node
+	Title         string
+	Goal          string
+	GeneratedAt   time.Time
+	AssetCounts   map[string]int
+	Findings      []*db.Node
+	FilteredCount int // findings removed by LLM filter; 0 = no filtering applied
 }
 
 type findingView struct {
@@ -27,6 +28,11 @@ type findingView struct {
 	Summary    string
 	PoC        string
 	SourceFile string
+	Harm      string
+	Fix       string
+	Request   string
+	Response  string
+	ReproCmd  string
 }
 
 func parseFinding(n *db.Node) findingView {
@@ -35,12 +41,17 @@ func parseFinding(n *db.Node) findingView {
 		Severity   string `json:"severity"`
 		Summary    string `json:"summary"`
 		SourceFile string `json:"source_file"`
+		Harm       string `json:"harm"`
+		Fix        string `json:"fix"`
+		Request    string `json:"request"`
+		Response   string `json:"response"`
+		ReproCmd   string `json:"repro_cmd"`
 		Evidence   struct {
 			PoC string `json:"poc"`
 		} `json:"evidence"`
 	}
 	_ = json.Unmarshal(n.Payload, &p)
-	return findingView{p.VulnClass, p.Severity, p.Summary, p.Evidence.PoC, p.SourceFile}
+	return findingView{p.VulnClass, p.Severity, p.Summary, p.Evidence.PoC, p.SourceFile, p.Harm, p.Fix, p.Request, p.Response, p.ReproCmd}
 }
 
 var sevRank = map[string]int{"high": 0, "medium": 1, "low": 2, "": 3}
@@ -55,6 +66,9 @@ func Markdown(in Input) string {
 	// summary
 	fmt.Fprintf(&b, "## 摘要\n\n")
 	fmt.Fprintf(&b, "- 确认发现：**%d** 个\n", len(in.Findings))
+	if in.FilteredCount > 0 {
+		fmt.Fprintf(&b, "- 已过滤低价值漏洞：**%d** 个（LLM 判断）\n", in.FilteredCount)
+	}
 	fmt.Fprintf(&b, "- 资产：")
 	var types []string
 	for t := range in.AssetCounts {
@@ -81,12 +95,31 @@ func Markdown(in Input) string {
 		sort.SliceStable(fs, func(i, j int) bool { return sevRank[fs[i].Severity] < sevRank[fs[j].Severity] })
 		for i, f := range fs {
 			fmt.Fprintf(&b, "### %d. [%s] %s\n\n", i+1, strings.ToUpper(nz(f.Severity, "info")), nz(f.VulnClass, "未分类"))
-			fmt.Fprintf(&b, "%s\n\n", nz(f.Summary, ""))
-			if f.PoC != "" {
+			// 一、漏洞详情
+			fmt.Fprintf(&b, "**漏洞详情**\n\n%s\n\n", nz(f.Summary, ""))
+			if f.Request != "" {
+				fmt.Fprintf(&b, "**请求包**\n\n```http\n%s\n```\n\n", f.Request)
+			}
+			if f.Response != "" {
+				fmt.Fprintf(&b, "**响应包**\n\n```http\n%s\n```\n\n", f.Response)
+			}
+			if f.ReproCmd != "" {
+				fmt.Fprintf(&b, "**复现命令**\n\n```bash\n%s\n```\n\n", f.ReproCmd)
+			}
+			// 兼容旧格式：无 request/response 时降级为 PoC 文本块
+			if f.Request == "" && f.Response == "" && f.PoC != "" {
 				fmt.Fprintf(&b, "**PoC / 证据：**\n\n```\n%s\n```\n\n", f.PoC)
 			}
 			if f.SourceFile != "" {
 				fmt.Fprintf(&b, "**泄露源文件：**\n\n`%s`\n\n", f.SourceFile)
+			}
+			// 二、漏洞危害（可选，未填则不输出）
+			if f.Harm != "" {
+				fmt.Fprintf(&b, "**漏洞危害**\n\n%s\n\n", f.Harm)
+			}
+			// 三、修复建议（可选，未填则不输出）
+			if f.Fix != "" {
+				fmt.Fprintf(&b, "**修复建议**\n\n%s\n\n", f.Fix)
 			}
 		}
 	}

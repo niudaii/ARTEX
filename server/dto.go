@@ -44,6 +44,7 @@ type TaskDTO struct {
 	GoalsTotal    int           `json:"goals_total"`
 	GoalsMet      int           `json:"goals_met"`
 	LLMProfileID  *int64        `json:"llm_profile_id,omitempty"` // LLM profile used for this task; nil = default
+	EngineMode    string        `json:"engine_mode,omitempty"`    // exploring | paused | stalled | idle (mirrors stats)
 }
 
 // TokenTotalDTO is a whole-task (all agents) token aggregate.
@@ -177,6 +178,11 @@ type FindingDTO struct {
 	Summary         string `json:"summary"`
 	Evidence        string `json:"evidence"`
 	SourceFile      string `json:"source_file,omitempty"`
+	Harm            string `json:"harm,omitempty"`
+	Fix             string `json:"fix,omitempty"`
+	Request         string `json:"request,omitempty"`
+	Response        string `json:"response,omitempty"`
+	ReproCmd         string `json:"repro_cmd,omitempty"`
 	IntentID        string `json:"intent_id,omitempty"`
 	ParamID         string `json:"param_id,omitempty"`
 	TaskID          string `json:"task_id,omitempty"`
@@ -191,6 +197,11 @@ type findingPayload struct {
 	Severity   string          `json:"severity"`
 	Summary    string          `json:"summary"`
 	SourceFile string          `json:"source_file"`
+	Harm       string          `json:"harm"`
+	Fix        string          `json:"fix"`
+	Request    string          `json:"request"`
+	Response   string          `json:"response"`
+	ReproCmd   string          `json:"repro_cmd"`
 	Evidence   json.RawMessage `json:"evidence"`
 }
 
@@ -204,6 +215,8 @@ func findingDTO(n *db.Node) FindingDTO {
 		Summary:    p.Summary,
 		Evidence:   rawString(p.Evidence),
 		SourceFile: p.SourceFile,
+		Harm:       p.Harm,
+		Fix:        p.Fix,
 		TS:         rfc3339(n.CreatedAt),
 	}
 }
@@ -231,6 +244,8 @@ func findingFromDB(f *db.DBFinding) FindingDTO {
 		Summary:    f.Summary,
 		Evidence:   f.Evidence,
 		SourceFile: f.SourceFile,
+		Harm:       f.Harm,
+		Fix:        f.Fix,
 		TS:         rfc3339(f.CreatedAt),
 	}
 	if f.TaskID != nil {

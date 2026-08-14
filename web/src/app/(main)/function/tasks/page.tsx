@@ -7,12 +7,12 @@ import {
   PlusIcon,
   Trash2Icon,
   ArrowRightIcon,
-  StarIcon,
   SearchIcon,
   XIcon,
 } from "lucide-react";
 
 import { StatusBadge } from "@/components/status-badge";
+import { isTerminalTaskStatus } from "@/lib/status";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
@@ -143,7 +143,7 @@ export default function TasksPage() {
   const load = React.useCallback(() => {
     api.tasks()
       .then((r) => {
-        setTasks(r.tasks.map((t) => (t.id === r.active ? { ...t, active: true } : t)));
+        setTasks(r.tasks);
       })
       .catch(() => {});
   }, []);
@@ -357,14 +357,15 @@ export default function TasksPage() {
                       <span className="truncate" title={task.description}>
                         {task.description}
                       </span>
-                      {task.active && (
-                        <StarIcon className="size-4 shrink-0 fill-amber-400 text-amber-400" />
-                      )}
                     </div>
                   </TableCell>
                   <TableCell className="text-muted-foreground max-w-xs truncate">{task.goal}</TableCell>
                   <TableCell>
-                    <StatusBadge domain="task" value={task.status} dot />
+                    {isTerminalTaskStatus(task.status) ? (
+                      <StatusBadge domain="task" value={task.status} dot />
+                    ) : (
+                      <StatusBadge domain="engine" value={task.engine_mode ?? "idle"} dot />
+                    )}
                   </TableCell>
                   <TableCell className="text-muted-foreground text-center text-xs tabular-nums">
                     {typeof task.goals_total === "number" && task.goals_total > 0

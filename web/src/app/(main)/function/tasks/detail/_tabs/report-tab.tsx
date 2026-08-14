@@ -1,7 +1,7 @@
 "use client";
 
 import * as React from "react";
-import { FileTextIcon, CopyIcon, CheckIcon } from "lucide-react";
+import { FileTextIcon, CopyIcon, CheckIcon, FilterIcon, Loader2Icon, EyeIcon } from "lucide-react";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -12,25 +12,32 @@ export function ReportTab({ taskId }: { taskId: string }) {
   const [report, setReport] = React.useState<string>("");
   const [loading, setLoading] = React.useState(true);
   const [copied, setCopied] = React.useState(false);
+  const [filtering, setFiltering] = React.useState(false);
+  const [filtered, setFiltered] = React.useState(false);
+  const pollRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  React.useEffect(() => {
-    let active = true;
+  const loadReport = React.useCallback((nofilter: boolean) => {
     setLoading(true);
     api
-      .report(taskId)
-      .then((text) => {
-        if (active) setReport(text);
+      .reportWithStatus(taskId, nofilter)
+      .then(({ text, filtering: stillFiltering, filtered: isFiltered }) => {
+        setReport(text);
+        setFiltered(isFiltered);
+        if (stillFiltering) {
+          setFiltering(true);
+          pollFiltered();
+        }
       })
-      .catch(() => {
-        if (active) setReport("");
-      })
-      .finally(() => {
-        if (active) setLoading(false);
-      });
-    return () => {
-      active = false;
-    };
+      .catch(() => setReport(""))
+      .finally(() => setLoading(false));
   }, [taskId]);
+
+  React.useEffect(() => {
+    loadReport(false);
+    return () => {
+      if (pollRef.current) clearTimeout(pollRef.current);
+    };
+  }, [loadReport]);
 
   async function copy() {
     if (!report) return;
@@ -44,6 +51,65 @@ export function ReportTab({ taskId }: { taskId: string }) {
     }
   }
 
+  async function runFilter() {
+    setFiltering(true);
+    try {
+      await api.filterReport(taskId);
+      toast.success("LLM 过滤已启动，正在生成…");
+      pollFiltered();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "过滤失败");
+      setFiltering(false);
+    }
+  }
+
+  function pollFiltered() {
+    let elapsed = 0;
+    const interval = 3000;
+    const maxWait = 120000;
+    const poll = async () => {
+      try {
+        const { text, filtering: stillFiltering } = await api.reportWithStatus(taskId);
+        if (!stillFiltering && text) {
+          setReport(text);
+          setFiltered(true);
+          setFiltering(false);
+          toast.success("LLM 过滤完成，报告已更新");
+          return;
+        }
+        elapsed += interval;
+        if (elapsed >= maxWait) {
+          setFiltering(false);
+          toast.error("过滤超时，请稍后刷新重试");
+          return;
+        }
+        pollRef.current = setTimeout(poll, interval);
+      } catch {
+        elapsed += interval;
+        if (elapsed < maxWait) {
+          pollRef.current = setTimeout(poll, interval);
+        } else {
+          setFiltering(false);
+          toast.error("过滤超时，请稍后刷新重试");
+        }
+      }
+    };
+    pollRef.current = setTimeout(poll, interval);
+  }
+
+  async function showAll() {
+    setFiltering(true);
+    try {
+      const text = await api.report(taskId, true);
+      setReport(text);
+      setFiltered(false);
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "加载失败");
+    } finally {
+      setFiltering(false);
+    }
+  }
+
   return (
     <Card>
       <CardHeader className="flex-row items-center justify-between">
@@ -52,9 +118,22 @@ export function ReportTab({ taskId }: { taskId: string }) {
         </CardTitle>
         <div className="flex gap-2">
           {report && (
-            <Button size="sm" variant="outline" onClick={copy}>
-              {copied ? <CheckIcon /> : <CopyIcon />} 复制
-            </Button>
+            <>
+              {filtered ? (
+                <Button size="sm" variant="outline" onClick={showAll} disabled={filtering}>
+                  {filtering ? <Loader2Icon className="animate-spin" /> : <EyeIcon />}
+                  显示全部
+                </Button>
+              ) : (
+                <Button size="sm" variant="outline" onClick={runFilter} disabled={filtering}>
+                  {filtering ? <Loader2Icon className="animate-spin" /> : <FilterIcon />}
+                  {filtering ? "过滤中…" : "LLM 过滤"}
+                </Button>
+              )}
+              <Button size="sm" variant="outline" onClick={copy}>
+                {copied ? <CheckIcon /> : <CopyIcon />} 复制
+              </Button>
+            </>
           )}
         </div>
       </CardHeader>

@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	actool "github.com/Autumn-27/norma/tool"
@@ -42,6 +43,8 @@ type Task struct {
 	Store          *pgdb.ExplorationStore `json:"-"`
 	Guard          *guard.Guard           `json:"-"`
 	notify         chan struct{}
+
+	reportFiltering atomic.Bool // true while LLM report filter is running
 
 	// doneIntents accumulates the ids of intents that completed since the last
 	// planning round consumed them. The debounce coalesces a burst of completions

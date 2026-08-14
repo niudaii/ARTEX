@@ -409,7 +409,7 @@ func (s *Server) seedOrchestrationTools() {
 // reaches an old DB otherwise. Preserves each tool's agent binding + enabled flag.
 // Bump the flag whenever these tools' schemas/descriptions change in code.
 func (s *Server) refreshBuiltinToolSchemas() {
-	const flag = "tool_schema_refresh_v5_spawn_seed_intent"
+	const flag = "tool_schema_refresh_v6_send_me"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}

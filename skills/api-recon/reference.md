@@ -498,3 +498,170 @@ grep -rhoaE 'encrypt|decrypt|sign|CryptoJS|sm2|sm3|sm4|RSA|AES' js | head
 | GraphQL 只见 operation 名 | 展开 `variables` JSON；静态找 `$var: Type` |
 
 ---
+
+## K. 服务端 API 文档指纹探测（Phase 1a 详解）
+
+Phase 1a 主动探测服务端 API 文档。以下为各类型的完整探测路径、检测签名与解析字段。
+
+### K1. URL 层级构造
+
+从入口 URL 提取两个探测基准：
+
+```
+入口: https://app.example.com:8443/admin/api/users
+根路径:   https://app.example.com:8443
+一级路径: https://app.example.com:8443/admin        ← path 第一段
+```
+
+对每个层级拼接下方各类型的探测路径。两层均须探测——文档常挂在应用根而非子路径。
+
+### K2. Swagger/OpenAPI
+
+#### 探测路径
+
+| 路径 | 说明 |
+|------|------|
+| `/swagger-resources` | Springfox 资源声明，返回 `[{location, swaggerVersion}]` |
+| `/v2/api-docs` | Swagger 2.0 JSON（swagger-resources.location 常指向此） |
+| `/v3/api-docs` | OpenAPI 3.0 JSON |
+| `/api-docs` | Swagger 1.2 资源列表，返回 `{apis: [{path, description}]}` |
+| `/swagger/` | Swagger UI HTML（beego 等非 Java 框架） |
+| `/apidocs/` | Flasgger（Python）Swagger UI |
+| `/` | 根路径，部分框架直接暴露文档 |
+
+#### 检测特征
+
+- **JSON**：尝试 `json.loads`，检查是否存在 `paths`（2.0/3.0）、`apis`（1.2）、`basePath`、`servers` 任一键
+- **YAML**：JSON 解析失败时尝试 YAML 解析（`yaml.safe_load`），同上检查
+- **HTML**（Swagger UI）：正则 `url:\s*"(.*?)"` 或 `discoveryPaths:\s*arrayFrom\('(.*?)'` 提取文档地址
+
+#### 版本判别与解析
+
+| 版本 | 根键 | 端点来源 | basePath 来源 | 参数定义 |
+|------|------|---------|-------------|---------|
+| OpenAPI 1.2 | `apis[]` | `apis[].path` → 二次请求 `/{swaggerGroup}/{apiDeclaration}` | 有 `basePath` 时为子文档 | `definitions` / `models` |
+| OpenAPI 2.0 | `paths{}` | `paths` 下每个 key = 端点 path，value 含 `get`/`post`/... | `basePath` | `definitions` |
+| OpenAPI 3.0 | `paths{}` | 同 2.0 | `servers[0].url`（可能含 `{variable}` → 用 `variables[].default` 替换） | `components.schemas` |
+
+#### 参数提取
+
+每个端点下的 `parameters[]` 含：
+- `name`：参数名
+- `in`：`query` / `header` / `path` / `body`(2.0) / `cookie`(3.0)
+- `required`：是否必填
+- `type` / `format`：类型（string/integer/boolean/...）
+- `schema.$ref`：引用外部定义 → 递归解析 `definitions` / `components.schemas`
+- OpenAPI 3.0 body 参数在 `requestBody.content.{contentType}.schema`
+
+`$ref` 解析路径：`#/definitions/Name`（2.0）或 `#/components/schemas/Name`（3.0）→ 在 `definitions` / `schemas` 中查找同名对象 → 展开 `properties`。
+
+### K3. SpringBoot Actuator
+
+#### 探测路径
+
+| 路径 | 说明 |
+|------|------|
+| `/actuator` | 2.x 入口，返回 `_links` 列出所有可用端点 |
+| `/mappings` | 1.x 直接暴露；2.x 须从 `/actuator/mappings` 获取 |
+
+#### 检测特征
+
+检查 200 响应 JSON 是否含以下键之一：
+- `_links`：SpringBoot 2.x `/actuator` 根响应
+- `contexts`：SpringBoot 2.x `/actuator/mappings` 响应
+- `/**/favicon.ico`：SpringBoot 1.x `/mappings` 响应
+
+#### 端点提取
+
+| 模式 | 提取方式 |
+|------|---------|
+| `_links`（2.x） | 遍历 `_links` 下每个 key → 取 `href` → URL path 即端点 |
+| `contexts`（2.x mappings） | 正则 `"(\/[a-zA-Z\/]*)"` 提取所有 path |
+| `/**/favicon.ico`（1.x） | 遍历 JSON key → 正则 `\[([^\]]*)\]` 提取 `[METHOD path]` → 分割取 path |
+
+> Actuator 高价值端点：`/env`（环境变量/凭据）、`/heapdump`（内存转储）、`/jolokia`（JMX → RCE）、`/mappings`（全部路由）。Phase 1a 只记录端点列表，不深入利用。
+
+### K4. GraphQL
+
+#### 探测路径
+
+`/graphql`、`/graphiql`、`/graphql.php`、`/graphiql.php`（拼到两个层级后）
+
+#### 检测方式
+
+对每个路径发送 POST 请求，body 为标准 introspection query：
+
+```json
+{"query": "query IntrospectionQuery{__schema{queryType{name}mutationType{name}subscriptionType{name}types{...FullType}}fragment FullType on __Type{kind name description fields(includeDeprecated:true){name description args{...InputValue} type{...TypeRef} isDeprecated deprecationReason} inputFields{...InputValue} interfaces{...TypeRef} enumValues{name description isDeprecated deprecationReason} possibleTypes{...TypeRef}}fragment InputValue on __InputValue{name description type{...TypeRef} defaultValue}fragment TypeRef on __Type{kind name ofType{kind name ofType{kind name ofType{kind name ofType{kind name ofType{kind name ofType{kind name}}}}}}}}"}
+```
+
+Content-Type: `application/json`。检查 200 响应 JSON 含 `data.__schema` 且非 null。
+
+#### 端点提取
+
+从 `__schema` 解析：
+- `queryType`：Query 根类型 → 展开其 `fields` → 每个 field = 一个 query 端点
+- `mutationType`：Mutation 根类型 → 每个 field = 一个 mutation 端点
+- 每个 field 的 `args` = 参数列表（name + type + defaultValue）
+- `inputFields`：InputObject 类型定义的字段
+
+> GraphQL 一次 introspection 即获得完整 API schema（所有 query/mutation + 类型定义 + 参数），效率远超逐接口探测。
+
+### K5. SOAP/WSDL
+
+#### 探测路径
+
+`/service`、`/services`、`/webservices`、`/webservice`（拼到两个层级后）
+
+#### 检测特征
+
+| 响应 | 特征 | 动作 |
+|------|------|------|
+| 500 | body 含 `soap:Server`（CXF 框架） | 当前 URL + `?wsdl` 获取 WSDL |
+| 200 | HTML 含 `href="xxx?wsdl"` | 正则 `href="([^"]*)\?wsdl"` 提取所有 WSDL 地址 |
+| 200 | XML 含 `<wsdl:definitions>` | 直接就是 WSDL 文档 |
+
+#### 端点提取
+
+解析 WSDL XML：
+- `<wsdl:portType>` → `<wsdl:operation>` → operation name
+- `<wsdl:binding>` → operation 的 SOAP action + URL
+- `<wsdl:service>` → service location URL
+
+### K6. 批量探测脚本框架
+
+```python
+import requests, json, urllib3
+urllib3.disable_warnings()
+
+LEVELS = ["https://app.example.com", "https://app.example.com/admin"]  # 根 + 一级路径
+
+PROBES = {
+    "swagger": ["/swagger-resources", "/v2/api-docs", "/v3/api-docs", "/api-docs", "/swagger/", "/apidocs/"],
+    "actuator": ["/actuator", "/mappings"],
+    "graphql": ["/graphql", "/graphiql", "/graphql.php", "/graphiql.php"],
+    "soap": ["/service", "/services", "/webservices", "/webservice"],
+}
+
+for base in LEVELS:
+    for typ, paths in PROBES.items():
+        for path in paths:
+            url = base + path
+            # GET for swagger/actuator/soap; POST introspection for graphql
+            # check detection signatures per K2-K5
+            # parse and merge endpoints into api_static.txt
+```
+
+> 完整脚本须包含：重定向跟随、JSON+YAML 双解析、Swagger `location` 二次跟随、GraphQL introspection POST、WSDL `?wsdl` 追加。超时 `(5, 10)`，`verify=False`。
+
+### K7. 与 Phase 1 harvest 的关系
+
+| 维度 | Phase 1（JS harvest） | Phase 1a（服务端文档探测） |
+|------|------|------|
+| 数据源 | 前端 JS bundle | 服务端 HTTP 响应 |
+| 覆盖 | 运行时调用的端点 | 文档声明的全部端点（含未调用的） |
+| 方法 | 无（静态提取） | 有（文档含 method 定义） |
+| 参数 | 须 Phase 1b 逆向 | 文档直接声明（name/type/required） |
+| 独立性 | 依赖 JS 下载 | 独立 HTTP 探测，可并行 |
+
+两者互补：Phase 1 捕获前端实际调用的接口，Phase 1a 捕获服务端声明的全部接口。合并后 `api_static.txt` 覆盖最完整。

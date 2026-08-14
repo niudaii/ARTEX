@@ -69,6 +69,7 @@ description: 收集网站API接口时调用该skill。
 全部满足方可声称 recon 完成：
 
 - [ ] **静态**：Phase 1 harvest 产出 `api_static.txt`、`routes.txt`、`js/`
+- [ ] **服务端文档**：Phase 1a 探测完成；发现的 API 文档端点已解析并合并到 `api_static.txt`
 - [ ] **运行时**：至少 depth 或 coverage 之一；coverage/both 须 **Hook 生效 + 动态枚举环**
 - [ ] **进壳**：访问业务 path 时非 `/login`（注意 hash 路由）
 - [ ] **参数**：coverage/both 完成参数触发矩阵 + `param_samples.json`；Phase 5 合并 `params_merged.json`
@@ -120,6 +121,7 @@ description: 收集网站API接口时调用该skill。
 ```
 Phase 0 分类 + OUTDIR
   → 门禁 A → Phase 1 harvest（★ 立刻运行 ★）
+  → Phase 1a 服务端 API 文档探测（Swagger/Actuator/GraphQL/WSDL）
   → Phase 1b 参数逆向
   → Phase 2 鉴权三道门 → config.json
   → 门禁 B → Phase 3 运行时 + 参数矩阵
@@ -131,12 +133,13 @@ Phase 0 分类 + OUTDIR
 
 1. [ ] **Phase 0**：初探 SPA/MPA；创建 `OUTDIR` → [Phase 0](#phase-0--分类)
 2. [ ] **门禁 A + Phase 1**：复制脚本 → **立刻** harvest → `wc -l` 校验 → [Phase 1](#phase-1--静态)
-3. [ ] **Phase 1b**：锚点扩窗 + 绑定层 → `param_candidates.json` → [Phase 1b](#phase-1b--参数逆向)
-4. [ ] **Phase 2**：鉴权三道门 → `config.json` → [Phase 2](#phase-2--鉴权三道门)
-5. [ ] **门禁 B**：调整 runtime 脚本 → [Phase 3](#phase-3--运行时)
-6. [ ] **Phase 3**：depth / coverage / both；确认进壳；参数触发矩阵 → `param_samples.json`
-7. [ ] **Phase 4**（若需要）：权限树 → patch stubs → 重跑 Phase 3 → [Phase 4](#phase-4--权限树还原)
-8. [ ] **Phase 5**：合并产出 + 报告 + `insert_assets` → [Phase 5](#phase-5--合并与报告)
+3. [ ] **Phase 1a**：服务端 API 文档探测 → 合并端点到 `api_static.txt` → [Phase 1a](#phase-1a--服务端-api-文档探测)
+4. [ ] **Phase 1b**：锚点扩窗 + 绑定层 → `param_candidates.json` → [Phase 1b](#phase-1b--参数逆向)
+5. [ ] **Phase 2**：鉴权三道门 → `config.json` → [Phase 2](#phase-2--鉴权三道门)
+6. [ ] **门禁 B**：调整 runtime 脚本 → [Phase 3](#phase-3--运行时)
+7. [ ] **Phase 3**：depth / coverage / both；确认进壳；参数触发矩阵 → `param_samples.json`
+8. [ ] **Phase 4**（若需要）：权限树 → patch stubs → 重跑 Phase 3 → [Phase 4](#phase-4--权限树还原)
+9. [ ] **Phase 5**：合并产出 + 报告 + `insert_assets` → [Phase 5](#phase-5--合并与报告)
 
 ---
 
@@ -172,6 +175,46 @@ ls OUTDIR/js | wc -l
 
 - chunk 数 vs manifest：404 须改 harvest 重试，勿手工 curl 逐个 chunk
 - `api_static.txt` 过少 → 放宽 OUTDIR 内 endpoint 正则后重跑（见 reference）
+
+### Phase 1a — 服务端 API 文档探测
+
+Phase 1 从 JS bundle 提取端点，但**服务端 API 文档**（Swagger、Actuator、GraphQL、WSDL）往往不在前端 JS 中引用。本阶段主动探测已知文档路径——一个 Swagger 文档可能一次性暴露数百个端点。
+
+#### URL 探测层级
+
+对目标的**两个层级**逐一探测（独立于 Phase 1 harvest，可并行）：
+
+| 层级 | 构造 | 示例（入口 `https://app.example.com/admin/dashboard`）|
+|------|------|------|
+| **根路径** | `scheme://host:port` | `https://app.example.com` |
+| **一级路径** | 根路径 + URL path 第一段 | `https://app.example.com/admin` |
+
+#### 检测矩阵
+
+| 类型 | 探测路径（拼到层级后） | 检测特征 | 解析目标 |
+|------|------|---------|---------|
+| **Swagger/OpenAPI** | `/swagger-resources`、`/v2/api-docs`、`/v3/api-docs`、`/api-docs`、`/swagger/`、`/apidocs/` | JSON/YAML 含 `paths` 或 `apis` 或 `basePath` 或 `servers`；HTML 含 `url:"..."` 指向 api-docs | `paths` → 每端点 method+path+parameters；`basePath`/`servers` 拼前缀；`definitions`/`components.schemas` 解析 `$ref` |
+| **Actuator** | `/actuator`、`/mappings` | JSON 含 `_links`（2.x）或 `contexts`（2.x mappings）或 `/**/favicon.ico`（1.x） | `_links` → 遍历 href → 提取端点 path；`contexts` → 正则提取 `"/[a-zA-Z/]*"` |
+| **GraphQL** | `/graphql`、`/graphiql`、`/graphql.php`、`/graphiql.php` | POST introspection query → 响应 JSON 含 `data.__schema` | `__schema.types` → 提取 query/mutation 类型、字段、参数——等同于完整 API 清单 |
+| **SOAP/WSDL** | `/service`、`/services`、`/webservices`、`/webservice` | 500 含 `soap:Server`（CXF）；200 HTML 含 `href="...?wsdl"` | 追加 `?wsdl` → 解析 WSDL → 提取 operation + binding |
+
+> Swagger `/swagger-resources` 返回数组 `[{location: "/v2/api-docs", ...}]`——须跟随 `location` 二次请求获取实际文档。跟随重定向（Swagger 文档常 302）。
+
+#### 执行规则
+
+- **必须脚本化**：Python 批量探测 2 层级 × 4 类型 × N 路径，不要逐条 curl
+- 每条请求 `timeout=(5, 10)`，HTTPS `verify=False`，跟随重定向
+- 发现文档后解析端点，合并到 `api_static.txt`，标注 `source: swagger|actuator|graphql|wsdl`
+- **边界**：只探测 + 解析文档，不对发现的端点做漏洞测试
+- GraphQL introspection query 模型已知，直接构造 POST `{"query": "query IntrospectionQuery{__schema{...}}"}` 即可
+- 详细探测路径、检测签名与解析字段见 [reference.md](reference.md) K 节
+
+#### 产出
+
+| 文件 | 内容 |
+|------|------|
+| `api_docs_found.json` | `[{ type, url, endpoint_count }]` 列表 |
+| `api_static.txt`（追加） | 解析出的端点，标注 `source: api-doc` |
 
 ### Phase 1b — 参数逆向
 
@@ -365,6 +408,7 @@ stub 检查：外层 `response_code` 与拦截器门一致；flat codes 与 tree
 | 文件 | 阶段 | 内容 |
 |---|---|---|
 | `js/`、`api_static.txt`、`routes.txt`、`chunkmap.txt` | 1 | 静态 bundle 与 path |
+| `api_docs_found.json` | 1a | 发现的服务端 API 文档（类型、URL、端点数） |
 | `param_candidates.json` | 1b | 静态参数字段候选 |
 | `config.json` | 2 | 三道门 + runtime 配置 |
 | `runtime_api.json` | 3a | depth 详细录制（含 WS/SSE） |

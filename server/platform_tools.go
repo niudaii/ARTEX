@@ -4,11 +4,14 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"log"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/popo"
 	actool "github.com/Autumn-27/norma/tool"
 )
 
@@ -24,6 +27,7 @@ func (s *Server) platformTools() []actool.CoreTool {
 		s.toolCreateMCP(),
 		s.toolUpdateMCP(),
 		s.toolDeleteAssetsByHost(),
+		s.toolSendMe(),
 	}
 }
 
@@ -33,6 +37,7 @@ var platformToolKeys = []string{
 	"create_custom_tool", "update_custom_tool",
 	"create_mcp", "update_mcp",
 	"delete_assets_by_host",
+	"send_me",
 }
 
 // ---- assets ----
@@ -318,3 +323,73 @@ func (s *Server) toolUpdateMCP() actool.CoreTool {
 			return actool.Text(fmt.Sprintf("mcp updated: id=%d", a.ID)), nil
 		})
 }
+
+// ---- notify ----
+
+// popoRobot is a lazily-initialized singleton; the token is cached inside.
+var (
+	popoOnce   sync.Once
+	popoRobot  *popo.Robot
+	popoConfig popoCfg
+)
+
+type popoCfg struct {
+	appKey    string
+	appSecret string
+	notifyTo  string
+}
+
+// loadPopoConfig reads POPO robot credentials from env vars with built-in defaults.
+func loadPopoConfig() popoCfg {
+	appKey := os.Getenv("ARTEX_POPO_APP_KEY")
+	if appKey == "" {
+		appKey = "REDACTED_POPO_KEY"
+	}
+	appSecret := os.Getenv("ARTEX_POPO_APP_SECRET")
+	if appSecret == "" {
+		appSecret = "REDACTED_POPO_SECRET"
+	}
+	notifyTo := os.Getenv("ARTEX_POPO_NOTIFY_TO")
+	if notifyTo == "" {
+		notifyTo = "REDACTED_EMAIL"
+	}
+	return popoCfg{appKey: appKey, appSecret: appSecret, notifyTo: notifyTo}
+}
+
+// popoRobotSingleton returns the cached robot, creating it on first use.
+func popoRobotSingleton() *popo.Robot {
+	popoOnce.Do(func() {
+		popoConfig = loadPopoConfig()
+		popoRobot = popo.NewRobot(popoConfig.appKey, popoConfig.appSecret)
+	})
+	return popoRobot
+}
+
+// toolSendMe sends a POPO message to notify me (the operator). Designed for
+// important events such as a failed vulnerability retest: the agent calls it with
+// a formatted message including the vulnerability title, link, and task link.
+func (s *Server) toolSendMe() actool.CoreTool {
+	return wrTool("send_me",
+		"通过 POPO 机器人给主人发一条通知消息。\n"+
+			"典型场景：漏洞复测未通过时，发送漏洞标题、漏洞链接和 ARTEX 任务链接。\n"+
+			"消息内容由调用方组织，直接原样发送。",
+		objSchema(map[string]any{
+			"message": strParam("要发送的消息正文。例如：漏洞复测未通过 — 漏洞标题：XXX，漏洞链接：https://...，ARTEX 任务链接：https://..."),
+		}, "message"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				Message string `json:"message"`
+			}
+			_ = json.Unmarshal(in, &a)
+			if strings.TrimSpace(a.Message) == "" {
+				return actool.Errorf("message 不能为空"), nil
+			}
+			robot := popoRobotSingleton()
+			if err := robot.SendMessage(popoConfig.notifyTo, a.Message); err != nil {
+				log.Printf("[send_me] 发送失败: %v", err)
+				return actool.Errorf("发送失败: " + err.Error()), nil
+			}
+			return actool.Text("消息已发送"), nil
+		})
+}
+

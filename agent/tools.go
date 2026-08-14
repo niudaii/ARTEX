@@ -636,6 +636,15 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 			_ = json.Unmarshal(in, &a)
 			t.GoalMet = true
 			t.Reason = a.Reason
+			// goal_met 绕过 prove_goal 逐个证明直接收官;把所有未 met 的 goal 节点刷成
+			// met,使进度统计(GoalCountsAll / stats)与 done 终态一致,避免"已完成但 0/N"。
+			if goals, err := t.ts.ListByKind(db.KindGoal, 1000); err == nil {
+				for _, g := range goals {
+					if g.State != "met" {
+						_ = t.ts.SetNodeState(g.ID, "met")
+					}
+				}
+			}
 			return actool.Text("acknowledged: goal marked met"), nil
 		})
 }
@@ -652,10 +661,15 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 			"asset_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "受影响资产 id（可选，0/1/多个）：参数/端点/站点等。一个漏洞影响多处可全填，纯观察可不填。"},
 			"evidence":    str("证据/PoC 文本"),
 			"source_file": str("泄露源文件（可选）：当漏洞涉及前端 JS 凭证泄露或算法泄露时，填写泄露了密钥/签名算法/加密逻辑的具体 JS 文件 URL 或路径（如 https://example.com/static/js/main.abc123.js）。非此类漏洞不填。"),
+			"harm":         str("漏洞危害（可选）：利用场景与影响范围描述。会话快速记录时可留空，报告生成时补充。"),
+			"fix":          str("修复建议（可选）：具体修复措施与优先级。会话快速记录时可留空，报告生成时补充。"),
+			"request":      str("请求包（可选）：Burp Suite raw 格式的完整 HTTP 请求，含请求行、请求头、请求体。Web 类漏洞优先填写。"),
+			"response":     str("响应包（可选）：Burp Suite raw 格式的完整 HTTP 响应，含状态行、响应头、响应体。Web 类漏洞优先填写。"),
+			"repro_cmd":    str("复现命令（可选）：一行 curl 或 python 命令，可直接复制执行复现漏洞。"),
 		}, "vulnclass", "severity", "summary"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
-				VulnClass, Severity, Summary, Evidence, SourceFile string
+				VulnClass, Severity, Summary, Evidence, SourceFile, Harm, Fix, Request, Response, ReproCmd string
 				IntentID                                           json.RawMessage   `json:"intent_id"`
 				AssetIDs                                           []json.RawMessage `json:"asset_ids"`
 			}
@@ -664,6 +678,21 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 				"evidence": map[string]any{"by": t.worker, "poc": a.Evidence}}
 			if a.SourceFile != "" {
 				payload["source_file"] = a.SourceFile
+			}
+			if a.Harm != "" {
+				payload["harm"] = a.Harm
+			}
+			if a.Fix != "" {
+				payload["fix"] = a.Fix
+			}
+			if a.Request != "" {
+				payload["request"] = a.Request
+			}
+			if a.Response != "" {
+				payload["response"] = a.Response
+			}
+			if a.ReproCmd != "" {
+				payload["repro_cmd"] = a.ReproCmd
 			}
 			var anchors []int64
 			for _, raw := range a.AssetIDs {
@@ -681,7 +710,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 				if intent := pid(a.IntentID); intent > 0 {
 					_ = t.ts.Link(intent, db.RelYields, id) // chain: intent -> finding
 				}
-				_, _ = t.ts.AddStandaloneFinding(t.taskID, id, a.VulnClass, a.Severity, a.Summary, a.Evidence, t.worker, anchors, a.SourceFile)
+				_, _ = t.ts.AddStandaloneFinding(t.taskID, id, a.VulnClass, a.Severity, a.Summary, a.Evidence, t.worker, anchors, a.SourceFile, a.Harm, a.Fix, a.Request, a.Response, a.ReproCmd)
 			} else {
 				// conversation context: no exploration store available, cannot record finding
 				return actool.Errorf("report_finding 需要任务上下文（exploration store 未初始化）"), nil

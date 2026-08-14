@@ -71,6 +71,7 @@ func preview(s string, n int) string {
 const (
 	modelErrorRetries      = 2               // model_error 收场后额外重试的次数
 	modelErrorRetryBackoff = 3 * time.Second // 每次重试前的退避
+	stalledWakeInterval    = 30 * time.Second // planner 自唤醒间隔:没人 Notify 时定期重新评估
 )
 
 // Engine drives the event-driven exploration loop with real LLM agents
@@ -125,7 +126,15 @@ type Engine struct {
 	// resolve, if set, returns a task's dedicated planner/worker when it pins a
 	// specific LLM profile (nil,nil = use the global active pair). Set once at startup.
 	resolve func(t *Task) (*agent.Planner, *agent.Worker)
+
+	// onTaskDone, if set, is called when a task reaches a terminal state
+	// (done/failed/timeout). Used by the Server to persist the final report.
+	onTaskDone func(taskID string)
 }
+
+// SetOnTaskDone registers a callback fired when a task reaches a terminal state.
+// The Server uses it to persist the final report Markdown.
+func (e *Engine) SetOnTaskDone(fn func(taskID string)) { e.onTaskDone = fn }
 
 // nextPlannerRound returns the next planner round number for a task (1-based).
 func (e *Engine) nextPlannerRound(taskID string) int {
@@ -481,11 +490,30 @@ func (e *Engine) Run(ctx context.Context, t *Task) {
 }
 
 func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
+	// stalledWake: periodic self-wake so a task that produced no new intents and
+	// has no in-flight work (nobody calls Notify) still gets re-evaluated. Without
+	// this the planner blocks on <-t.notify forever after an "empty" round.
+	stalledWake := time.NewTimer(stalledWakeInterval)
+	defer stalledWake.Stop()
 	for {
 		select {
 		case <-ctx.Done():
 			return
+		case <-stalledWake.C:
+			stalledWake.Reset(stalledWakeInterval)
+			// Route through the normal notify path so the wake goes through the
+			// same debounce + guard checks (paused/terminal/settling). If the
+			// task genuinely has nothing to do, Plan() will be a cheap no-op.
+			t.Notify()
+			continue
 		case <-t.notify:
+			if !stalledWake.Stop() {
+				select {
+				case <-stalledWake.C:
+				default:
+				}
+			}
+			stalledWake.Reset(stalledWakeInterval)
 			// debounce: coalesce a burst of changes into one planning round
 			timer := time.NewTimer(e.debounce)
 		drain:
@@ -539,6 +567,10 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 				if err := e.m.SetTaskStatus(t.ID, "done"); err != nil {
 					log.Printf("[planner] task %s 标记完成落库失败: %v", t.ID, err)
 				}
+				// persist the LLM-filtered report now that the task is done.
+				if e.onTaskDone != nil {
+					go e.onTaskDone(t.ID)
+				}
 				// 任务已判完成 → 立刻取消在跑的 worker：它们手头的意图跑出来也没意义了。
 				// 下一轮 worker 循环撞终态门就不再领新意图;被取消的这批走下方"任务已完成"分支
 				// 归为 stopped(而非 blocked)。
@@ -585,6 +617,11 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 		}
 		intent := e.claimNext(t, name)
 		if intent == nil {
+			// Frontier empty: nudge the planner so it can produce new intents or
+			// declare the task done. Without this the planner only wakes on
+			// NotifyDone (from a finishing worker) — if all workers are idle nobody
+			// fires it and the task stalls until the 30s self-wake timer kicks in.
+			t.Notify()
 			if sleepCtx(ctx, 800*time.Millisecond) {
 				return
 			}

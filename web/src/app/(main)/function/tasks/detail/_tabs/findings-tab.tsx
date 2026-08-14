@@ -39,6 +39,36 @@ function Row({ f }: { f: Finding }) {
           <pre className="overflow-auto rounded-md border bg-background p-3 font-mono text-xs whitespace-pre-wrap">
             {f.evidence}
           </pre>
+          {f.request && (
+            <div className="mt-2">
+              <div className="mb-1 text-xs font-medium text-muted-foreground">
+                请求包
+              </div>
+              <pre className="overflow-auto rounded-md border bg-background p-3 font-mono text-xs whitespace-pre-wrap">
+                {f.request}
+              </pre>
+            </div>
+          )}
+          {f.response && (
+            <div className="mt-2">
+              <div className="mb-1 text-xs font-medium text-muted-foreground">
+                响应包
+              </div>
+              <pre className="overflow-auto rounded-md border bg-background p-3 font-mono text-xs whitespace-pre-wrap">
+                {f.response}
+              </pre>
+            </div>
+          )}
+          {f.repro_cmd && (
+            <div className="mt-2">
+              <div className="mb-1 text-xs font-medium text-muted-foreground">
+                复现命令
+              </div>
+              <pre className="overflow-auto rounded-md border bg-background p-3 font-mono text-xs whitespace-pre-wrap">
+                {f.repro_cmd}
+              </pre>
+            </div>
+          )}
           {f.source_file && (
             <div className="mt-2">
               <div className="mb-1 text-xs font-medium text-muted-foreground">
@@ -47,6 +77,22 @@ function Row({ f }: { f: Finding }) {
               <code className="block overflow-x-auto rounded-md border bg-background p-2 font-mono text-xs">
                 {f.source_file}
               </code>
+            </div>
+          )}
+          {f.harm && (
+            <div className="mt-2">
+              <div className="mb-1 text-xs font-medium text-muted-foreground">
+                漏洞危害
+              </div>
+              <p className="text-sm text-foreground whitespace-pre-wrap">{f.harm}</p>
+            </div>
+          )}
+          {f.fix && (
+            <div className="mt-2">
+              <div className="mb-1 text-xs font-medium text-muted-foreground">
+                修复建议
+              </div>
+              <p className="text-sm text-foreground whitespace-pre-wrap">{f.fix}</p>
             </div>
           )}
         </div>

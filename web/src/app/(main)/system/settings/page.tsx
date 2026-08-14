@@ -2,12 +2,13 @@
 
 import * as React from "react";
 
-import { CpuIcon, RadioTowerIcon, SearchIcon } from "lucide-react";
+import { CpuIcon, RadioTowerIcon, SearchIcon, ShieldIcon } from "lucide-react";
 import { toast } from "sonner";
 
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
 import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
@@ -32,6 +33,8 @@ export default function SystemSettingsPage() {
   const [pyInterp, setPyInterp] = React.useState("");
   const [workers, setWorkers] = React.useState("3");
   const [savingWorkers, setSavingWorkers] = React.useState(false);
+  const [filterPrompt, setFilterPrompt] = React.useState("");
+  const [savingFilter, setSavingFilter] = React.useState(false);
 
   const apply = React.useCallback((s: Settings) => {
     setTrafficCapture(!!s.traffic_capture);
@@ -42,7 +45,17 @@ export default function SystemSettingsPage() {
     setProxyInput(s.web_search_proxy || "");
     setPyInterp(s.python_interpreter || "");
     setWorkers(String(s.workers ?? 3));
+    setFilterPrompt(s.filter_prompt ?? "");
   }, []);
+
+  const saveFilter = () => {
+    setSavingFilter(true);
+    api
+      .setSettings({ filter_prompt: filterPrompt })
+      .then(() => toast.success("过滤提示词已保存"))
+      .catch(() => toast.error("保存失败"))
+      .finally(() => setSavingFilter(false));
+  };
 
   const saveWorkers = () => {
     const n = Number(workers);
@@ -394,6 +407,30 @@ export default function SystemSettingsPage() {
               保存
             </Button>
           </div>
+        </CardContent>
+      </Card>
+
+      <Card className="max-w-2xl">
+        <CardHeader>
+          <CardTitle className="flex items-center gap-2 text-base">
+            <ShieldIcon className="size-4" />
+            漏洞过滤 · LLM 提示词
+          </CardTitle>
+          <CardDescription>
+            自定义漏洞过滤的系统提示词，用于报告生成时 LLM 判断每个漏洞是否应忽略。留空使用内置默认标准（覆盖 XSS/CORS/CSRF/SSRF/重定向/AI安全/信息泄露等忽略规则）。
+          </CardDescription>
+        </CardHeader>
+        <CardContent className="flex flex-col gap-3">
+          <Textarea
+            className="min-h-[200px] font-mono text-xs"
+            placeholder="留空使用内置默认过滤标准…"
+            value={filterPrompt}
+            disabled={!loaded || savingFilter}
+            onChange={(e) => setFilterPrompt(e.target.value)}
+          />
+          <Button onClick={saveFilter} disabled={!loaded || savingFilter} className="self-start">
+            {savingFilter ? "保存中…" : "保存"}
+          </Button>
         </CardContent>
       </Card>
 

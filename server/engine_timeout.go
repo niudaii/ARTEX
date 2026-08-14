@@ -183,6 +183,10 @@ func (e *Engine) settleTask(ctx context.Context, t *Task) {
 		log.Printf("[deadline] task %s 落终态失败: %v", t.ID, err)
 	case won:
 		log.Printf("[deadline] task %s 收尾完成,终态=%s", t.ID, status)
+		// persist the final report (LLM-filtered) now that the task reached terminal state.
+		if e.onTaskDone != nil {
+			go e.onTaskDone(t.ID)
+		}
 	default:
 		log.Printf("[deadline] task %s 收尾时已是终态,保留原状态", t.ID)
 	}

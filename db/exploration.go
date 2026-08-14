@@ -844,6 +844,6 @@ FROM activity WHERE exploration_id=$1 AND kind<>'thinking' AND id IN (`+strings.
 // AddStandaloneFinding writes a finding to the standalone findings table, which
 // persists across task deletion (task_id / node_id become NULL when the task or
 // exploration node is deleted). taskID and nodeID may be 0 (stored as NULL).
-func (s *ExplorationStore) AddStandaloneFinding(taskID, nodeID int64, vulnclass, severity, summary, evidence, worker string, assetIDs []int64, sourceFile string) (int64, error) {
-	return s.db.AddFinding(taskID, nodeID, vulnclass, severity, summary, evidence, sourceFile, worker, assetIDs)
+func (s *ExplorationStore) AddStandaloneFinding(taskID, nodeID int64, vulnclass, severity, summary, evidence, worker string, assetIDs []int64, sourceFile, harm, fix, request, response, reproCmd string) (int64, error) {
+	return s.db.AddFinding(taskID, nodeID, vulnclass, severity, summary, evidence, sourceFile, harm, fix, request, response, reproCmd, worker, assetIDs)
 }

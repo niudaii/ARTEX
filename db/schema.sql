@@ -251,6 +251,9 @@ DROP TRIGGER IF EXISTS trg_tasks_upd ON tasks;
 CREATE TRIGGER trg_tasks_upd BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
 
+-- 报告持久化：任务完成后将 LLM 过滤后的报告 Markdown 存入此列。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS report_md TEXT;
+
 -- 任务测试范围（资产覆盖度的分母 + 授权边界）。
 --   自动填(source='auto')：insertAssets 顶层按 worker 显式插入的资产类型加保守范围
 --     （root_domain→root_domain，subdomain/service/endpoint→subdomain(host)，ip→ip）；
@@ -548,6 +551,11 @@ CREATE TABLE IF NOT EXISTS findings (
 CREATE INDEX IF NOT EXISTS idx_findings_task ON findings(task_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_findings_time ON findings(created_at DESC);
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS source_file TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS harm TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS fix TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS request TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS response TEXT NOT NULL DEFAULT '';
+ALTER TABLE findings ADD COLUMN IF NOT EXISTS repro_cmd TEXT NOT NULL DEFAULT '';
 
 -- =====================================================================
 -- M. 后端日志持久化

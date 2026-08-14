@@ -29,6 +29,8 @@ import (
 
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
+const settingFilterPrompt = "filter_prompt" // LLM vulnerability filter system prompt (empty = use built-in default)
+
 type Server struct {
 	m      *Manager
 	engine *Engine
@@ -130,6 +132,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		}
 		return s.agentsForProfile(*t.LLMProfileID)
 	})
+	// persist the LLM-filtered report when a task reaches terminal state.
+	s.engine.SetOnTaskDone(s.persistTaskReport)
 	// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
 	// override row, agents keep their built-in defaults — behavior is unchanged.
 	if m.pg != nil {
@@ -625,6 +629,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	mux.HandleFunc("POST /api/settings/web-search/test", s.testWebSearch)
 	mux.HandleFunc("GET /api/report", s.getReport)
+	mux.HandleFunc("POST /api/report/filter", s.filterReport)
 	mux.HandleFunc("POST /api/chat", s.chat)
 	mux.HandleFunc("POST /api/tasks/{id}/chat/stop", s.stopChat)
 
@@ -818,6 +823,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		"stalled":       stalled,
 		"goals_total":   len(goals),
 		"goals_met":     goalsMet,
+		"engine_mode":   out["engine_mode"],
 	}
 	writeJSON(w, 200, out)
 }
@@ -853,6 +859,27 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		gc := goalCounts[t.ExpID]
 		dto.GoalsTotal = gc.Total
 		dto.GoalsMet = gc.Met
+		// engine_mode: same derivation as the stats handler so the dashboard badge
+		// matches the detail page. Terminal tasks → idle (engine not running).
+		switch {
+		case isTerminalStatus(t.Status):
+			dto.EngineMode = "idle"
+		case t.Paused || s.engine.IsPaused(t.ID):
+			dto.EngineMode = "paused"
+		case s.engine.Ready() && s.engine.Started(t.ID):
+			// stalled: engine loops alive but nothing in-flight and no activity
+			// for >60s — mirrors the stats handler so the list badge matches the
+			// detail page. Uses the in-memory inflight counter (no per-task DB
+			// query) and LastActivity already resolved above.
+			if s.engine.inflightCount(t.ID) == 0 && dto.LastActivity > 0 &&
+				time.Now().Unix()-dto.LastActivity > 60 {
+				dto.EngineMode = "stalled"
+			} else {
+				dto.EngineMode = "exploring"
+			}
+		default:
+			dto.EngineMode = "idle"
+		}
 		dtos = append(dtos, dto)
 	}
 	writeJSON(w, 200, map[string]any{"tasks": dtos, "active": active})
@@ -1887,6 +1914,7 @@ func (s *Server) settingsPayload() map[string]any {
 		"tavily_key_set":     strings.TrimSpace(tavilyKey) != "",
 		"web_search_proxy":   proxy,                       // 独立出口代理(http/https/socks5)，空=直连
 		"python_interpreter": strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
+		"filter_prompt":      s.getFilterPrompt(),          // LLM 漏洞过滤提示词(空=内置默认)
 		"workers":            s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
 	}
 }
@@ -1920,6 +1948,7 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		TavilyKey        *string `json:"tavily_search_api_key"`
 		WebSearchProxy   *string `json:"web_search_proxy"`   // 独立出口代理(http/https/socks5)；null=不改，""=清空
 		PythonInterp     *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
+		FilterPrompt     *string `json:"filter_prompt"`     // LLM 漏洞过滤提示词(空串=恢复默认)
 		Workers          *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -2140,13 +2169,45 @@ func (s *Server) fallbackChat(t *Task, msg string) string {
 	}
 }
 
-func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
-	t := s.m.ResolveTask(r.URL.Query().Get("task"))
+// getFilterPrompt returns the configured LLM filter system prompt, or the
+// built-in default when the setting is unset/empty.
+func (s *Server) getFilterPrompt() string {
+	v, ok, _ := s.m.PG().GetSetting(settingFilterPrompt)
+	if ok && strings.TrimSpace(v) != "" {
+		return v
+	}
+	return report.DefaultFilterSystemPrompt
+}
+
+// persistTaskReport generates the LLM-filtered report and saves it to the DB.
+// Called asynchronously when a task reaches terminal state (done/timeout).
+func (s *Server) persistTaskReport(taskID string) {
+	t := s.m.ResolveTask(taskID)
 	if t == nil {
-		writeErr(w, 404, "no active task")
+		log.Printf("[report/persist] task %s: task not in memory, skipping", taskID)
 		return
 	}
-	findings, _ := t.Store.ListByKind(db.KindFinding, 1000) // 纯漏洞（事实是独立的 KindFact，不进报告）
+	t.reportFiltering.Store(true)
+	defer t.reportFiltering.Store(false)
+	md := s.generateReport(t, s.newFilterProv(), s.getFilterPrompt())
+	taskIDInt, _ := strconv.ParseInt(taskID, 10, 64)
+	if err := s.m.PG().SaveReport(taskIDInt, md); err != nil {
+		log.Printf("[report/persist] task %s: %v", taskID, err)
+		return
+	}
+	log.Printf("[report/persist] task %s: report saved (%d chars)", taskID, len(md))
+}
+
+// generateReport builds the Markdown report for a task. When prov != nil,
+// applies LLM filtering with the given system prompt; otherwise renders all findings.
+func (s *Server) generateReport(t *Task, prov llm.Provider, systemPrompt string) string {
+	findings, _ := t.Store.ListByKind(db.KindFinding, 1000)
+	origCount := len(findings)
+	filteredCount := 0
+	if prov != nil {
+		findings = report.FilterFindings(s.ctx, findings, prov, systemPrompt)
+		filteredCount = origCount - len(findings)
+	}
 	counts := map[string]int{}
 	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
 		ns, _ := s.m.Assets().QueryByType(ty, 100000, 0)
@@ -2154,10 +2215,88 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 			counts[ty] = len(ns)
 		}
 	}
-	md := report.Markdown(report.Input{
+	return report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
-		AssetCounts: counts, Findings: findings,
+		AssetCounts: counts, Findings: findings, FilteredCount: filteredCount,
 	})
+}
+
+// newFilterProv creates an llm.Provider for filtering, or nil when LLM is off.
+func (s *Server) newFilterProv() llm.Provider {
+	s.cfgMu.Lock()
+	cfg, llmOn := s.llmCfg, s.llmOn
+	s.cfgMu.Unlock()
+	if !llmOn {
+		return nil
+	}
+	prov, err := cfg.NewProvider()
+	if err != nil {
+		return nil
+	}
+	return prov
+}
+
+// filterReport starts LLM filtering asynchronously and returns immediately.
+// The frontend polls GET /api/report until X-Report-Filtering clears.
+// POST /api/report/filter?task=xxx
+func (s *Server) filterReport(w http.ResponseWriter, r *http.Request) {
+	t := s.m.ResolveTask(r.URL.Query().Get("task"))
+	if t == nil {
+		writeErr(w, 404, "no active task")
+		return
+	}
+	if t.reportFiltering.Load() {
+		writeErr(w, 409, "正在过滤中，请稍候")
+		return
+	}
+	prov := s.newFilterProv()
+	if prov == nil {
+		writeErr(w, 400, "LLM 未配置，无法过滤")
+		return
+	}
+	t.reportFiltering.Store(true)
+	go func() {
+		defer t.reportFiltering.Store(false)
+		md := s.generateReport(t, prov, s.getFilterPrompt())
+		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
+		if err := s.m.PG().SaveReport(taskIDInt, md); err != nil {
+			log.Printf("[report/filter] task %s persist: %v", t.ID, err)
+		}
+		log.Printf("[report/filter] task %s: filter done (%d chars)", t.ID, len(md))
+	}()
+	writeJSON(w, 202, map[string]any{"status": "filtering"})
+}
+
+func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
+	t := s.m.ResolveTask(r.URL.Query().Get("task"))
+	if t == nil {
+		writeErr(w, 404, "no active task")
+		return
+	}
+	// Signal filtering-in-progress via header so the frontend can keep polling.
+	if t.reportFiltering.Load() {
+		w.Header().Set("X-Report-Filtering", "1")
+	}
+	noFilter := r.URL.Query().Get("nofilter") == "1"
+	// For terminal tasks with a persisted report, return it directly (unless ?nofilter=1).
+	if !noFilter && db.IsTerminal(t.Status) {
+		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
+		if md, ok, _ := s.m.PG().GetReport(taskIDInt); ok {
+			w.Header().Set("X-Report-Filtered", "1")
+			w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+			w.WriteHeader(200)
+			_, _ = w.Write([]byte(md))
+			return
+		}
+		// No persisted report (e.g. task completed before this feature). Skip LLM
+		// filtering — render instantly like the old behavior. The filtered report
+		// was only persisted at completion time; re-running the filter now would block
+		// the HTTP request for up to 90s.
+		noFilter = true
+	}
+	// Generate on-the-fly — always unfiltered (instant). LLM filtering is applied
+	// via the explicit filter button or automatically on task completion.
+	md := s.generateReport(t, nil, s.getFilterPrompt())
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(200)
 	_, _ = w.Write([]byte(md))
@@ -2184,6 +2323,7 @@ func cors(next http.Handler) http.Handler {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET,POST,PUT,DELETE,OPTIONS")
 		w.Header().Set("Access-Control-Allow-Headers", "Content-Type")
+		w.Header().Set("Access-Control-Expose-Headers", "X-Report-Filtering, X-Report-Filtered")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(204)
 			return

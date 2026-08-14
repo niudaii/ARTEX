@@ -15,6 +15,11 @@ type DBFinding struct {
 	Summary         string
 	Evidence        string
 	SourceFile      string
+	Harm            string
+	Fix             string
+	Request         string
+	Response        string
+	ReproCmd        string
 	Worker          string
 	AssetIDs        []int64
 	CreatedAt       time.Time
@@ -23,7 +28,7 @@ type DBFinding struct {
 
 // AddFinding inserts a finding into the standalone findings table. taskID and
 // nodeID may be 0 (stored as NULL). Returns the new finding id.
-func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, severity, summary, evidence, sourceFile, worker string, assetIDs []int64) (int64, error) {
+func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, severity, summary, evidence, sourceFile, harm, fix, request, response, reproCmd, worker string, assetIDs []int64) (int64, error) {
 	aidsJSON, _ := json.Marshal(assetIDs)
 	if assetIDs == nil {
 		aidsJSON = []byte("[]")
@@ -37,9 +42,9 @@ func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, severity, summary, evid
 	}
 	var id int64
 	err := d.QueryRow(
-		`INSERT INTO findings (task_id, node_id, vulnclass, severity, summary, evidence, source_file, worker, asset_ids)
-		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9) RETURNING id`,
-		tid, nid, vulnclass, severity, summary, evidence, sourceFile, worker, string(aidsJSON),
+		`INSERT INTO findings (task_id, node_id, vulnclass, severity, summary, evidence, source_file, harm, fix, request, response, repro_cmd, worker, asset_ids)
+		 VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14) RETURNING id`,
+		tid, nid, vulnclass, severity, summary, evidence, sourceFile, harm, fix, request, response, reproCmd, worker, string(aidsJSON),
 	).Scan(&id)
 	return id, err
 }
@@ -51,7 +56,7 @@ func (d *DB) ListFindings(limit int) ([]*DBFinding, error) {
 	}
 	rows, err := d.Query(`
 		SELECT f.id, f.task_id, f.node_id, f.vulnclass, f.severity, f.summary,
-		       f.evidence, f.source_file, f.worker, f.asset_ids, f.created_at,
+		       f.evidence, f.source_file, f.harm, f.fix, f.request, f.response, f.repro_cmd, f.worker, f.asset_ids, f.created_at,
 		       COALESCE(t.description, '') AS task_description
 		FROM findings f
 		LEFT JOIN tasks t ON f.task_id = t.id
@@ -66,7 +71,7 @@ func (d *DB) ListFindings(limit int) ([]*DBFinding, error) {
 		f := &DBFinding{}
 		var aidsJSON string
 		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Severity,
-			&f.Summary, &f.Evidence, &f.SourceFile, &f.Worker, &aidsJSON, &f.CreatedAt, &f.TaskDescription); err != nil {
+			&f.Summary, &f.Evidence, &f.SourceFile, &f.Harm, &f.Fix, &f.Request, &f.Response, &f.ReproCmd, &f.Worker, &aidsJSON, &f.CreatedAt, &f.TaskDescription); err != nil {
 			return nil, err
 		}
 		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
