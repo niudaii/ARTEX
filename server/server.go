@@ -1051,8 +1051,9 @@ type createTaskReq struct {
 	Description     string `json:"description"`
 	Goal            string `json:"goal"`
 	LLMProfileID    *int64 `json:"llm_profile_id,omitempty"`    // 指定运行本任务的 LLM 配置;省略/null=用激活配置
-	TimeoutSeconds  int    `json:"timeout_seconds"`             // 任务级超时(秒);0/省略=不限时
-	SeedFirstIntent *bool  `json:"seed_first_intent,omitempty"` // 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;省略/null=默认开启。CTF 常一 work 解决,省掉开跑前的 planner 轮。
+	TimeoutSeconds  int    `json:"timeout_seconds"`               // 任务级超时(秒);0/省略=不限时
+	PlanHeartbeatSeconds int `json:"plan_heartbeat_seconds"`     // planner 心跳触发间隔(秒);0/省略=默认600(10min);下限=默认=600,低于自动抬到600
+	SeedFirstIntent *bool  `json:"seed_first_intent,omitempty"` // 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;省略/null=默认关闭,走标准先规划再执行。显式传 true 才开(CTF 常一 work 解决时可省掉开跑前的 planner 轮)。
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -1075,40 +1076,16 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	if req.TimeoutSeconds < 0 {
 		req.TimeoutSeconds = 0
 	}
-	t, err := s.m.CreateTask(req.Description, req.Goal, req.LLMProfileID, req.TimeoutSeconds)
+	t, err := s.m.CreateTask(req.Description, req.Goal, req.LLMProfileID, req.TimeoutSeconds, req.PlanHeartbeatSeconds)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	log.Printf("[task] 新建任务 #%s «%s» 目标: %s", t.ID, req.Description, req.Goal)
-	// seed initial asset(s) from goal/description so the event-driven loop has a root.
-	s.seed(t, req.Description+" "+req.Goal)
-	// 种子意图(默认开启):直接把"描述+目标"作为一条待办意图写入 frontier,worker 轮询即可
-	// 领取开跑,省掉开跑前的首轮 planner LLM;跑完由 NotifyDone 正常唤醒 planner 判定/补充。
-	// CTF 场景常一个 work 就解决。仅显式传 false 才关闭。
-	if req.SeedFirstIntent == nil || *req.SeedFirstIntent {
-		s.seedFirstIntent(t)
-	}
-	// Return immediately — goal decomposition is async so the UI isn't blocked.
+	// 共享的建后流程(seed + 种子意图 + 后台目标分解 + engine.Run),与 spawn_task 复用同一段。
+	// launchTask 内部异步,不阻塞 UI —— 目标分解在后台可见地进行。
+	s.launchTask(t, req.Description+" "+req.Goal, req.SeedFirstIntent != nil && *req.SeedFirstIntent)
 	writeJSON(w, 201, t)
-	// Background: emit round-0 marker, decompose goals via LLM, then start engine.
-	// Engine starts only after goals are seeded to avoid a race where the planner
-	// fires before any goal nodes exist.
-	go func() {
-		s.engine.emitActivity(t, db.Activity{Worker: "planner", Kind: "round",
-			Summary: "第 0 轮目标拆解"})
-		goals := s.createGoals(s.ctx, t, func(r db.Activity) {
-			s.engine.emitActivity(t, r)
-		})
-		for _, g := range goals {
-			summary := g.Text
-			if g.VulnClass != "" {
-				summary = fmt.Sprintf("[%s] %s", g.VulnClass, g.Text)
-			}
-			s.engine.emitActivity(t, db.Activity{Worker: "planner", Kind: "text", Summary: summary})
-		}
-		s.engine.Run(s.ctx, t)
-	}()
 }
 
 var (
@@ -1182,13 +1159,11 @@ func (s *Server) seed(t *Task, text string) {
 	scheme, host, port, ok := parseTarget(text)
 	if !ok {
 		log.Printf("[seed] task %s: 未能从 %q 解析出目标 host/IP，不创建站点（请手动配置 scope）", t.ID, text)
-		t.Notify()
 		return
 	}
 	// P0-1 guard: never treat the configured LLM gateway as a target.
 	if gw := s.llmHost(); gw != "" && host == gw {
 		log.Printf("[seed] task %s: 目标 %q 是 LLM 网关，拒绝作为渗透目标", t.ID, host)
-		t.Notify()
 		return
 	}
 
@@ -1214,7 +1189,9 @@ func (s *Server) seed(t *Task, text string) {
 		}
 	}
 	log.Printf("[seed] task %s: 目标站点 %s", t.ID, u)
-	t.Notify()
+	// 不在这里 Notify:首轮是否触发统一由 engine.Run 的 HasActiveIntent 决定(种子意图任务
+	// 跳过首轮)。seed 早于 Run 执行,若在此 Notify 会 buffered 到通道、被 plannerLoop 启动时
+	// 消费掉而绕过 Run 的门控 → 种子任务仍误触发首轮。
 }
 
 // seedFirstIntent writes ONE open intent (summary = 描述+目标) into the task's

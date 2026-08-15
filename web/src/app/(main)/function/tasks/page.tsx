@@ -111,7 +111,8 @@ export default function TasksPage() {
   const [profiles, setProfiles] = React.useState<LLMProfile[]>([]);
   const [llmProfile, setLlmProfile] = React.useState<string>(ACTIVE_PROFILE); // sentinel = active
   const [timeoutMin, setTimeoutMin] = React.useState(""); // 任务级超时(分钟);空/0 = 不限时
-  const [seedFirstIntent, setSeedFirstIntent] = React.useState(true); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑
+  const [heartbeatMin, setHeartbeatMin] = React.useState("10"); // planner 心跳(分钟);默认10,下限10(与后端一致)
+  const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑;默认关闭,走标准先规划再执行
   const [open, setOpen] = React.useState(false);
   const [query, setQuery] = React.useState("");
   const [statusFilter, setStatusFilter] = React.useState<TaskStatus | "all">("all");
@@ -173,13 +174,15 @@ export default function TasksPage() {
     try {
       const pid = llmProfile === ACTIVE_PROFILE ? undefined : Number(llmProfile);
       const timeoutSec = Math.max(0, Math.floor(Number(timeoutMin) || 0)) * 60;
-      await api.createTask(description.trim(), goal.trim(), pid, timeoutSec, seedFirstIntent);
+      const heartbeatSec = Math.max(10, Math.floor(Number(heartbeatMin) || 10)) * 60; // 下限 10min，与后端归一一致
+      await api.createTask(description.trim(), goal.trim(), pid, timeoutSec, seedFirstIntent, heartbeatSec);
       toast.success("任务已创建");
       setDescription("");
       setGoal("");
       setLlmProfile(ACTIVE_PROFILE);
       setTimeoutMin("");
-      setSeedFirstIntent(true);
+      setHeartbeatMin("10");
+      setSeedFirstIntent(false);
       setOpen(false);
       load();
     } catch (e) {
@@ -301,6 +304,21 @@ export default function TasksPage() {
                   />
                   <p className="text-muted-foreground text-xs">
                     到点后触发优雅收尾（各 agent 写回 + planner 终局判定），任务进入 timeout 终态。
+                  </p>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="heartbeat-min">planner 心跳（分钟）</Label>
+                  <Input
+                    id="heartbeat-min"
+                    type="number"
+                    min={10}
+                    className="w-40"
+                    placeholder="默认 10"
+                    value={heartbeatMin}
+                    onChange={(e) => setHeartbeatMin(e.target.value)}
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    距上轮规划结束/任务开始满该时长且期间无触发，自动触发一轮规划（兜底卡死 + 唤醒去监督在跑的 worker）。下限 10 分钟。
                   </p>
                 </div>
                 <div className="grid gap-2">

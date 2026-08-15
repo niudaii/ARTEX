@@ -238,6 +238,7 @@ CREATE TABLE IF NOT EXISTS tasks (
     company_id     BIGINT REFERENCES companies(id) ON DELETE SET NULL,
     parent_ref     TEXT,
     timeout_seconds INTEGER NOT NULL DEFAULT 0,
+    plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300,
     first_run_at   TIMESTAMPTZ,
     deadline_at    TIMESTAMPTZ,
     deleted_at     TIMESTAMPTZ,
@@ -250,6 +251,8 @@ CREATE INDEX IF NOT EXISTS idx_tasks_status ON tasks(status)          WHERE dele
 DROP TRIGGER IF EXISTS trg_tasks_upd ON tasks;
 CREATE TRIGGER trg_tasks_upd BEFORE UPDATE ON tasks
     FOR EACH ROW EXECUTE FUNCTION set_updated_at();
+-- planner 心跳触发间隔(秒);补旧库。默认 300s(5min)。见 docs/planner-trigger-impl-plan.md
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300;
 
 -- 报告持久化：任务完成后将 LLM 过滤后的报告 Markdown 存入此列。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS report_md TEXT;
@@ -300,7 +303,7 @@ CREATE TABLE IF NOT EXISTS agents (
     task_timeout_wrapup_prompt    TEXT NOT NULL DEFAULT '',
     task_timeout_wrapup_max_turns INTEGER NOT NULL DEFAULT 0,
     trigger_run_mode     TEXT    NOT NULL DEFAULT 'serial'  CHECK (trigger_run_mode IN ('serial','parallel')),
-    trigger_merge_mode   TEXT    NOT NULL DEFAULT 'by_task' CHECK (trigger_merge_mode IN ('by_task','all','none')),
+    trigger_merge_mode   TEXT    NOT NULL DEFAULT 'all' CHECK (trigger_merge_mode IN ('by_task','all','none')),
     trigger_max_parallel INTEGER NOT NULL DEFAULT 5,
     created_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
     updated_at        TIMESTAMPTZ NOT NULL DEFAULT now(),
@@ -308,7 +311,7 @@ CREATE TABLE IF NOT EXISTS agents (
 );
 -- 加列迁移(已发版,旧库升级补列;新库 CREATE 已含。迁移不带 CHECK:旧库存量安全 + 后端写入白名单兜底)。
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS trigger_run_mode     TEXT    NOT NULL DEFAULT 'serial';
-ALTER TABLE agents ADD COLUMN IF NOT EXISTS trigger_merge_mode   TEXT    NOT NULL DEFAULT 'by_task';
+ALTER TABLE agents ADD COLUMN IF NOT EXISTS trigger_merge_mode   TEXT    NOT NULL DEFAULT 'all';
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS trigger_max_parallel INTEGER NOT NULL DEFAULT 5;
 -- per-agent LLM 绑定(agent 级默认模型):列自初版即在上方 CREATE 中,此 ALTER 仅为极旧库兜底(幂等)。
 ALTER TABLE agents ADD COLUMN IF NOT EXISTS llm_profile_id BIGINT REFERENCES llm_profiles(id) ON DELETE SET NULL;
