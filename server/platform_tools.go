@@ -393,3 +393,24 @@ func (s *Server) toolSendMe() actool.CoreTool {
 		})
 }
 
+// notifyTaskDone sends a POPO notification when a task reaches a terminal state.
+// Best-effort: errors are logged but never propagated, so a POPO outage cannot
+// block the task-completion path.
+func (s *Server) notifyTaskDone(taskID string) {
+	t := s.m.ResolveTask(taskID)
+	if t == nil {
+		return
+	}
+	desc := t.Description
+	if len([]rune(desc)) > 80 {
+		desc = string([]rune(desc)[:80]) + "…"
+	}
+	msg := fmt.Sprintf("✅ ARTEX 任务完成\n任务ID: %s\n描述: %s\n状态: %s", taskID, desc, t.Status)
+	if base := os.Getenv("ARTEX_TASK_URL"); base != "" {
+		msg += fmt.Sprintf("\n链接: %s/function/tasks/detail/%s", strings.TrimRight(base, "/"), taskID)
+	}
+	robot := popoRobotSingleton()
+	if err := robot.SendMessage(popoConfig.notifyTo, msg); err != nil {
+		log.Printf("[notify] task %s: POPO 发送失败: %v", taskID, err)
+	}
+}

@@ -508,6 +508,7 @@ function GraphInner({ taskId }: { taskId: string }) {
   const applyData = React.useCallback(() => {
     const graph = graphRef.current;
     if (!graph) return;
+    try { graph.stopLayout(); } catch { /* 上一次布局尚未启动 */ }
     graph.setData(gDataRef.current);
     void graph.render();
   }, []);
@@ -579,8 +580,15 @@ function GraphInner({ taskId }: { taskId: string }) {
     })();
     return () => {
       destroyed = true;
-      graph?.destroy();
+      const g = graph;
       graphRef.current = null;
+      if (!g) return;
+      try { g.stopLayout(); } catch { /* 布局尚未启动 */ }
+      // @antv/g6 v5.1.1: stopLayout 会 resolve 挂起的异步 postLayout promise，
+      // 但 destroy 同步重置 context={} → resolve 的微任务读到空 context 上的
+      // transform 为 undefined → getTransformInstance 崩溃。
+      // 先让 postLayout 微任务排空（macrotask），再 destroy。
+      setTimeout(() => { try { g.destroy(); } catch { /* 已销毁 */ } }, 0);
     };
   }, [applyData]);
 

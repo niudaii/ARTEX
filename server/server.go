@@ -133,7 +133,11 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		return s.agentsForProfile(*t.LLMProfileID)
 	})
 	// persist the LLM-filtered report when a task reaches terminal state.
-	s.engine.SetOnTaskDone(s.persistTaskReport)
+	// persist the report and send a POPO completion notification.
+	s.engine.SetOnTaskDone(func(taskID string) {
+		s.persistTaskReport(taskID)
+		s.notifyTaskDone(taskID)
+	})
 	// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
 	// override row, agents keep their built-in defaults — behavior is unchanged.
 	if m.pg != nil {
@@ -2206,6 +2210,11 @@ func (s *Server) newFilterProv() llm.Provider {
 	if !llmOn {
 		return nil
 	}
+	// Filtering is a lightweight classification task; disable thinking so
+	// reasoning tokens can't consume the entire MaxTokens budget and leave
+	// no text output (which manifests as "parse verdicts: unexpected end of
+	// JSON input (raw: )").
+	cfg.ReasoningEffort = "off"
 	prov, err := cfg.NewProvider()
 	if err != nil {
 		return nil

@@ -111,6 +111,9 @@ func judgeChunk(ctx context.Context, prov llm.Provider, inputs []filterFindingIn
 		acc.Add(ev)
 	}
 	text := extractJSONArray(acc.Message().Text())
+	if text == "" {
+		return nil, fmt.Errorf("empty LLM response (stop=%s, thinking-only?)", acc.StopReason)
+	}
 	var verdicts []filterVerdict
 	if err := json.Unmarshal([]byte(text), &verdicts); err != nil {
 		return nil, fmt.Errorf("parse verdicts: %w (raw: %s)", err, truncateStr(text, 200))

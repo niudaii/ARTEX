@@ -6,6 +6,9 @@
 set -euo pipefail
 cd "$(dirname "$0")"
 
+# 本地开发时加载 .env 里的环境变量（POPO 凭据等）
+set -a; [ -f .env ] && source .env; set +a
+
 # 退出时结束本进程组内的所有子进程（后端 + 前端）。
 cleanup() { kill 0 2>/dev/null || true; }
 trap cleanup EXIT INT TERM
