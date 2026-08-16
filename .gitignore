@@ -66,3 +66,15 @@ opencode.json
 
 # bench 调试目录（本地调试产物，不提交）
 /bench/debug/
+
+# ── 部署打包产物（pack.sh 生成，不提交）──
+artex-deploy/
+*.tar.gz
+
+# ── 测试 / 渗透产物（运行时截图、PoC、证据快照，不提交）──
+captcha*.png
+*poc*browser*.png
+xss-proof*.png
+*snapshot*.md
+retest*.png
+retest*.json
