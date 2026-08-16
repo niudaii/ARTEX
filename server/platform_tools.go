@@ -339,20 +339,11 @@ type popoCfg struct {
 	notifyTo  string
 }
 
-// loadPopoConfig reads POPO robot credentials from env vars with built-in defaults.
+// loadPopoConfig reads POPO robot credentials from env vars.
 func loadPopoConfig() popoCfg {
 	appKey := os.Getenv("ARTEX_POPO_APP_KEY")
-	if appKey == "" {
-		appKey = "REDACTED_POPO_KEY"
-	}
 	appSecret := os.Getenv("ARTEX_POPO_APP_SECRET")
-	if appSecret == "" {
-		appSecret = "REDACTED_POPO_SECRET"
-	}
 	notifyTo := os.Getenv("ARTEX_POPO_NOTIFY_TO")
-	if notifyTo == "" {
-		notifyTo = "REDACTED_EMAIL"
-	}
 	return popoCfg{appKey: appKey, appSecret: appSecret, notifyTo: notifyTo}
 }
 

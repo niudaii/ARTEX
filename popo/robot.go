@@ -1,5 +1,5 @@
 // Package popo is a slim POPO robot client: token acquisition + text message
-// sending. Ported from github.com/REDACTED_USER/goutils/popo_sdk (SendMessage path only)
+// sending. SendMessage path only.
 // to avoid pulling the full goutils module's heavy transitive dependencies.
 package popo
 
