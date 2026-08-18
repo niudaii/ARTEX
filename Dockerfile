@@ -32,9 +32,9 @@ RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@late
 WORKDIR /app
 # 预编译好的对应架构二进制（dist/amd64/artex 或 dist/arm64/artex）
 COPY dist/${TARGETARCH}/artex /app/artex
-# JWT 字典破解工具（jwtcrack 静态二进制，源码见 tools/jwtcrack/README）
-COPY tools/jwtcrack/${TARGETARCH}/jwtcrack /usr/local/bin/jwtcrack
-RUN chmod +x /app/artex /usr/local/bin/jwtcrack
+# tools/bin/<arch>/ 下所有工具二进制 → /usr/local/bin（约定见 tools/README.md）
+COPY tools/bin/${TARGETARCH}/ /usr/local/bin/
+RUN chmod +x /app/artex && find /usr/local/bin -maxdepth 1 -type f -exec chmod +x {} +
 COPY skills/ /app/skills/
 # data/（SQLite + jwt.key）持久化点
 VOLUME ["/app/data"]

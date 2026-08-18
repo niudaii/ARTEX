@@ -67,6 +67,9 @@ opencode.json
 # bench 调试目录（本地调试产物，不提交）
 /bench/debug/
 
+# 容器内置工具二进制（构建产物，从 tools/src/ 重编译，不提交）
+tools/bin/
+
 # ── 部署打包产物（pack.sh 生成，不提交）──
 artex-deploy/
 *.tar.gz

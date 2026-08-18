@@ -1336,7 +1336,8 @@ func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 	// 带 task 参数 → 仅该任务（任务概览/发现 Tab 用），从 exploration_nodes 读（任务在则节点在）。
 	taskParam := r.URL.Query().Get("task")
 	if taskParam == "" {
-		fs, _ := s.m.pg.ListFindings(500)
+		// 不设上限：页面基于全量数据在客户端聚合总数/等级/任务统计，截断会导致总数停在 500。
+		fs, _ := s.m.pg.ListFindings(0)
 		out := make([]FindingDTO, 0, len(fs))
 		for _, f := range fs {
 			out = append(out, findingFromDB(f))

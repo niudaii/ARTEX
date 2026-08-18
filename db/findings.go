@@ -1,6 +1,7 @@
 package db
 
 import (
+	"database/sql"
 	"encoding/json"
 	"time"
 )
@@ -49,19 +50,23 @@ func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, severity, summary, evid
 	return id, err
 }
 
-// ListFindings returns all findings (newest first), joined with task description.
+// ListFindings returns findings (newest first), joined with task description.
+// limit <= 0 returns all rows.
 func (d *DB) ListFindings(limit int) ([]*DBFinding, error) {
-	if limit <= 0 {
-		limit = 500
-	}
-	rows, err := d.Query(`
+	const q = `
 		SELECT f.id, f.task_id, f.node_id, f.vulnclass, f.severity, f.summary,
 		       f.evidence, f.source_file, f.harm, f.fix, f.request, f.response, f.repro_cmd, f.worker, f.asset_ids, f.created_at,
 		       COALESCE(t.description, '') AS task_description
 		FROM findings f
 		LEFT JOIN tasks t ON f.task_id = t.id
-		ORDER BY f.created_at DESC
-		LIMIT $1`, limit)
+		ORDER BY f.created_at DESC`
+	var rows *sql.Rows
+	var err error
+	if limit > 0 {
+		rows, err = d.Query(q+` LIMIT $1`, limit)
+	} else {
+		rows, err = d.Query(q)
+	}
 	if err != nil {
 		return nil, err
 	}

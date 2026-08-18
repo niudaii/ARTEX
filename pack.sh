@@ -39,6 +39,39 @@ CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" go build -tags embedui -trimpath -o "$DE
 chmod +x "$DEST/artex"
 ok "已编译 $DEST/artex（Linux/${ARCH}, $(du -h "$DEST/artex" | awk '{print $1}')）"
 
+# ── 容器内置工具（tools/bin → 镜像 /usr/local/bin，约定见 tools/README.md）──
+# tools/bin 不进 git，打包时在此现编；产物同时回填本地 tools/bin/$ARCH 供本机 docker build
+REPO_ROOT="$(pwd)"
+mkdir -p "$DEST/tools-bin" "tools/bin/$ARCH"
+
+# jwtcrack：固定 Go 1.23 编译（Go 1.24+ runtime 在 qemu amd64 模拟下可能 SIGSEGV）
+info "编译 jwtcrack（Linux/${ARCH}）…"
+if ( cd tools/src/jwtcrack && GOSUMDB=sum.golang.google.cn GOTOOLCHAIN=go1.23.12 GOOS=linux GOARCH="$ARCH" CGO_ENABLED=0 \
+      go build -trimpath -ldflags "-s -w" -o "$REPO_ROOT/tools/bin/$ARCH/jwtcrack" . ); then
+    ok "jwtcrack 已编译（Go 1.23 工具链）"
+elif ( cd tools/src/jwtcrack && GOOS=linux GOARCH="$ARCH" CGO_ENABLED=0 \
+      go build -trimpath -ldflags "-s -w" -o "$REPO_ROOT/tools/bin/$ARCH/jwtcrack" . ); then
+    warn "Go 1.23 工具链不可用，jwtcrack 用当前 Go 编译（arm64 Mac 模拟 amd64 时有崩溃风险）"
+else
+    die "jwtcrack 编译失败（源码：tools/src/jwtcrack）"
+fi
+
+# socctl：源码在外部 clis 仓库（go.mod 要求 Go 1.26），可用 CLIS_REPO 环境变量覆盖路径
+CLIS_REPO="${CLIS_REPO:-$HOME/workspace/code/golang/clis}"
+info "编译 socctl（Linux/${ARCH}）…"
+if [ -d "$CLIS_REPO" ]; then
+    ( cd "$CLIS_REPO" && GOOS=linux GOARCH="$ARCH" CGO_ENABLED=0 \
+      go build -trimpath -ldflags "-s -w" -o "$REPO_ROOT/tools/bin/$ARCH/socctl" ./cmd/socctl )
+    ok "socctl 已编译（源码：${CLIS_REPO}）"
+elif [ -f "tools/bin/$ARCH/socctl" ]; then
+    warn "未找到 clis 仓库，沿用已有 tools/bin/$ARCH/socctl（可用 CLIS_REPO 指定源码路径）"
+else
+    warn "socctl 无源码且无现有二进制，镜像将不含 socctl（vuln-retest 的 SOC 来源不可用）"
+fi
+
+cp tools/bin/"$ARCH"/* "$DEST/tools-bin/" 2>/dev/null || true
+ok "内置工具已就绪：$(ls "$DEST/tools-bin" | tr '\n' ' ')"
+
 # ── docker-compose.yml（bind-mount 二进制覆盖镜像内置的）────────
 cat > "$DEST/docker-compose.yml" << 'YML'
 services:
@@ -159,6 +192,11 @@ cd "$(cd "$(dirname "$0")" && pwd)"
 
 echo "[1/5] 准备构建上下文…"
 mkdir -p dist/amd64 && cp artex dist/amd64/artex
+# 容器内置工具（jwtcrack/socctl 等）→ tools/bin/amd64，Dockerfile 会 COPY 进 /usr/local/bin
+if [ -d tools-bin ] && ls tools-bin/* >/dev/null 2>&1; then
+    mkdir -p tools/bin/amd64 && cp tools-bin/* tools/bin/amd64/
+    echo "[+] 内置工具已放入构建上下文：$(ls tools-bin | tr '\n' ' ')"
+fi
 
 echo "[2/5] 生成 Dockerfile…"
 cat > Dockerfile << 'EOF'
@@ -180,7 +218,9 @@ RUN npm config set registry https://registry.npmmirror.com \
     && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 COPY dist/${TARGETARCH}/artex /app/artex
-RUN chmod +x /app/artex
+# 内置工具二进制 → /usr/local/bin（约定见仓库 tools/README.md）
+COPY tools/bin/${TARGETARCH}/ /usr/local/bin/
+RUN chmod +x /app/artex && find /usr/local/bin -maxdepth 1 -type f -exec chmod +x {} +
 COPY skills/ /app/skills/
 VOLUME ["/app/data"]
 EXPOSE 8787 8788
@@ -238,6 +278,9 @@ Docker 镜像 `artex:local`（本地构建）提供运行时环境（Python / No
 `./artex` 二进制通过 bind-mount 覆盖镜像内置的 `/app/artex`。
 **更新二进制不需要重新构建镜像**，替换文件 + `./restart.sh` 即可。
 
+内置工具（jwtcrack / socctl 等，供 agent 的 skill 调用）在构建时烘焙进镜像
+`/usr/local/bin/`，更新它们需要重跑 `./build-local.sh` 重建镜像。
+
 ## 首次部署
 
 ```bash
@@ -258,6 +301,7 @@ ssh user@server 'cd artex-deploy && ./restart.sh'
 | 文件 | 用途 |
 |------|------|
 | `artex` | 交叉编译的 Linux 二进制（bind-mount 覆盖镜像内置的） |
+| `tools-bin/` | 内置工具二进制，构建镜像时 COPY 进 `/usr/local/bin/` |
 | `docker-compose.yml` | 容器编排（bind-mount 二进制 + skills + data） |
 | `.env` | 环境变量配置 |
 | `skills/` | Skill 定义目录 |
@@ -272,6 +316,17 @@ ssh user@server 'cd artex-deploy && ./restart.sh'
 docker compose logs -f artex      # 查看日志
 docker compose down               # 停止
 docker compose up -d              # 启动（已构建镜像后）
+```
+
+## 更新内置工具（jwtcrack / socctl）
+
+工具烘焙在镜像里，不能像 `./artex` 那样热替换：
+
+```bash
+# 本地（macOS）重新打包（pack.sh 会自动重编工具）→ 整包上传 → 重建镜像
+./pack.sh
+scp artex-deploy.tar.gz user@server:~/
+ssh user@server 'tar xzf artex-deploy.tar.gz && cd artex-deploy && ./build-local.sh'
 ```
 README
 ok "已生成 README.md"
@@ -292,4 +347,8 @@ echo "  更新二进制（日常）："
 echo "    ./pack.sh                                    # 本地重新打包"
 echo "    scp ${DEST}/artex user@server:~/artex-deploy/ # 只传二进制"
 echo "    ssh user@server 'cd artex-deploy && ./restart.sh'"
+echo ""
+echo "  更新内置工具（jwtcrack/socctl）："
+echo "    ./pack.sh && scp ${DEST}.tar.gz user@server:~/"
+echo "    ssh user@server 'tar xzf ${DEST}.tar.gz && cd ${DEST} && ./build-local.sh' # 需重建镜像"
 echo "═══════════════════════════════════════════════"
