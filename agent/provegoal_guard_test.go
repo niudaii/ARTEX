@@ -3,7 +3,10 @@ package agent
 import "testing"
 
 func TestGoalTextSuggestsTotal(t *testing.T) {
-	tests := []struct{ text string; want bool }{
+	tests := []struct {
+		text string
+		want bool
+	}{
 		{"完成全部靶场题目", true},
 		{"发现所有子域名", true},
 		{"complete all challenges", true},
@@ -20,7 +23,10 @@ func TestGoalTextSuggestsTotal(t *testing.T) {
 }
 
 func TestReasonSuggestsSingle(t *testing.T) {
-	tests := []struct{ reason string; want bool }{
+	tests := []struct {
+		reason string
+		want   bool
+	}{
 		{"单个题目 XBEN-094-24 已解决", true},
 		{"一个漏洞已确认", true},
 		{"仅完成了一道题", true},

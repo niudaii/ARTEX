@@ -182,7 +182,7 @@ type FindingDTO struct {
 	Fix             string `json:"fix,omitempty"`
 	Request         string `json:"request,omitempty"`
 	Response        string `json:"response,omitempty"`
-	ReproCmd         string `json:"repro_cmd,omitempty"`
+	ReproCmd        string `json:"repro_cmd,omitempty"`
 	IntentID        string `json:"intent_id,omitempty"`
 	ParamID         string `json:"param_id,omitempty"`
 	TaskID          string `json:"task_id,omitempty"`

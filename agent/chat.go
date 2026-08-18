@@ -6,13 +6,13 @@ import (
 	"path/filepath"
 	"time"
 
+	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
-	"github.com/Autumn-27/artex/db"
-	"github.com/Autumn-27/artex/guard"
 )
 
 // ChatAgent is the generic, task-independent conversational runner behind the chat
@@ -114,12 +114,12 @@ func (c *ChatAgent) Chat(ctx context.Context, agentKey, sessionID, message strin
 		BraveSearchAPIKey:  ws.BraveKey,
 		TavilySearchAPIKey: ws.TavilyKey,
 		WebSearchProxy:     ws.Proxy,
-		BashEnv:           proxyEnv(c.proxyAddr, c.proxyCACert), // Bash 子命令默认走代理+信任 CA
-		WorkingDir:        sessionWorkDir,
-		MaxTurns:          maxTurns,
-		MaxDuration:       maxDuration,
-		Compaction:        compactionConfig(c.window),
-		Todos:             actool.NewTodoStore(),
+		BashEnv:            proxyEnv(c.proxyAddr, c.proxyCACert), // Bash 子命令默认走代理+信任 CA
+		WorkingDir:         sessionWorkDir,
+		MaxTurns:           maxTurns,
+		MaxDuration:        maxDuration,
+		Compaction:         compactionConfig(c.window),
+		Todos:              actool.NewTodoStore(),
 		// large tool output spills to cmd-output/ under the session dir.
 		// 截断上限用 SDK 默认(tool.Capture 的 30000 字符)。
 		ToolOutputDir: filepath.Join(sessionWorkDir, "cmd-output"),

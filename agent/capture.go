@@ -4,10 +4,10 @@ import (
 	"context"
 	"strings"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/agentcore"
 	"github.com/Autumn-27/norma/harness"
 	"github.com/Autumn-27/norma/llm"
-	"github.com/Autumn-27/artex/db"
 )
 
 // captureRun drives one agent turn-to-completion over Session.Prompt and emits a

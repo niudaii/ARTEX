@@ -336,8 +336,8 @@ func (s *Server) insertAssets(w http.ResponseWriter, r *http.Request) {
 		Assets []struct {
 			Type string `json:"type"`
 			// root_domain / subdomain
-			Domain      string `json:"domain"`
-			ICP         string `json:"icp"`
+			Domain      string   `json:"domain"`
+			ICP         string   `json:"icp"`
 			RecordType  string   `json:"record_type"`
 			RecordValue []string `json:"record_value"`
 			// ip

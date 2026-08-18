@@ -8,11 +8,11 @@ import (
 	"path/filepath"
 	"strings"
 
-	"github.com/Autumn-27/norma/skill"
-	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/traffic"
+	"github.com/Autumn-27/norma/skill"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 // wireAgentAugment connects the PG agent_visibility table into the agent runtime:
@@ -151,7 +151,7 @@ func wireAgentAugment(pg *db.DB, skillDir string, hostTools func() ([]actool.Cor
 				if !contains(boundAgents, a.Key) {
 					continue // only defer names this agent is actually bound to
 				}
-				allNames = append(allNames, name)    // schema withheld from the prompt
+				allNames = append(allNames, name)       // schema withheld from the prompt
 				globalNames = append(globalNames, name) // advertised in the deferred block
 				globalSet[name] = true
 				if unlock != nil {

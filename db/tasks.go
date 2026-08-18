@@ -170,7 +170,6 @@ func (d *DB) GetReport(taskID int64) (string, bool, error) {
 	return md, md != "", nil
 }
 
-
 // SetTerminalStatusGuarded sets a terminal status only when the task is NOT already
 // terminal, so a completed↔timeout race resolves to the first writer (won=true).
 // Returns won=false (no error) when another terminal status already stuck — the

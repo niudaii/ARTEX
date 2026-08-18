@@ -94,10 +94,11 @@ func renderPlannerTodos(items []actool.Todo) string {
 // TriggerEvent describes what concretely caused this planning round to fire, so
 // the planner looks first at the actual change instead of re-scanning the whole
 // overview. Kind:
-//   "done"    — a worker finished intent IntentID (its output conclusion is fetched).
-//   "finding" — a worker reported a finding on intent IntentID (Detail = 摘要).
-//   "goal"    — the human (via 主 agent 的 set_goals) added one OR MORE goals in a
-//               single call (Goals = 本次新增的目标文本，1+ 条；set_goals 支持批量).
+//
+//	"done"    — a worker finished intent IntentID (its output conclusion is fetched).
+//	"finding" — a worker reported a finding on intent IntentID (Detail = 摘要).
+//	"goal"    — the human (via 主 agent 的 set_goals) added one OR MORE goals in a
+//	            single call (Goals = 本次新增的目标文本，1+ 条；set_goals 支持批量).
 type TriggerEvent struct {
 	Kind     string
 	IntentID int64

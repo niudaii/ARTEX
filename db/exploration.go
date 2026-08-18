@@ -632,6 +632,7 @@ FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id LIMIT $3`, s.expID, 
 //   - Worker != ""  → filter by worker name (Main = "mainagent", Plan = "planner").
 //     Goal Agent 的第 0 轮拆解也以 worker="planner" 落库，故 Plan 会话完整覆盖 Goal+Planner。
 //   - NodeID != nil → a Worker session, filtered by node_id (= intent id).
+//
 // A zero value (both empty) matches the whole task (no session filter).
 type ActivitySessionFilter struct {
 	Worker string

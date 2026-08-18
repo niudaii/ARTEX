@@ -86,14 +86,14 @@ type Engine struct {
 
 	bc *Broadcaster // live activity pub/sub (SSE)
 
-	mu      sync.RWMutex
-	planner *agent.Planner
-	worker  *agent.Worker
-	started sync.Map // taskID -> bool, so Run is idempotent per task
-	lastAct sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
-	paused  sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
+	mu       sync.RWMutex
+	planner  *agent.Planner
+	worker   *agent.Worker
+	started  sync.Map // taskID -> bool, so Run is idempotent per task
+	lastAct  sync.Map // taskID -> int64 unix, last planner/worker activity (heartbeat)
+	paused   sync.Map // taskID -> bool, user-paused (planner + workers idle but loops alive)
 	stopping sync.Map // taskID -> bool, task being deleted (skip activity writes; loops wind down)
-	dropCnt sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
+	dropCnt  sync.Map // taskID -> *int64, running count of dropped (unpersistable) activity records
 
 	// per-task execution context: each planner.Plan / worker.Execute runs under it,
 	// so pausing can CANCEL an in-flight run (not just skip the next one). Recreated

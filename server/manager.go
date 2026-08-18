@@ -13,13 +13,13 @@ import (
 	"sync/atomic"
 	"time"
 
-	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/artex/agent"
 	pgdb "github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/enrich"
 	"github.com/Autumn-27/artex/guard"
 	"github.com/Autumn-27/artex/intercept"
 	"github.com/Autumn-27/artex/traffic"
+	actool "github.com/Autumn-27/norma/tool"
 )
 
 // Task is one engagement: a description + goal + its own exploration store,
@@ -37,13 +37,13 @@ type Task struct {
 	LLMProfileID *int64 `json:"llm_profile_id,omitempty"` // 指定运行本任务 planner/worker 的 LLM 配置;nil=用全局激活配置
 	Status       string `json:"status"`                   // persisted lifecycle status (done/failed/timeout 为终态；空/其它则由运行态推导)
 	// 任务级超时(见 docs/任务级超时与收尾设计.md)。DeadlineAt/FirstRunAt 为 unix 秒,0=未设/未运行。
-	TimeoutSeconds       int   `json:"timeout_seconds"`
-	PlanHeartbeatSeconds int   `json:"plan_heartbeat_seconds"` // planner 心跳触发间隔(秒)
-	FirstRunAt           int64 `json:"first_run_at,omitempty"`
-	DeadlineAt           int64 `json:"deadline_at,omitempty"`
-	Store          *pgdb.ExplorationStore `json:"-"`
-	Guard          *guard.Guard           `json:"-"`
-	notify         chan struct{}
+	TimeoutSeconds       int                    `json:"timeout_seconds"`
+	PlanHeartbeatSeconds int                    `json:"plan_heartbeat_seconds"` // planner 心跳触发间隔(秒)
+	FirstRunAt           int64                  `json:"first_run_at,omitempty"`
+	DeadlineAt           int64                  `json:"deadline_at,omitempty"`
+	Store                *pgdb.ExplorationStore `json:"-"`
+	Guard                *guard.Guard           `json:"-"`
+	notify               chan struct{}
 
 	reportFiltering atomic.Bool // true while LLM report filter is running
 
@@ -60,8 +60,8 @@ type Manager struct {
 	dir         string
 	pg          *pgdb.DB
 	assets      *pgdb.AssetStore
-	traffic     *traffic.Traffic    // process-wide recording proxy (may be nil)
-	enrich      *enrich.Engine      // engine-side asset auto-completion (DNS/HTTP)
+	traffic     *traffic.Traffic       // process-wide recording proxy (may be nil)
+	enrich      *enrich.Engine         // engine-side asset auto-completion (DNS/HTTP)
 	interceptor *intercept.Interceptor // user-configured tool-call interception rules
 
 	mu        sync.RWMutex

@@ -25,7 +25,7 @@ type Company struct {
 type CompanyWithScope struct {
 	Company
 	Scope      []ScopeRule `json:"scope"`
-	AssetCount int           `json:"asset_count"`
+	AssetCount int         `json:"asset_count"`
 }
 
 // ScopeRule is one company_scope row.

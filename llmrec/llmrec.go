@@ -11,9 +11,9 @@ import (
 	"strings"
 	"time"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/transcript"
-	"github.com/Autumn-27/artex/db"
 )
 
 // Recorder wraps an llm.Provider and records every completion call.
@@ -77,11 +77,11 @@ func (r *Recorder) Stream(ctx context.Context, req llm.CompletionRequest) iter.S
 
 	return func(yield func(llm.StreamEvent, error) bool) {
 		var (
-			textBuf    strings.Builder
+			textBuf     strings.Builder
 			thinkingBuf strings.Builder
-			usage      llm.Usage
-			stopReason string
-			streamErr  error
+			usage       llm.Usage
+			stopReason  string
+			streamErr   error
 		)
 
 		for ev, err := range r.inner.Stream(ctx, req) {
