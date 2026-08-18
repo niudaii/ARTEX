@@ -23,6 +23,7 @@ import (
 	"github.com/Autumn-27/artex/report"
 	"github.com/Autumn-27/norma/llm"
 	"github.com/Autumn-27/norma/memory"
+	"github.com/Autumn-27/norma/skill"
 	actool "github.com/Autumn-27/norma/tool"
 	"github.com/Autumn-27/norma/transcript"
 )
@@ -2298,10 +2299,11 @@ func (s *Server) archiveReport(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 202, map[string]any{"status": "archiving", "conversation_id": convID})
 }
 
-// archiveMessage builds the Harness-style instruction for the Auto agent's
-// archive run (phases + gates + boundaries, no knowledge dumping): read all
-// findings, drop false positives, group/merge by domain and attack chain,
-// assemble the standardized report, then write it back via archive_task_report.
+// archiveMessage builds the instruction for the Auto agent's archive run:
+// a task header (id/description/goal) followed by the archive flow (phases +
+// gates + boundaries) loaded from skills/report-archive/SKILL.md, with the
+// {{TASK_ID}} placeholder substituted. When the skill file is missing or has
+// no instructions, the built-in archiveFlowDefault is used instead.
 func (s *Server) archiveMessage(t *Task) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "【报告归档任务】task_id=%s\n", t.ID)
@@ -2311,11 +2313,35 @@ func (s *Server) archiveMessage(t *Task) string {
 	if v := strings.TrimSpace(t.Goal); v != "" {
 		fmt.Fprintf(&b, "任务目标：%s\n", v)
 	}
-	b.WriteString(`
-按以下阶段执行报告归档，上一阶段完成并自检后才进入下一阶段：
+	b.WriteString("\n")
+	b.WriteString(strings.ReplaceAll(s.archiveFlow(), "{{TASK_ID}}", t.ID))
+	return b.String()
+}
+
+// archiveFlow loads the archive flow body from skills/report-archive/SKILL.md
+// so the archive standard can be edited (系统 → Skills 页面) without
+// recompiling. It falls back to archiveFlowDefault when the skill is absent
+// or has no instructions.
+func (s *Server) archiveFlow() string {
+	if reg, err := skill.LoadDir(s.skillDir); err == nil {
+		for _, sk := range reg.List() {
+			if sk.Dir != "" && filepath.Base(sk.Dir) == "report-archive" {
+				if ins := strings.TrimSpace(sk.Instructions); ins != "" {
+					return ins
+				}
+			}
+		}
+	}
+	return archiveFlowDefault
+}
+
+// archiveFlowDefault is the built-in archive flow used when
+// skills/report-archive/SKILL.md is missing or empty. Keep it in sync with
+// the skill file.
+const archiveFlowDefault = `按以下阶段执行报告归档，上一阶段完成并自检后才进入下一阶段：
 
 ## 阶段 1 · 读取发现（门槛：必须读全）
-调用 list_task_findings(task_id="` + t.ID + `") 读取该任务全部确认漏洞（含漏洞类型/等级/摘要/PoC/证据）。
+调用 list_task_findings(task_id="{{TASK_ID}}") 读取该任务全部确认漏洞（含漏洞类型/等级/摘要/PoC/证据）。
 - 结果被截断或提示更多时继续读全；只凭部分条目归档视为失败。
 
 ## 阶段 2 · 过滤误报
@@ -2341,16 +2367,14 @@ func (s *Server) archiveMessage(t *Task) string {
 5. 排序与编号：等级优先（严重>高危>中危>低危）；同等级按实际影响（RCE/代码执行 > 数据读写篡改 > 大量敏感数据泄露 > 认证绕过 > 越权 > SSRF/内网探测 > 信息泄露）；攻击链置于所属域名组首位；编号跨域名组全局递增。
 
 ## 阶段 5 · 写回归档（门槛：必须调用工具）
-调用 archive_task_report(task_id="` + t.ID + `", markdown=完整报告) 写回。
+调用 archive_task_report(task_id="{{TASK_ID}}", markdown=完整报告) 写回。
 - 写回成功即归档完成；之后只回复一行归档结果摘要（归档条目数/等级分布/写回状态），不要输出报告全文。
 
 ## 边界
 - 只读整理：禁止对任何目标发起请求、攻击、复测或扫描。
 - 禁止编造、夸大或润色漏洞事实；凭据类证据保持原样（证据完整性）。
 - 过滤后为 0 条时，仍写回一份说明「无可归档漏洞及原因」的简报。
-`)
-	return b.String()
-}
+`
 
 func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))

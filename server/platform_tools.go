@@ -10,6 +10,7 @@ import (
 	"strconv"
 	"strings"
 	"sync"
+	"time"
 
 	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/artex/popo"
@@ -441,6 +442,8 @@ func (s *Server) notifyTaskDone(taskID string) {
 		desc = string([]rune(desc)[:80]) + "…"
 	}
 	msg := fmt.Sprintf("✅ ARTEX 任务完成\n任务ID: %s\n描述: %s\n状态: %s", taskID, desc, t.Status)
+	msg += "\n执行时长: " + taskRunDuration(t)
+	msg += "\n" + findingSummaryLine(t)
 	if base := s.taskURLBase(); base != "" {
 		url := fmt.Sprintf("%s/function/tasks/detail?id=%s", strings.TrimRight(base, "/"), taskID)
 		msg += fmt.Sprintf("\n链接: %s", url)
@@ -449,6 +452,65 @@ func (s *Server) notifyTaskDone(taskID string) {
 	if err := robot.SendMessage(popoConfig.notifyTo, msg); err != nil {
 		log.Printf("[notify] task %s: POPO 发送失败: %v", taskID, err)
 	}
+}
+
+// taskRunDuration renders the task's run duration (created → terminal state,
+// mirroring the web task list) as a compact human string like "2h 15m".
+func taskRunDuration(t *Task) string {
+	if t.CreatedAt <= 0 {
+		return "—"
+	}
+	end := t.CompletedAt
+	if end <= 0 {
+		end = time.Now().Unix()
+	}
+	sec := end - t.CreatedAt
+	if sec <= 0 {
+		return "—"
+	}
+	d, h := sec/86400, (sec%86400)/3600
+	m, s := (sec%3600)/60, sec%60
+	switch {
+	case d > 0:
+		return fmt.Sprintf("%dd %dh", d, h)
+	case h > 0:
+		return fmt.Sprintf("%dh %dm", h, m)
+	case m > 0:
+		return fmt.Sprintf("%dm %ds", m, s)
+	default:
+		return fmt.Sprintf("%ds", s)
+	}
+}
+
+// findingSummaryLine counts the task's confirmed findings by severity and
+// renders the overview line, e.g. "确认漏洞: 5（高 2 / 中 2 / 低 1）".
+func findingSummaryLine(t *Task) string {
+	if t.Store == nil {
+		return "确认漏洞: 0"
+	}
+	findings, _ := t.Store.ListByKind(db.KindFinding, 1000)
+	var high, medium, low, other int
+	for _, n := range findings {
+		var p struct {
+			Severity string `json:"severity"`
+		}
+		_ = json.Unmarshal(n.Payload, &p)
+		switch strings.ToLower(strings.TrimSpace(p.Severity)) {
+		case "high":
+			high++
+		case "medium":
+			medium++
+		case "low":
+			low++
+		default:
+			other++
+		}
+	}
+	parts := fmt.Sprintf("高 %d / 中 %d / 低 %d", high, medium, low)
+	if other > 0 {
+		parts += fmt.Sprintf(" / 其他 %d", other)
+	}
+	return fmt.Sprintf("确认漏洞: %d（%s）", len(findings), parts)
 }
 
 // taskURLBase returns the base URL for task detail links. It reads from the DB
