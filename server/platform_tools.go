@@ -401,6 +401,15 @@ func popoRobotSingleton() *popo.Robot {
 	return popoRobot
 }
 
+// popoConfigured reports whether the POPO robot credentials AND the notify
+// target are present, via the singleton's lazy config load. When false,
+// send_me fails fast with a clear message and notifyTaskDone skips silently,
+// instead of surfacing an opaque token-endpoint error.
+func popoConfigured() bool {
+	popoRobotSingleton()
+	return popoConfig.appKey != "" && popoConfig.appSecret != "" && popoConfig.notifyTo != ""
+}
+
 // toolSendMe sends a POPO message to notify me (the operator). Designed for
 // important events such as a failed vulnerability retest: the agent calls it with
 // a formatted message including the vulnerability title, link, and task link.
@@ -419,6 +428,9 @@ func (s *Server) toolSendMe() actool.CoreTool {
 			_ = json.Unmarshal(in, &a)
 			if strings.TrimSpace(a.Message) == "" {
 				return actool.Errorf("message 不能为空"), nil
+			}
+			if !popoConfigured() {
+				return actool.Errorf("POPO 机器人未配置：需设置 ARTEX_POPO_APP_KEY / ARTEX_POPO_APP_SECRET / ARTEX_POPO_NOTIFY_TO 环境变量"), nil
 			}
 			robot := popoRobotSingleton()
 			if err := robot.SendMessage(popoConfig.notifyTo, a.Message); err != nil {
@@ -447,6 +459,9 @@ func (s *Server) notifyTaskDone(taskID string) {
 	if base := s.taskURLBase(); base != "" {
 		url := fmt.Sprintf("%s/function/tasks/detail?id=%s", strings.TrimRight(base, "/"), taskID)
 		msg += fmt.Sprintf("\n链接: %s", url)
+	}
+	if !popoConfigured() {
+		return // best-effort 通知：未配置 POPO 时静默跳过
 	}
 	robot := popoRobotSingleton()
 	if err := robot.SendMessage(popoConfig.notifyTo, msg); err != nil {
