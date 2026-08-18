@@ -5,12 +5,14 @@
 package traffic
 
 import (
+	"bufio"
 	"context"
 	"crypto/sha256"
 	"database/sql"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
+	"io"
 	"io/fs"
 	"log"
 	"net"
@@ -24,9 +26,9 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
-	"github.com/Autumn-27/artex/db"
 	mproxy "github.com/lqqyt2423/go-mitmproxy/proxy"
 	"github.com/sirupsen/logrus"
 	_ "modernc.org/sqlite"
@@ -53,8 +55,14 @@ func init() {
 	logrus.SetFormatter(&mitmNoiseFormatter{inner: logrus.StandardLogger().Formatter})
 }
 
-const indexSchema = `
-CREATE TABLE IF NOT EXISTS exchanges (
+// indexSchema is applied statement-by-statement in Open (triggers contain
+// semicolons, so the whole block can't go through one Exec safely).
+//
+// host_stats is a per-host summary (row count + last activity) maintained by
+// the ex_ins/ex_del triggers, so the UI's count/hosts/host-filter queries read
+// a few thousand rows instead of scanning millions of exchanges.
+var indexSchema = []string{
+	`CREATE TABLE IF NOT EXISTS exchanges (
   id           TEXT PRIMARY KEY,
   ts           INTEGER,
   host         TEXT,
@@ -66,11 +74,27 @@ CREATE TABLE IF NOT EXISTS exchanges (
   req_len      INTEGER,
   resp_len     INTEGER,
   path         TEXT
-);
-CREATE INDEX IF NOT EXISTS idx_ex_host ON exchanges(host);
-CREATE INDEX IF NOT EXISTS idx_ex_tmpl ON exchanges(host, url_template);
-CREATE INDEX IF NOT EXISTS idx_ex_ts   ON exchanges(ts);
-`
+)`,
+	`CREATE INDEX IF NOT EXISTS idx_ex_ts      ON exchanges(ts)`,
+	`CREATE INDEX IF NOT EXISTS idx_ex_host_ts ON exchanges(host, ts)`,
+	// superseded: idx_ex_host is covered by idx_ex_host_ts; idx_ex_tmpl has no
+	// query that could use it (url_template is only matched with LIKE '%...%').
+	`DROP INDEX IF EXISTS idx_ex_host`,
+	`DROP INDEX IF EXISTS idx_ex_tmpl`,
+	`CREATE TABLE IF NOT EXISTS host_stats (
+  host    TEXT PRIMARY KEY,
+  n       INTEGER NOT NULL DEFAULT 0,
+  last_ts INTEGER NOT NULL DEFAULT 0
+)`,
+	`CREATE TRIGGER IF NOT EXISTS ex_ins AFTER INSERT ON exchanges BEGIN
+  INSERT INTO host_stats(host, n, last_ts) VALUES (new.host, 1, new.ts)
+  ON CONFLICT(host) DO UPDATE SET n = n + 1, last_ts = MAX(last_ts, excluded.last_ts);
+END`,
+	`CREATE TRIGGER IF NOT EXISTS ex_del AFTER DELETE ON exchanges BEGIN
+  UPDATE host_stats SET n = n - 1 WHERE host = old.host;
+  DELETE FROM host_stats WHERE host = old.host AND n <= 0;
+END`,
+}
 
 const maxInlineBody = 256 * 1024
 
@@ -95,7 +119,14 @@ func Open(dir, addr string) (*Traffic, error) {
 			return nil, err
 		}
 	}
-	db, err := sql.Open("sqlite", filepath.Join(dir, "_index", "index.sqlite"))
+	dbPath := filepath.Join(dir, "_index", "index.sqlite")
+	// Stat BEFORE opening: sql.Open + the WAL pragma below already write bytes
+	// to a fresh file, which would defeat a post-open size check.
+	preexisting := false
+	if fi, err := os.Stat(dbPath); err == nil && fi.Size() > 0 {
+		preexisting = true
+	}
+	db, err := sql.Open("sqlite", dbPath)
 	if err != nil {
 		return nil, err
 	}
@@ -105,9 +136,30 @@ func Open(dir, addr string) (*Traffic, error) {
 			return nil, err
 		}
 	}
-	if _, err := db.Exec(indexSchema); err != nil {
+	// user_version 0 = store created before host_stats existed (or brand new).
+	var uv int
+	if err := db.QueryRow(`PRAGMA user_version`).Scan(&uv); err != nil {
 		db.Close()
 		return nil, err
+	}
+	if uv == 0 && preexisting {
+		log.Printf("[traffic] 首次升级流量索引：重建索引并生成 host 汇总（一次性，数据多时可能需要一分钟）…")
+	}
+	for _, stmt := range indexSchema {
+		if _, err := db.Exec(stmt); err != nil {
+			db.Close()
+			return nil, err
+		}
+	}
+	if uv == 0 {
+		if err := backfillHostStats(db); err != nil {
+			db.Close()
+			return nil, err
+		}
+		if _, err := db.Exec(`PRAGMA user_version = 1`); err != nil {
+			db.Close()
+			return nil, err
+		}
 	}
 	t := &Traffic{dir: dir, addr: addr, db: db}
 
@@ -136,6 +188,33 @@ func Open(dir, addr string) (*Traffic, error) {
 	p.AddAddon(&sink{t: t})
 	t.proxy = p
 	return t, nil
+}
+
+// backfillHostStats rebuilds the per-host summary from exchanges for stores
+// created before host_stats existed. Idempotent (wipe-then-insert inside one
+// transaction), so a crash mid-upgrade just redoes it on the next start.
+func backfillHostStats(db *sql.DB) error {
+	var hasRows bool
+	if err := db.QueryRow(`SELECT EXISTS(SELECT 1 FROM exchanges)`).Scan(&hasRows); err != nil {
+		return err
+	}
+	if !hasRows {
+		return nil
+	}
+	tx, err := db.Begin()
+	if err != nil {
+		return err
+	}
+	if _, err := tx.Exec(`DELETE FROM host_stats`); err != nil {
+		tx.Rollback()
+		return err
+	}
+	if _, err := tx.Exec(`INSERT INTO host_stats(host, n, last_ts)
+SELECT host, COUNT(*), MAX(ts) FROM exchanges GROUP BY host`); err != nil {
+		tx.Rollback()
+		return err
+	}
+	return tx.Commit()
 }
 
 // hostOnly strips an optional :port, so passthrough keys match whether the host
@@ -343,20 +422,106 @@ func (t *Traffic) Search(host string, page, size int) ([]ExchangeMeta, error) {
 	return out, rows.Err()
 }
 
+// countCap bounds filtered totals: an exact COUNT(*) must visit every matching
+// row (seconds on a multi-million-row store), while the UI only needs "many".
+// Totals above the cap are reported as countCap with capped=true.
+const countCap = 10000
+
+// hostInLimit caps the resolved-host IN(...) list; broader substrings fall back
+// to a LIKE predicate instead of a thousands-long parameter list.
+const hostInLimit = 256
+
 // Page returns one page of exchange metadata filtered by an optional host
 // substring, exact method, and a free-text query q that fuzzy-matches across all
 // indexed metadata columns (host/url/method/content-type/status), together with
-// the total number of rows matching that filter (for the UI's pagination).
-// Newest first. Bodies are never included.
-func (t *Traffic) Page(host, method, q string, page, size int) (rows []ExchangeMeta, total int, err error) {
+// the total number of rows matching that filter (for the UI's pagination —
+// capped at countCap, see capped return). Newest first. Bodies are never
+// included.
+func (t *Traffic) Page(host, method, q string, page, size int) (rows []ExchangeMeta, total int, capped bool, err error) {
 	if size <= 0 || size > 500 {
 		size = 100
 	}
 	if page < 0 {
 		page = 0
 	}
-	where := ""
-	var args []any
+
+	hostSet, hostLike, ok, err := t.resolveHosts(host)
+	if err != nil || !ok {
+		return nil, 0, false, err // ok=false: no recorded host matches the filter
+	}
+	where, args := filterWhere(hostSet, hostLike, method, q)
+
+	// Total: prefer the small host summary (exact, O(hosts)); only count
+	// exchanges rows when method/q force a per-row filter — capped so a rare
+	// search term can't stall the page for seconds.
+	switch {
+	case where == "":
+		err = t.db.QueryRow(`SELECT COALESCE(SUM(n),0) FROM host_stats`).Scan(&total)
+	case len(hostSet) > 0 && len(hostSet) <= hostInLimit && strings.TrimSpace(method) == "" && strings.TrimSpace(q) == "":
+		err = t.db.QueryRow(`SELECT COALESCE(SUM(n),0) FROM host_stats WHERE host IN (`+placeholders(len(hostSet))+`)`, anyList(hostSet)...).Scan(&total)
+	default:
+		var n int
+		if err = t.db.QueryRow(`SELECT COUNT(*) FROM (SELECT 1 FROM exchanges`+where+` LIMIT ?)`,
+			append(append([]any{}, args...), countCap+1)...).Scan(&n); err == nil {
+			if n > countCap {
+				n = countCap
+				capped = true
+			}
+			total = n
+		}
+	}
+	if err != nil {
+		return nil, 0, false, err
+	}
+
+	sel := `SELECT id,ts,host,method,url_template,url,status,content_type,resp_len,path FROM exchanges` +
+		where + ` ORDER BY ts DESC LIMIT ? OFFSET ?`
+	qargs := append(append([]any{}, args...), size, page*size)
+	rs, err := t.db.Query(sel, qargs...)
+	if err != nil {
+		return nil, 0, false, err
+	}
+	defer rs.Close()
+	for rs.Next() {
+		var m ExchangeMeta
+		if err := rs.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType, &m.RespLen, &m.Path); err != nil {
+			return nil, 0, false, err
+		}
+		rows = append(rows, m)
+	}
+	return rows, total, capped, rs.Err()
+}
+
+// resolveHosts resolves a host substring filter against the small host_stats
+// summary (thousands of rows) instead of scanning every exchange. An empty
+// filter returns ok=true with no hosts; ok=false means nothing matches.
+func (t *Traffic) resolveHosts(host string) (hostSet []string, hostLike string, ok bool, err error) {
+	h := strings.TrimSpace(host)
+	if h == "" {
+		return nil, "", true, nil
+	}
+	hostLike = "%" + h + "%"
+	rs, err := t.db.Query(`SELECT host FROM host_stats WHERE host LIKE ?`, hostLike)
+	if err != nil {
+		return nil, "", false, err
+	}
+	defer rs.Close()
+	for rs.Next() {
+		var x string
+		if err := rs.Scan(&x); err != nil {
+			return nil, "", false, err
+		}
+		hostSet = append(hostSet, x)
+	}
+	return hostSet, hostLike, len(hostSet) > 0, rs.Err()
+}
+
+// filterWhere builds the exchanges WHERE clause shared by Page and Export:
+// exact hosts from resolveHosts, method exact-match, and free-text LIKE across
+// the indexed text columns (bodies aren't indexed). Cheapest columns first —
+// OR short-circuits per row, so common terms hit method/status/host before
+// touching the long url strings.
+func filterWhere(hostSet []string, hostLike, method, q string) (where string, args []any) {
 	add := func(cond string, vs ...any) {
 		if where == "" {
 			where = " WHERE "
@@ -366,40 +531,153 @@ func (t *Traffic) Page(host, method, q string, page, size int) (rows []ExchangeM
 		where += cond
 		args = append(args, vs...)
 	}
-	if h := strings.TrimSpace(host); h != "" {
-		add("host LIKE ?", "%"+h+"%")
+	if hostLike != "" {
+		if len(hostSet) <= hostInLimit {
+			add(`host IN (`+placeholders(len(hostSet))+`)`, anyList(hostSet)...)
+		} else {
+			add(`host LIKE ?`, hostLike)
+		}
 	}
 	if m := strings.TrimSpace(method); m != "" {
 		add("method=?", strings.ToUpper(m))
 	}
 	if s := strings.TrimSpace(q); s != "" {
 		like := "%" + s + "%"
-		// Fuzzy match across every indexed column (bodies aren't indexed).
-		add("(host LIKE ? OR url LIKE ? OR url_template LIKE ? OR method LIKE ? OR content_type LIKE ? OR CAST(status AS TEXT) LIKE ?)",
+		add("(method LIKE ? OR CAST(status AS TEXT) LIKE ? OR host LIKE ? OR content_type LIKE ? OR url LIKE ? OR url_template LIKE ?)",
 			like, like, like, like, like, like)
 	}
-	if err = t.db.QueryRow(`SELECT COUNT(*) FROM exchanges`+where, args...).Scan(&total); err != nil {
-		return nil, 0, err
-	}
-	sel := `SELECT id,ts,host,method,url_template,url,status,content_type,resp_len,path FROM exchanges` +
-		where + ` ORDER BY ts DESC LIMIT ? OFFSET ?`
-	qargs := append(append([]any{}, args...), size, page*size)
-	rs, err := t.db.Query(sel, qargs...)
-	if err != nil {
-		return nil, 0, err
-	}
-	defer rs.Close()
-	for rs.Next() {
-		var m ExchangeMeta
-		if err := rs.Scan(&m.ID, &m.TS, &m.Host, &m.Method, &m.URLTemplate, &m.URL, &m.Status, &m.ContentType, &m.RespLen, &m.Path); err != nil {
-			return nil, 0, err
-		}
-		rows = append(rows, m)
-	}
-	return rows, total, rs.Err()
+	return where, args
 }
 
-// Get returns the full request/response of one exchange (reads from the tree).
+// exportCap bounds one export so an unfiltered export can't try to
+// dump millions of exchanges in a single download.
+const exportCap = 5000
+
+var exportBlobRef = regexp.MustCompile(`@blob sha256:([0-9a-f]{64}) \(len=\d+\)`)
+
+// exportRecord is one exchange in a JSON export.
+type exportRecord struct {
+	Time     string `json:"time"`
+	Host     string `json:"host"`
+	Method   string `json:"method"`
+	URL      string `json:"url"`
+	Status   int    `json:"status"`
+	Request  string `json:"request"`
+	Response string `json:"response"`
+}
+
+// Export streams the exchanges matching the same filters as Page (host
+// substring / method / free-text q), newest first, capped at limit (0 or
+// out-of-range → exportCap). format selects the shape:
+//   - "json": a JSON array of {time,host,method,url,status,request,response}
+//   - "raw" (default): one text block per exchange —
+//     ---
+//     <time> <host> <method> <url> <status>
+//     <request>
+//     <blank line>
+//     <response>
+//     ---
+//
+// Bodies are included with blob pointers resolved inline. Returns the number
+// of exchanges exported.
+func (t *Traffic) Export(host, method, q string, limit int, format string, w io.Writer) (int, error) {
+	if limit <= 0 || limit > exportCap {
+		limit = exportCap
+	}
+	hostSet, hostLike, ok, err := t.resolveHosts(host)
+	if err != nil || !ok {
+		return 0, err
+	}
+	where, args := filterWhere(hostSet, hostLike, method, q)
+	rs, err := t.db.Query(`SELECT ts,host,method,url,status,path FROM exchanges`+where+` ORDER BY ts DESC LIMIT ?`,
+		append(append([]any{}, args...), limit)...)
+	if err != nil {
+		return 0, err
+	}
+	type exRow struct {
+		ts                     int64
+		host, method, url, rel string
+		status                 int
+	}
+	var rows []exRow
+	for rs.Next() {
+		var r exRow
+		if err := rs.Scan(&r.ts, &r.host, &r.method, &r.url, &r.status, &r.rel); err != nil {
+			rs.Close()
+			return 0, err
+		}
+		rows = append(rows, r)
+	}
+	err = rs.Err()
+	rs.Close()
+	if err != nil {
+		return 0, err
+	}
+
+	jsonMode := strings.EqualFold(strings.TrimSpace(format), "json")
+	bw := bufio.NewWriter(w)
+	if jsonMode {
+		bw.WriteByte('[')
+	}
+	n := 0
+	for _, r := range rows {
+		base := filepath.Join(t.dir, r.rel)
+		reqB, rerr := os.ReadFile(filepath.Join(base, "request.http"))
+		respB, serr := os.ReadFile(filepath.Join(base, "response.http"))
+		if rerr != nil && serr != nil {
+			continue // tree files gone; skip this exchange
+		}
+		req := strings.TrimRight(string(t.inlineBlobs(reqB)), "\n")
+		resp := strings.TrimRight(string(t.inlineBlobs(respB)), "\n")
+		ts := time.Unix(r.ts, 0).Format("2006-01-02 15:04:05")
+		if jsonMode {
+			if n > 0 {
+				bw.WriteByte(',')
+			}
+			bw.WriteByte('\n')
+			enc := json.NewEncoder(bw)
+			enc.SetEscapeHTML(false)
+			rec := exportRecord{Time: ts, Host: r.host, Method: r.method, URL: r.url, Status: r.status, Request: req, Response: resp}
+			if err := enc.Encode(rec); err != nil {
+				return n, err
+			}
+		} else {
+			fmt.Fprintf(bw, "---\n%s %s %s %s %d\n%s\n\n%s\n---\n", ts, r.host, r.method, r.url, r.status, req, resp)
+		}
+		n++
+	}
+	if jsonMode {
+		bw.WriteString("]\n")
+	}
+	return n, bw.Flush()
+}
+
+// inlineBlobs replaces "@blob sha256:<h> (len=N)" body pointers with the
+// referenced blob bytes so exported files are self-contained; a missing blob
+// keeps its pointer.
+func (t *Traffic) inlineBlobs(b []byte) []byte {
+	return exportBlobRef.ReplaceAllFunc(b, func(m []byte) []byte {
+		h := string(exportBlobRef.FindSubmatch(m)[1])
+		blob, err := os.ReadFile(filepath.Join(t.dir, "_blobs", "sha256", h[:2], h[2:4], h+".bin"))
+		if err != nil {
+			return m
+		}
+		return blob
+	})
+}
+
+// placeholders returns "?,?,?" for n parameters.
+func placeholders(n int) string { return strings.TrimSuffix(strings.Repeat("?,", n), ",") }
+
+// anyList converts a string slice to driver arguments.
+func anyList(ss []string) []any {
+	out := make([]any, len(ss))
+	for i, x := range ss {
+		out[i] = x
+	}
+	return out
+}
+
 func (t *Traffic) Get(id string) (req, resp string, err error) {
 	var rel string
 	if err = t.db.QueryRow(`SELECT path FROM exchanges WHERE id=?`, id).Scan(&rel); err != nil {
@@ -419,7 +697,7 @@ type HostCount struct {
 // Hosts returns distinct recorded hosts with exchange counts, most recent
 // activity first — powers the page's target picker.
 func (t *Traffic) Hosts() ([]HostCount, error) {
-	rows, err := t.db.Query(`SELECT host, COUNT(*) AS n, MAX(ts) AS last FROM exchanges GROUP BY host ORDER BY last DESC`)
+	rows, err := t.db.Query(`SELECT host, n FROM host_stats ORDER BY last_ts DESC, host`)
 	if err != nil {
 		return nil, err
 	}
@@ -427,8 +705,7 @@ func (t *Traffic) Hosts() ([]HostCount, error) {
 	var out []HostCount
 	for rows.Next() {
 		var h HostCount
-		var last int64
-		if err := rows.Scan(&h.Host, &h.Count, &last); err != nil {
+		if err := rows.Scan(&h.Host, &h.Count); err != nil {
 			return nil, err
 		}
 		out = append(out, h)
@@ -439,7 +716,7 @@ func (t *Traffic) Hosts() ([]HostCount, error) {
 // Count returns total recorded exchanges.
 func (t *Traffic) Count() (int, error) {
 	var n int
-	err := t.db.QueryRow(`SELECT COUNT(*) FROM exchanges`).Scan(&n)
+	err := t.db.QueryRow(`SELECT COALESCE(SUM(n),0) FROM host_stats`).Scan(&n)
 	return n, err
 }
 
@@ -454,9 +731,10 @@ func (t *Traffic) DeleteHost(host string) (int64, error) {
 	like := "%" + host + "%"
 	t.wmu.Lock()
 	defer t.wmu.Unlock()
-	// Collect distinct matched hosts first (index is the source of truth for
-	// tree names) so the trees are removed even if the DELETE row count is 0.
-	rows, err := t.db.Query(`SELECT DISTINCT host FROM exchanges WHERE host LIKE ?`, like)
+	// Collect distinct matched hosts first from the small host summary (the
+	// source of truth for tree names) so the trees are removed even if the
+	// DELETE row count is 0.
+	rows, err := t.db.Query(`SELECT host FROM host_stats WHERE host LIKE ?`, like)
 	if err != nil {
 		return 0, err
 	}

@@ -108,16 +108,12 @@ type builtinAgent struct {
 
 type promptVar struct{ name, desc, example, source string }
 
-// intp 返回 v 的指针，用于给 builtinAgent 可选字段(如 runSeconds)显式取值。
-func intp(v int) *int { return &v }
-
 // builtinAgents mirrors docs §5(a). 内置工具不入库；这里只 seed agent + 变量目录。
 // 注：planner/worker/mainagent/auto 的交互式 shell 默认由下方 interactive_shell_default_v1
 // 块统一置 true（尊重后续 toggle）；这里的 interactiveShell 只给需要「建行即默认开」的新 agent。
 var builtinAgents = []builtinAgent{
 	{"goals", "目标拆解", "goals", "把渗透任务目标拆解成若干独立、可验证的子目标。", []promptVar{
 		{"EngagementDescription", "任务描述（测试对象/背景）", "测试 example.com 站点", "exploration"},
-		{"Now", "服务端当前时间(RFC3339)", "2026-06-25T00:00:00Z", "runtime"},
 	}, false, nil},
 	{"planner", "规划", "planner", "读取态势、判定目标，只在确有未覆盖的新方向时补充探索意图（每任务一个规划循环）。", []promptVar{
 		{"Goal", "任务总目标", "拿下 example.com 的管理员权限", "exploration"},
@@ -134,8 +130,6 @@ var builtinAgents = []builtinAgent{
 	}, false, nil},
 	// Auto:内置「平台操作」agent。不参与渗透编排循环,经对话页驱动,用工具操作平台。
 	{"auto", "Auto", "assistant", "平台操作助手：用工具管理任务(建/看/暂停/给提示)与资产，并可创建/修改 skill、自定义工具、MCP。", nil, false, nil},
-	// 渗透测试:内置「独立渗透」agent。经对话页驱动,一人从侦察到收尾走完整条渗透链,自己规划自己执行自己验证。默认开启交互式 shell。
-	{"pentest", "渗透测试", "assistant", "独立渗透 agent：一人从侦察→找攻击面→深入利用→验证→收尾走完整条链，自己规划、自己执行、自己对抗式验证。", nil, true, intp(0)},
 }
 
 // seedBuiltins inserts the fixed built-in agents and their variable catalog (idempotent).
@@ -161,10 +155,12 @@ ON CONFLICT (agent_id, var_name) DO UPDATE
 			}
 		}
 	}
-	// Drop catalog entries for variables that were renamed, so the white-list no
-	// longer advertises a name templates can't resolve (EngagementTitle→Description).
-	if _, err := d.Exec(`DELETE FROM agent_prompt_vars WHERE var_name IN ('EngagementTitle', 'CoverageGaps')`); err != nil {
-		return fmt.Errorf("cleanup renamed vars: %w", err)
+	// Drop catalog entries for variables that were renamed or promoted to global
+	// runtime vars (server.withGlobalVars injects them for every agent), so the
+	// white-list carries each name exactly once (EngagementTitle→Description;
+	// Now/DataDir are now global).
+	if _, err := d.Exec(`DELETE FROM agent_prompt_vars WHERE var_name IN ('EngagementTitle', 'CoverageGaps', 'Now', 'DataDir')`); err != nil {
+		return fmt.Errorf("cleanup stale vars: %w", err)
 	}
 	// Default-on interactive_shell for the runtime agents (planner/worker/mainagent/auto)
 	// ONCE — respects a later user toggle-off (guarded by a settings flag). goals(one-shot
@@ -174,6 +170,21 @@ ON CONFLICT (agent_id, var_name) DO UPDATE
 			return fmt.Errorf("seed interactive_shell defaults: %w", err)
 		}
 		_ = d.SetSetting("interactive_shell_default_v1", "true")
+	}
+	// 一次性清理：pentest 不再是内置 agent(已从 builtinAgents 移除)。删除旧库遗留行,
+	// 语义对齐 pgDeleteAgent：prompts/vars/visibility 经 FK CASCADE 删除,工具绑定与
+	// 触发器显式清理;conversations 按文本引用 agent_key,历史会话保留不受影响。
+	if v, _, _ := d.GetSetting("drop_builtin_pentest_v1"); v != "done" {
+		if _, err := d.Exec(`DELETE FROM agents WHERE key='pentest' AND builtin=true`); err != nil {
+			return fmt.Errorf("drop builtin pentest: %w", err)
+		}
+		if err := d.RemoveAgentFromToolBindings("pentest"); err != nil {
+			return fmt.Errorf("drop builtin pentest tool bindings: %w", err)
+		}
+		if err := d.DeleteTriggersForAgent("pentest"); err != nil {
+			return fmt.Errorf("drop builtin pentest triggers: %w", err)
+		}
+		_ = d.SetSetting("drop_builtin_pentest_v1", "done")
 	}
 	// Seed the built-in browser (Playwright) MCP once — DISABLED by default (用户
 	// 需要时自行启用), no proxy by default. The traffic-capture toggle injects/strips
@@ -207,7 +218,7 @@ ON CONFLICT (name) DO NOTHING`,
 // declares `mcps: ScopeSentry`, which only takes effect once it's made visible and
 // that MCP is enabled/configured.
 var builtinSkillVisibility = map[string][]string{
-	"api-recon": {"auto", "pentest", "worker"},
+	"api-recon": {"auto", "worker"},
 }
 
 // seedBuiltinSkillVisibility binds the shipped built-in skills to their default

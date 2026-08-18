@@ -295,6 +295,38 @@ export const api = {
     del<{ deleted: number }>(`/traffic?host=${encodeURIComponent(host)}`),
   trafficDeleteHosts: (hosts: string[]) =>
     del<{ deleted: number }>(`/traffic/hosts`, { hosts }),
+  // Export the exchanges matching the current filters as a download (bodies
+  // included, blob pointers resolved; server caps the row count).
+  // format: "raw" (default, one text block per exchange) or "json".
+  trafficExport: async (
+    host = "",
+    method = "",
+    q = "",
+    limit = 2000,
+    format: "raw" | "json" = "raw",
+  ) => {
+    const params = new URLSearchParams();
+    if (host) params.set("host", host);
+    if (method) params.set("method", method);
+    if (q) params.set("q", q);
+    params.set("limit", String(limit));
+    params.set("format", format);
+    const token = getToken();
+    const r = await fetch(`/api/traffic/export?${params.toString()}`, {
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+    });
+    if (!r.ok) throw new Error(`导出失败: ${r.status}`);
+    const blob = await r.blob();
+    const objUrl = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = objUrl;
+    const stamp = new Date().toISOString().slice(0, 19).replace(/[:T]/g, "");
+    a.download = `traffic-${stamp}.${format === "json" ? "json" : "txt"}`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(objUrl);
+  },
 
   // ---- app settings (runtime toggles) ----
   settings: () => get<Settings>(`/settings`),
@@ -313,14 +345,17 @@ export const api = {
     if (!r.ok) throw new Error(`report: ${r.status}`);
     return r.text();
   },
-  filterReport: async (task?: string) => {
+  archiveReport: async (task?: string) => {
     const token = getToken();
-    const r = await fetch(`/api/report/filter${tq(task)}`, {
+    const r = await fetch(`/api/report/archive${tq(task)}`, {
       method: "POST",
       headers: token ? { Authorization: `Bearer ${token}` } : {},
     });
-    if (!r.ok) throw new Error(`filter: ${r.status}`);
-    return r.json() as Promise<{ status: string }>;
+    if (!r.ok) {
+      const body = await r.json().catch(() => null);
+      throw new Error(body?.error ?? `archive: ${r.status}`);
+    }
+    return r.json() as Promise<{ status: string; conversation_id?: number }>;
   },
   reportWithStatus: async (task?: string, nofilter?: boolean) => {
     const token = getToken();

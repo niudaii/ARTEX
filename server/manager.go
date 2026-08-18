@@ -68,7 +68,7 @@ type Manager struct {
 	tasks     map[string]*Task
 	active    string
 	trafficOn bool // 流量捕获开关（默认关；settings.traffic_capture）
-	llmRecOn  bool // LLM 录制开关（默认关；settings.llm_record）
+	llmRecOn  bool // LLM 录制开关（默认开；settings.llm_record）
 	// 联网搜索开关与来源（默认关；settings.web_search_*）。brave-free 需要 braveKey；tavily 需要 tavilyKey。
 	// webSearchProxy 是独立出口代理(http/https/socks5)，与记录流量的 MITM 代理无关。
 	webSearchOn      bool
@@ -164,8 +164,8 @@ func NewManager(dir, proxyAddr string) (*Manager, error) {
 	// Asset auto-completion engine (§5): HTTP probes routed through the recording
 	// proxy (via m.ProxyAddr, which honors the traffic-capture toggle).
 	m.trafficOn = pg.GetBool(settingTrafficCapture, false)
-	// LLM 录制开关（默认关）。录制器每次调用时读取此标志。
-	m.llmRecOn = pg.GetBool(settingLLMRecord, false)
+	// LLM 录制开关（默认开）。录制器每次调用时读取此标志。
+	m.llmRecOn = pg.GetBool(settingLLMRecord, true)
 	// Load persisted web-search config (default: off, ddgs).
 	m.webSearchOn = pg.GetBool(settingWebSearchOn, false)
 	if v, ok, _ := pg.GetSetting(settingWebSearchBackend); ok && v != "" {
@@ -215,7 +215,7 @@ func (m *Manager) SetTrafficEnabled(on bool) error {
 }
 
 // LLMRecordEnabled reports whether LLM request/response recording is on
-// (默认关；settings.llm_record). The recorder consults this per call, so the
+// (默认开；settings.llm_record). The recorder consults this per call, so the
 // toggle takes effect immediately without rebuilding agents.
 func (m *Manager) LLMRecordEnabled() bool {
 	m.mu.RLock()

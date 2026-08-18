@@ -37,6 +37,7 @@ RUN CGO_ENABLED=0 go build -trimpath -tags embedui -o /artex ./cmd/artex
 
 # ---------- 2) Kali 运行时 ----------
 FROM kalilinux/kali-rolling
+ARG TARGETARCH
 ENV DEBIAN_FRONTEND=noninteractive
 
 # Web / 渗透 / recon + 运行时 + DB
@@ -88,9 +89,11 @@ RUN (curl -fsSL https://github.com/eeeeeeeeee-code/POC/archive/refs/heads/main.t
 
 WORKDIR /app
 COPY --from=build /artex /app/artex
+# JWT 字典破解工具（jwtcrack 静态二进制，按目标架构 COPY 到 PATH）
+COPY tools/jwtcrack/${TARGETARCH}/jwtcrack /usr/local/bin/jwtcrack
 COPY skills/ /app/skills/
 COPY bench/ /app/bench/
-RUN chmod +x /app/artex /app/bench/entrypoint.sh /app/bench/seed.sh
+RUN chmod +x /app/artex /usr/local/bin/jwtcrack /app/bench/entrypoint.sh /app/bench/seed.sh
 
 # data/（jwt.key 等）持久化点；8787=API，8788=流量代理
 VOLUME ["/app/data"]

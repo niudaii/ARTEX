@@ -9,6 +9,17 @@ cd "$(dirname "$0")"
 # 本地开发时加载 .env 里的环境变量（POPO 凭据等）
 set -a; [ -f .env ] && source .env; set +a
 
+# 启动前清理上次残留进程（Ctrl-C 后 artex 可能还在 graceful shutdown 没退完）
+for port in 8787 8788 5173; do
+  pids=$(lsof -ti :"$port" 2>/dev/null || true)
+  if [ -n "$pids" ]; then
+    echo "[dev] 端口 $port 被占用，清理残留: $(echo $pids | tr '\n' ' ')"
+    kill $pids 2>/dev/null || true
+    sleep 0.3
+    kill -9 $pids 2>/dev/null || true
+  fi
+done
+
 # 退出时结束本进程组内的所有子进程（后端 + 前端）。
 cleanup() { kill 0 2>/dev/null || true; }
 trap cleanup EXIT INT TERM

@@ -19,8 +19,8 @@ import (
 // page. It generalizes MainAgent.Chat: any agent (built-in OR a custom one, by
 // key) can be chatted with, multi-turn history resumed from the transcript. It is
 // a PURE ASSISTANT — base tools are the SDK DefaultTools (Bash/Read/Write/Edit/
-// LS/Glob/Grep) plus whatever skills/MCP the key is made visible; NO pentest
-// graph/task context is injected (that stays exclusive to MainAgent).
+// LS/Glob/Grep) plus whatever skills/MCP the key is made visible; NO task graph
+// context is injected (that stays exclusive to MainAgent).
 type ChatAgent struct {
 	prov        llm.Provider
 	model       string
@@ -49,7 +49,7 @@ func (c *ChatAgent) SetWebSearch(o WebSearchOpts) { c.webSearch = o }
 func (c *ChatAgent) SetGuard(g *guard.Guard) { c.guard = g }
 
 // chatWorkDirSpec returns a working-directory notice appended to every chat
-// agent's system prompt. Mirrors artifactSpec but without pentest-specific
+// agent's system prompt. Mirrors artifactSpec but without task-specific
 // wording ("payload", "抓响应体") that would be odd in a general assistant.
 func chatWorkDirSpec(workDir string) string {
 	return "\n\n**文件输出规约**：需要写文件时，一律写到工作目录 " + workDir + "（这是默认 CWD，相对路径即落在这里，也可用该绝对路径）——不要写 /tmp 或其他绝对路径。"

@@ -13,7 +13,7 @@
 - upsert_asset：登记新资产（资产图）。**你只传原始信息，key 与父子关联由代码算**：新接口→传完整 url+method（代码自动建 domain→site→endpoint、自动抽 URL 里的 query 参数，body/header 参数放 params）；指纹→type=tech,name=技术名,on_url=站点地址,props填{version,category}。多个资产放 assets 数组一次批量登记。属性写在资产自己的 props 上，探索结论不要写这里。
 - record_fact：把探索【事实/结论】写入探索图并连到意图（传 intent_id）。正向/否定结论、观察、判断用它；**一次探索的多个观察汇总成一条事实**（summary 总结一句话 + detail 放细节），不要一个属性一条。真有多条不同结论才用 facts 数组。**只写你真实看到的**：给 evidence（一行关键证据：命令+关键输出，简洁，别粘大段——细节在 detail）、标 confidence（observed 直接看到 / inferred 推断）；**否定结论**（不可注入/端口关闭等）尤其要给证据、证据弱就标 inferred，别让错的否定误导规划者放弃方向。
 - report_finding：确认漏洞 → 记录(含 PoC，传 intent_id=你领到的意图id)。
-- list_assets（查询资产，非探索节点） / asset_neighbors / list_facts(探索事实) / list_findings(漏洞) / node_detail(探索节点 id，非资产 id)：按需查上下文。
+- list_assets（查询资产，非探索节点） / list_facts(探索事实) / list_findings(漏洞) / node_detail(探索节点 id，非资产 id)：按需查上下文。
 - sleep：循环等待后台命令产出时用（之后再用 TaskOutput 查看部分输出）。
 - 交互式PTY shell（高优先级）：遇到 ssh/telnet、反弹shell 等任何需要"输入-响应"交互的服务，**高优先级**选择 shell_open 开交互式会话，使用对应的命令进行测试比如ssh/telnet。
 

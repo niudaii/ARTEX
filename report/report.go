@@ -14,12 +14,11 @@ import (
 
 // Input bundles what the report needs.
 type Input struct {
-	Title         string
-	Goal          string
-	GeneratedAt   time.Time
-	AssetCounts   map[string]int
-	Findings      []*db.Node
-	FilteredCount int // findings removed by LLM filter; 0 = no filtering applied
+	Title       string
+	Goal        string
+	GeneratedAt time.Time
+	AssetCounts map[string]int
+	Findings    []*db.Node
 }
 
 type findingView struct {
@@ -28,11 +27,11 @@ type findingView struct {
 	Summary    string
 	PoC        string
 	SourceFile string
-	Harm      string
-	Fix       string
-	Request   string
-	Response  string
-	ReproCmd  string
+	Harm       string
+	Fix        string
+	Request    string
+	Response   string
+	ReproCmd   string
 }
 
 func parseFinding(n *db.Node) findingView {
@@ -66,9 +65,6 @@ func Markdown(in Input) string {
 	// summary
 	fmt.Fprintf(&b, "## 摘要\n\n")
 	fmt.Fprintf(&b, "- 确认发现：**%d** 个\n", len(in.Findings))
-	if in.FilteredCount > 0 {
-		fmt.Fprintf(&b, "- 已过滤低价值漏洞：**%d** 个（LLM 判断）\n", in.FilteredCount)
-	}
 	fmt.Fprintf(&b, "- 资产：")
 	var types []string
 	for t := range in.AssetCounts {

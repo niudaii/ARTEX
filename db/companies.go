@@ -254,7 +254,7 @@ WHERE type IN ('root_domain','subdomain','service','endpoint')
 UPDATE assets a SET company_id = (
     SELECT cs.company_id FROM company_scope cs
     WHERE cs.kind IN ('ip','cidr')
-      AND cs.net >>= a.ip::inet
+      AND cs.net >>= inet_or_null(a.ip)
     ORDER BY masklen(cs.net) DESC
     LIMIT 1
 )
@@ -299,7 +299,7 @@ UPDATE assets a SET company_id = $1
 FROM company_scope cs
 WHERE cs.company_id = $1
   AND cs.kind IN ('ip','cidr')
-  AND cs.net >>= a.ip::inet
+  AND cs.net >>= inet_or_null(a.ip)
   AND type IN ('ip','subdomain','service','endpoint')
   AND a.company_id IS NULL`, companyID); err != nil {
 		return err

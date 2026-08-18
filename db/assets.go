@@ -96,6 +96,15 @@ func (s *AssetStore) Companies() *CompanyStore { return s.company }
 // Helpers
 // =====================================================================
 
+// sanitizeIP 原样返回可解析的 IP，否则返回 ""——service/endpoint 行的辅助 ip
+// 字段不允许混入主机名（脏数据会让 ::inet 转换的查询整体报错，见 UpsertIP）。
+func sanitizeIP(ip string) string {
+	if ip != "" && net.ParseIP(ip) == nil {
+		return ""
+	}
+	return ip
+}
+
 // calcCSegment computes the /24 (IPv4) or /48 (IPv6) network for an IP string.
 func calcCSegment(ipStr string) string {
 	if ipStr == "" {
@@ -265,6 +274,11 @@ type UpsertIPReq struct {
 func (s *AssetStore) UpsertIP(req UpsertIPReq) (int64, error) {
 	if req.IP == "" {
 		return 0, fmt.Errorf("ip is required")
+	}
+	if net.ParseIP(req.IP) == nil {
+		// agent/外部输入可能把主机名误填进 ip 字段；拒绝入库，避免脏数据
+		// 让后续 ::inet 转换的查询整体报错。
+		return 0, fmt.Errorf("invalid ip: %q", req.IP)
 	}
 	cseg := calcCSegment(req.IP)
 	companyID, err := s.company.ResolveCompany("", req.IP)
@@ -547,6 +561,7 @@ func (s *AssetStore) UpsertHTTPService(req UpsertHTTPServiceReq) (int64, error) 
 	if req.URL == "" {
 		return 0, fmt.Errorf("url is required")
 	}
+	req.IP = sanitizeIP(req.IP)
 	normURL := normalizeURL(req.URL)
 	domain, port, serviceName := parseURL(normURL)
 	rootDomain, _ := RootDomain(domain)
@@ -665,6 +680,7 @@ type UpsertOtherServiceReq struct {
 
 // UpsertOtherService inserts or merges a non-HTTP service asset.
 func (s *AssetStore) UpsertOtherService(req UpsertOtherServiceReq) (int64, error) {
+	req.IP = sanitizeIP(req.IP)
 	if req.Domain == "" && req.IP == "" {
 		return 0, fmt.Errorf("domain or ip is required")
 	}
@@ -795,6 +811,7 @@ func (s *AssetStore) UpsertEndpoint(req UpsertEndpointReq) (int64, error) {
 	if req.URL == "" {
 		return 0, fmt.Errorf("url is required")
 	}
+	req.IP = sanitizeIP(req.IP)
 	if req.Method == "" {
 		return 0, fmt.Errorf("method is required")
 	}

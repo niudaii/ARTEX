@@ -1,7 +1,8 @@
 "use client";
 
 import * as React from "react";
-import { FileTextIcon, CopyIcon, CheckIcon, FilterIcon, Loader2Icon, EyeIcon } from "lucide-react";
+import { FileTextIcon, CopyIcon, CheckIcon, ArchiveIcon, Loader2Icon, EyeIcon } from "lucide-react";
+import { useRouter } from "next/navigation";
 import { toast } from "sonner";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
@@ -9,6 +10,7 @@ import { api } from "@/lib/api";
 import { copyToClipboard } from "@/lib/utils";
 
 export function ReportTab({ taskId }: { taskId: string }) {
+  const router = useRouter();
   const [report, setReport] = React.useState<string>("");
   const [loading, setLoading] = React.useState(true);
   const [copied, setCopied] = React.useState(false);
@@ -25,7 +27,7 @@ export function ReportTab({ taskId }: { taskId: string }) {
         setFiltered(isFiltered);
         if (stillFiltering) {
           setFiltering(true);
-          pollFiltered();
+          pollArchived();
         }
       })
       .catch(() => setReport(""))
@@ -51,22 +53,27 @@ export function ReportTab({ taskId }: { taskId: string }) {
     }
   }
 
-  async function runFilter() {
+  async function runArchive() {
     setFiltering(true);
     try {
-      await api.filterReport(taskId);
-      toast.success("LLM 过滤已启动，正在生成…");
-      pollFiltered();
+      const { conversation_id: convId } = await api.archiveReport(taskId);
+      toast.success("报告归档已启动，agent 正在处理…", {
+        action: convId
+          ? { label: "查看进度", onClick: () => router.push(`/chat?c=${convId}`) }
+          : undefined,
+      });
+      pollArchived();
     } catch (e) {
-      toast.error(e instanceof Error ? e.message : "过滤失败");
+      toast.error(e instanceof Error ? e.message : "归档失败");
       setFiltering(false);
     }
   }
 
-  function pollFiltered() {
+  function pollArchived() {
     let elapsed = 0;
     const interval = 3000;
-    const maxWait = 120000;
+    // agent 归档 run 的墙钟上限约 10 分钟（auto agent run_seconds 默认 600）
+    const maxWait = 600000;
     const poll = async () => {
       try {
         const { text, filtering: stillFiltering } = await api.reportWithStatus(taskId);
@@ -74,13 +81,13 @@ export function ReportTab({ taskId }: { taskId: string }) {
           setReport(text);
           setFiltered(true);
           setFiltering(false);
-          toast.success("LLM 过滤完成，报告已更新");
+          toast.success("报告归档完成，报告已更新");
           return;
         }
         elapsed += interval;
         if (elapsed >= maxWait) {
           setFiltering(false);
-          toast.error("过滤超时，请稍后刷新重试");
+          toast.error("归档超时，请稍后刷新重试");
           return;
         }
         pollRef.current = setTimeout(poll, interval);
@@ -90,7 +97,7 @@ export function ReportTab({ taskId }: { taskId: string }) {
           pollRef.current = setTimeout(poll, interval);
         } else {
           setFiltering(false);
-          toast.error("过滤超时，请稍后刷新重试");
+          toast.error("归档超时，请稍后刷新重试");
         }
       }
     };
@@ -125,9 +132,9 @@ export function ReportTab({ taskId }: { taskId: string }) {
                   显示全部
                 </Button>
               ) : (
-                <Button size="sm" variant="outline" onClick={runFilter} disabled={filtering}>
-                  {filtering ? <Loader2Icon className="animate-spin" /> : <FilterIcon />}
-                  {filtering ? "过滤中…" : "LLM 过滤"}
+                <Button size="sm" variant="outline" onClick={runArchive} disabled={filtering}>
+                  {filtering ? <Loader2Icon className="animate-spin" /> : <ArchiveIcon />}
+                  {filtering ? "归档中…" : "报告归档"}
                 </Button>
               )}
               <Button size="sm" variant="outline" onClick={copy}>

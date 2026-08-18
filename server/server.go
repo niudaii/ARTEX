@@ -29,8 +29,6 @@ import (
 
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
-const settingFilterPrompt = "filter_prompt" // LLM vulnerability filter system prompt (empty = use built-in default)
-
 type Server struct {
 	m      *Manager
 	engine *Engine
@@ -132,11 +130,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		}
 		return s.agentsForProfile(*t.LLMProfileID)
 	})
-	// persist the LLM-filtered report when a task reaches terminal state.
-	// persist the report and send a POPO completion notification.
+	// Archive the report when a task reaches terminal state; the POPO completion
+	// notification fires AFTER the archive finishes (see persistTaskReport).
 	s.engine.SetOnTaskDone(func(taskID string) {
 		s.persistTaskReport(taskID)
-		s.notifyTaskDone(taskID)
 	})
 	// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
 	// override row, agents keep their built-in defaults — behavior is unchanged.
@@ -624,6 +621,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("DELETE /api/traffic", s.deleteTraffic)
 	mux.HandleFunc("DELETE /api/traffic/hosts", s.deleteTrafficHosts)
 	mux.HandleFunc("GET /api/traffic/exchange", s.getTrafficExchange)
+	mux.HandleFunc("GET /api/traffic/export", s.exportTraffic)
 	mux.HandleFunc("GET /api/commands", s.pgListCommands)
 	mux.HandleFunc("GET /api/llm/records", s.pgListLLMRecords)
 	mux.HandleFunc("DELETE /api/llm/records", s.pgDeleteLLMRecords)
@@ -633,7 +631,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
 	mux.HandleFunc("POST /api/settings/web-search/test", s.testWebSearch)
 	mux.HandleFunc("GET /api/report", s.getReport)
-	mux.HandleFunc("POST /api/report/filter", s.filterReport)
+	mux.HandleFunc("POST /api/report/archive", s.archiveReport)
 	mux.HandleFunc("POST /api/chat", s.chat)
 	mux.HandleFunc("POST /api/tasks/{id}/chat/stop", s.stopChat)
 
@@ -1052,12 +1050,12 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 }
 
 type createTaskReq struct {
-	Description     string `json:"description"`
-	Goal            string `json:"goal"`
-	LLMProfileID    *int64 `json:"llm_profile_id,omitempty"`    // 指定运行本任务的 LLM 配置;省略/null=用激活配置
-	TimeoutSeconds  int    `json:"timeout_seconds"`               // 任务级超时(秒);0/省略=不限时
-	PlanHeartbeatSeconds int `json:"plan_heartbeat_seconds"`     // planner 心跳触发间隔(秒);0/省略=默认600(10min);下限=默认=600,低于自动抬到600
-	SeedFirstIntent *bool  `json:"seed_first_intent,omitempty"` // 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;省略/null=默认关闭,走标准先规划再执行。显式传 true 才开(CTF 常一 work 解决时可省掉开跑前的 planner 轮)。
+	Description          string `json:"description"`
+	Goal                 string `json:"goal"`
+	LLMProfileID         *int64 `json:"llm_profile_id,omitempty"`    // 指定运行本任务的 LLM 配置;省略/null=用激活配置
+	TimeoutSeconds       int    `json:"timeout_seconds"`             // 任务级超时(秒);0/省略=不限时
+	PlanHeartbeatSeconds int    `json:"plan_heartbeat_seconds"`      // planner 心跳触发间隔(秒);0/省略=默认600(10min);下限=默认=600,低于自动抬到600
+	SeedFirstIntent      *bool  `json:"seed_first_intent,omitempty"` // 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;省略/null=默认关闭,走标准先规划再执行。显式传 true 才开(CTF 常一 work 解决时可省掉开跑前的 planner 轮)。
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -1767,16 +1765,17 @@ func (s *Server) getTraffic(w http.ResponseWriter, r *http.Request) {
 	q := r.URL.Query()
 	page := atoiDefault(q.Get("page"), 0)
 	size := atoiDefault(q.Get("size"), 100)
-	ex, matched, _ := tr.Page(q.Get("host"), q.Get("method"), q.Get("q"), page, size)
+	ex, matched, capped, _ := tr.Page(q.Get("host"), q.Get("method"), q.Get("q"), page, size)
 	count, _ := tr.Count() // global total, for the stat card
 	writeJSON(w, 200, map[string]any{
-		"enabled":   s.m.TrafficEnabled(), // reflect the capture toggle
-		"proxy":     s.m.ProxyAddr(),
-		"count":     count,   // total recorded (unfiltered)
-		"total":     matched, // rows matching the current filter (for pagination)
-		"page":      page,
-		"size":      size,
-		"exchanges": trafficDTOs(ex),
+		"enabled":      s.m.TrafficEnabled(), // reflect the capture toggle
+		"proxy":        s.m.ProxyAddr(),
+		"count":        count,   // total recorded (unfiltered)
+		"total":        matched, // rows matching the current filter (for pagination)
+		"total_capped": capped,  // true when total hit countCap (display "N+")
+		"page":         page,
+		"size":         size,
+		"exchanges":    trafficDTOs(ex),
 	})
 }
 
@@ -1876,6 +1875,36 @@ func (s *Server) getTrafficExchange(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, map[string]any{"req": req, "resp": resp})
 }
 
+// exportTraffic streams the exchanges matching the current list filters
+// (host substring / method / free-text q) as a download, newest first, capped
+// by ?limit (default 2000, max 5000). ?format=json returns a JSON array; the
+// default raw format is plain text with one block per exchange. Bodies are
+// included with blob pointers resolved.
+func (s *Server) exportTraffic(w http.ResponseWriter, r *http.Request) {
+	tr := s.m.Traffic()
+	if tr == nil {
+		writeErr(w, 404, "traffic disabled")
+		return
+	}
+	q := r.URL.Query()
+	format := "raw"
+	if strings.EqualFold(strings.TrimSpace(q.Get("format")), "json") {
+		format = "json"
+	}
+	stamp := time.Now().Format("20060102-150405")
+	if format == "json" {
+		w.Header().Set("Content-Type", "application/json; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="traffic-%s.json"`, stamp))
+	} else {
+		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="traffic-%s.txt"`, stamp))
+	}
+	n, err := tr.Export(q.Get("host"), q.Get("method"), q.Get("q"), atoiDefault(q.Get("limit"), 2000), format, w)
+	if err != nil {
+		log.Printf("[traffic] export: %v (exported %d exchanges)", err, n)
+	}
+}
+
 // getSettings returns the runtime app settings the UI toggles. The Brave API key
 // is returned as a boolean presence flag (brave_key_set), never the value itself,
 // so the UI can show "configured" without echoing the secret back.
@@ -1895,8 +1924,8 @@ func (s *Server) settingsPayload() map[string]any {
 		"tavily_key_set":     strings.TrimSpace(tavilyKey) != "",
 		"web_search_proxy":   proxy,                       // 独立出口代理(http/https/socks5)，空=直连
 		"python_interpreter": strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
-		"filter_prompt":      s.getFilterPrompt(),          // LLM 漏洞过滤提示词(空=内置默认)
 		"workers":            s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"task_url":           s.taskURLBase(),             // 任务完成推送消息中的链接 base URL(空=不附带链接)
 	}
 }
 
@@ -1920,7 +1949,7 @@ func (s *Server) pgDetectPython(w http.ResponseWriter, r *http.Request) {
 func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		TrafficCapture *bool `json:"traffic_capture"`
-		LLMRecord      *bool `json:"llm_record"` // LLM 录制开关（默认关）；即时生效，无需重建 agent
+		LLMRecord      *bool `json:"llm_record"` // LLM 录制开关（默认开）；即时生效，无需重建 agent
 		// Web search. WebSearchEnabled/Backend toggle the tool + backend; BraveKey/TavilyKey
 		// are optional — omit (null) to leave a stored key untouched, send "" to clear.
 		WebSearchEnabled *bool   `json:"web_search_enabled"`
@@ -1929,8 +1958,8 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		TavilyKey        *string `json:"tavily_search_api_key"`
 		WebSearchProxy   *string `json:"web_search_proxy"`   // 独立出口代理(http/https/socks5)；null=不改，""=清空
 		PythonInterp     *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
-		FilterPrompt     *string `json:"filter_prompt"`     // LLM 漏洞过滤提示词(空串=恢复默认)
 		Workers          *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
+		TaskURL          *string `json:"task_url"`           // 任务完成推送链接 base URL(空串=不附带链接)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -1944,6 +1973,12 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 	}
 	if req.PythonInterp != nil {
 		if err := s.m.pg.SetSetting(settingPythonInterp, strings.TrimSpace(*req.PythonInterp)); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+	}
+	if req.TaskURL != nil {
+		if err := s.m.pg.SetSetting(settingTaskURL, strings.TrimSpace(*req.TaskURL)); err != nil {
 			writeErr(w, 500, err.Error())
 			return
 		}
@@ -2150,45 +2185,77 @@ func (s *Server) fallbackChat(t *Task, msg string) string {
 	}
 }
 
-// getFilterPrompt returns the configured LLM filter system prompt, or the
-// built-in default when the setting is unset/empty.
-func (s *Server) getFilterPrompt() string {
-	v, ok, _ := s.m.PG().GetSetting(settingFilterPrompt)
-	if ok && strings.TrimSpace(v) != "" {
-		return v
-	}
-	return report.DefaultFilterSystemPrompt
-}
-
-// persistTaskReport generates the LLM-filtered report and saves it to the DB.
-// Called asynchronously when a task reaches terminal state (done/timeout).
+// persistTaskReport archives the task report when a task reaches terminal state
+// (done/timeout): runs the same agent-driven deep archive as the report-tab
+// button, and sends the POPO completion notification AFTER the archive finishes.
+// Falls back to an instant unfiltered report (notified immediately) when the
+// chat agent isn't configured, so a completed task always has a report.
 func (s *Server) persistTaskReport(taskID string) {
 	t := s.m.ResolveTask(taskID)
 	if t == nil {
 		log.Printf("[report/persist] task %s: task not in memory, skipping", taskID)
+		s.notifyTaskDone(taskID)
 		return
 	}
-	t.reportFiltering.Store(true)
-	defer t.reportFiltering.Store(false)
-	md := s.generateReport(t, s.newFilterProv(), s.getFilterPrompt())
+	if t.reportFiltering.Load() {
+		log.Printf("[report/persist] task %s: archive already in progress, notifying now", taskID)
+		s.notifyTaskDone(taskID)
+		return
+	}
+	if s.chatAgentRef() != nil {
+		if convID, err := s.startArchiveRun(t, true); err != nil {
+			log.Printf("[report/persist] task %s: start archive failed: %v", taskID, err)
+		} else {
+			log.Printf("[report/persist] task %s: agent archive started (conv %d), notify after completion", taskID, convID)
+			return
+		}
+	}
+	md := s.generateReport(t)
 	taskIDInt, _ := strconv.ParseInt(taskID, 10, 64)
 	if err := s.m.PG().SaveReport(taskIDInt, md); err != nil {
 		log.Printf("[report/persist] task %s: %v", taskID, err)
-		return
+	} else {
+		log.Printf("[report/persist] task %s: unfiltered report saved (%d chars)", taskID, len(md))
 	}
-	log.Printf("[report/persist] task %s: report saved (%d chars)", taskID, len(md))
+	s.notifyTaskDone(taskID)
 }
 
-// generateReport builds the Markdown report for a task. When prov != nil,
-// applies LLM filtering with the given system prompt; otherwise renders all findings.
-func (s *Server) generateReport(t *Task, prov llm.Provider, systemPrompt string) string {
-	findings, _ := t.Store.ListByKind(db.KindFinding, 1000)
-	origCount := len(findings)
-	filteredCount := 0
-	if prov != nil {
-		findings = report.FilterFindings(s.ctx, findings, prov, systemPrompt)
-		filteredCount = origCount - len(findings)
+// startArchiveRun creates a conversation for the built-in Auto agent with the
+// Harness-style archive instruction and runs it in the background, holding
+// reportFiltering for the duration. Shared by the report-tab button and the
+// task-completion auto archive; notifyOnDone sends the POPO task-done push
+// after the agent run ends (completion path only, not the manual button).
+func (s *Server) startArchiveRun(t *Task, notifyOnDone bool) (int64, error) {
+	pg := s.m.PG()
+	c, err := pg.CreateConversation("auto", "报告归档 · task#"+t.ID, nil)
+	if err != nil {
+		return 0, err
 	}
+	msg := s.archiveMessage(t)
+	if _, err := pg.AppendConvActivity(c.ID, db.Activity{Worker: c.AgentKey, Kind: "user", Summary: firstLine(msg, 200), Detail: msg}); err != nil {
+		log.Printf("[report/archive] conv %d append msg failed: %v", c.ID, err)
+	}
+	_ = pg.TouchConversation(c.ID)
+	t.reportFiltering.Store(true)
+	go func() {
+		defer t.reportFiltering.Store(false)
+		busyKey := s.convBusyKey(c.ID)
+		s.chatMu.Lock()
+		s.chatBusy[busyKey] = true
+		s.chatMu.Unlock()
+		s.runConversationSync(c, msg, busyKey)
+		log.Printf("[report/archive] task %s: agent run finished (conv %d)", t.ID, c.ID)
+		if notifyOnDone {
+			s.notifyTaskDone(t.ID)
+		}
+	}()
+	return c.ID, nil
+}
+
+// generateReport renders the full (unfiltered) Markdown report for a task.
+// Deep filtering/merging is the agent archive's job, not this renderer's.
+func (s *Server) generateReport(t *Task) string {
+	findings, _ := t.Store.ListByKind(db.KindFinding, 1000)
 	counts := map[string]int{}
 	for _, ty := range []string{"root_domain", "ip", "subdomain", "app", "service", "endpoint"} {
 		ns, _ := s.m.Assets().QueryByType(ty, 100000, 0)
@@ -2198,59 +2265,90 @@ func (s *Server) generateReport(t *Task, prov llm.Provider, systemPrompt string)
 	}
 	return report.Markdown(report.Input{
 		Title: t.Description, Goal: t.Goal, GeneratedAt: time.Now(),
-		AssetCounts: counts, Findings: findings, FilteredCount: filteredCount,
+		AssetCounts: counts, Findings: findings,
 	})
 }
 
-// newFilterProv creates an llm.Provider for filtering, or nil when LLM is off.
-func (s *Server) newFilterProv() llm.Provider {
-	s.cfgMu.Lock()
-	cfg, llmOn := s.llmCfg, s.llmOn
-	s.cfgMu.Unlock()
-	if !llmOn {
-		return nil
-	}
-	// Filtering is a lightweight classification task; disable thinking so
-	// reasoning tokens can't consume the entire MaxTokens budget and leave
-	// no text output (which manifests as "parse verdicts: unexpected end of
-	// JSON input (raw: )").
-	cfg.ReasoningEffort = "off"
-	prov, err := cfg.NewProvider()
-	if err != nil {
-		return nil
-	}
-	return prov
-}
-
-// filterReport starts LLM filtering asynchronously and returns immediately.
-// The frontend polls GET /api/report until X-Report-Filtering clears.
-// POST /api/report/filter?task=xxx
-func (s *Server) filterReport(w http.ResponseWriter, r *http.Request) {
+// archiveReport starts an agent-driven report archive run and returns immediately.
+// A conversation is created for the built-in Auto agent with a Harness-style
+// instruction (read findings → filter → group/merge → assemble → write back via
+// archive_task_report). The frontend polls GET /api/report until
+// X-Report-Filtering clears.
+// POST /api/report/archive?task=xxx
+func (s *Server) archiveReport(w http.ResponseWriter, r *http.Request) {
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))
 	if t == nil {
 		writeErr(w, 404, "no active task")
 		return
 	}
 	if t.reportFiltering.Load() {
-		writeErr(w, 409, "正在过滤中，请稍候")
+		writeErr(w, 409, "报告归档进行中，请稍候")
 		return
 	}
-	prov := s.newFilterProv()
-	if prov == nil {
-		writeErr(w, 400, "LLM 未配置，无法过滤")
+	if s.chatAgentRef() == nil {
+		writeErr(w, 400, "LLM 未配置，无法归档")
 		return
 	}
-	t.reportFiltering.Store(true)
-	go func() {
-		defer t.reportFiltering.Store(false)
-		md := s.generateReport(t, prov, s.getFilterPrompt())
-		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
-		if err := s.m.PG().SaveReport(taskIDInt, md); err != nil {
-			log.Printf("[report/filter] task %s persist: %v", t.ID, err)
-		}
-		log.Printf("[report/filter] task %s: filter done (%d chars)", t.ID, len(md))
-	}()
-	writeJSON(w, 202, map[string]any{"status": "filtering"})
+	convID, err := s.startArchiveRun(t, false)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 202, map[string]any{"status": "archiving", "conversation_id": convID})
+}
+
+// archiveMessage builds the Harness-style instruction for the Auto agent's
+// archive run (phases + gates + boundaries, no knowledge dumping): read all
+// findings, drop false positives, group/merge by domain and attack chain,
+// assemble the standardized report, then write it back via archive_task_report.
+func (s *Server) archiveMessage(t *Task) string {
+	var b strings.Builder
+	fmt.Fprintf(&b, "【报告归档任务】task_id=%s\n", t.ID)
+	if v := strings.TrimSpace(t.Description); v != "" {
+		fmt.Fprintf(&b, "任务描述：%s\n", v)
+	}
+	if v := strings.TrimSpace(t.Goal); v != "" {
+		fmt.Fprintf(&b, "任务目标：%s\n", v)
+	}
+	b.WriteString(`
+按以下阶段执行报告归档，上一阶段完成并自检后才进入下一阶段：
+
+## 阶段 1 · 读取发现（门槛：必须读全）
+调用 list_task_findings(task_id="` + t.ID + `") 读取该任务全部确认漏洞（含漏洞类型/等级/摘要/PoC/证据）。
+- 结果被截断或提示更多时继续读全；只凭部分条目归档视为失败。
+
+## 阶段 2 · 过滤误报
+逐条判定并剔除：扫描器误报、证据不支持结论的、无实际利用影响的纯信息类条目。
+- 判定只依据该条目自身证据，不允许臆测。
+- 记住被剔除条目的数量与原因概要，写入报告头部说明。
+
+## 阶段 3 · 分组与合并
+1. 按域名分组：从每条漏洞的 PoC/证据中提取目标 hostname，按站点归组。
+2. 重复合并：同域名 + 同漏洞类型 + 相同/相似端点 → 合并为一条；描述拼接，PoC 取最完整的。
+3. 攻击链合并：同域名内多条漏洞构成逻辑利用链（如 RCE → 凭据泄露 → 数据失陷）→ 合并为一条主漏洞，子漏洞以 N.x 层级展开；只合并有因果链的，不机械合并。
+
+## 阶段 4 · 组装归档报告（Markdown）
+1. 标题：# 渗透测试报告 — {任务描述}
+2. 概览：原始发现数 → 归档后数量、剔除说明、等级分布（严重/高危/中危/低危）、覆盖域名列表。
+3. 漏洞总结表（顶格书写，勿缩进）：
+   表头：| # | 等级 | 域名 | 标题 | 大概内容 | 修复状态 |
+   等级用 emoji（🔴 严重 / 🟠 高危 / 🟡 中危 / 🟢 低危）；修复状态默认 ⬜ 待修复；按影响从高到低排列，与正文编号一一对应。
+4. 正文按域名分组，每条漏洞使用统一模板，字段齐全：
+   ## N. [等级] 漏洞标题
+   **漏洞详情**（原始描述）/ **请求包**（http 代码块）/ **响应包**（http 代码块，截断至 1500 字符）/ **复现命令**（bash 代码块）/ **漏洞危害** / **修复建议**（编号列表）
+   请求/响应包必须来自 finding 证据原文，缺失则注明「证据缺失」，禁止编造。
+5. 排序与编号：等级优先（严重>高危>中危>低危）；同等级按实际影响（RCE/代码执行 > 数据读写篡改 > 大量敏感数据泄露 > 认证绕过 > 越权 > SSRF/内网探测 > 信息泄露）；攻击链置于所属域名组首位；编号跨域名组全局递增。
+
+## 阶段 5 · 写回归档（门槛：必须调用工具）
+调用 archive_task_report(task_id="` + t.ID + `", markdown=完整报告) 写回。
+- 写回成功即归档完成；之后只回复一行归档结果摘要（归档条目数/等级分布/写回状态），不要输出报告全文。
+
+## 边界
+- 只读整理：禁止对任何目标发起请求、攻击、复测或扫描。
+- 禁止编造、夸大或润色漏洞事实；凭据类证据保持原样（证据完整性）。
+- 过滤后为 0 条时，仍写回一份说明「无可归档漏洞及原因」的简报。
+`)
+	return b.String()
 }
 
 func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
@@ -2264,8 +2362,9 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("X-Report-Filtering", "1")
 	}
 	noFilter := r.URL.Query().Get("nofilter") == "1"
-	// For terminal tasks with a persisted report, return it directly (unless ?nofilter=1).
-	if !noFilter && db.IsTerminal(t.Status) {
+	// A persisted report (agent-archived at task completion or from the report
+	// tab) wins regardless of task state; ?nofilter=1 shows the raw view.
+	if !noFilter {
 		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
 		if md, ok, _ := s.m.PG().GetReport(taskIDInt); ok {
 			w.Header().Set("X-Report-Filtered", "1")
@@ -2274,15 +2373,10 @@ func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 			_, _ = w.Write([]byte(md))
 			return
 		}
-		// No persisted report (e.g. task completed before this feature). Skip LLM
-		// filtering — render instantly like the old behavior. The filtered report
-		// was only persisted at completion time; re-running the filter now would block
-		// the HTTP request for up to 90s.
-		noFilter = true
 	}
-	// Generate on-the-fly — always unfiltered (instant). LLM filtering is applied
-	// via the explicit filter button or automatically on task completion.
-	md := s.generateReport(t, nil, s.getFilterPrompt())
+	// Generate on-the-fly — always unfiltered (instant). The archived report
+	// comes from the agent archive (report-tab button or task completion).
+	md := s.generateReport(t)
 	w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
 	w.WriteHeader(200)
 	_, _ = w.Write([]byte(md))

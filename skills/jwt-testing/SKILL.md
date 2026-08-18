@@ -32,7 +32,8 @@ description: >
 
 | 资源 | 路径 | 说明 |
 |------|------|------|
-| JWT 密钥字典 | `/Users/zp857/workspace/tools/jwt/keys.txt` | 12.6 万条常见弱密钥，HMAC 爆破专用 |
+| JWT 密钥字典 | `${SKILL_DIR}/references/keys.txt` | 12.6 万条常见弱密钥，HMAC 爆破专用。`${SKILL_DIR}` 由运行时自动替换为本 skill 目录（本地 Mac 与 Docker 部署通用） |
+| 爆破工具 | `jwtcrack`（预装于 `/usr/local/bin/jwtcrack`） | 静态二进制，PATH 直接调用，本地 Mac 与 Docker 容器均可用。`crack` 字典模式，`brute` 字符爆破模式（多线程） |
 
 ---
 
@@ -79,8 +80,8 @@ description: >
 | 阶段 | 字典来源 | 超时 | 说明 |
 |------|---------|------|------|
 | 1. 已知弱密钥 | 手工列表 | 10s | `secret`、`key`、`123456`、`password`、项目名、`jwt_secret`、`SECRET_KEY`、`your-256-bit-secret` |
-| 2. 小字典快速验证 | `keys.txt` 前 1000 行 | 2min | `head -1000 /Users/zp857/workspace/tools/jwt/keys.txt > /tmp/jwt_small.dict` |
-| 3. 全量字典 | `/Users/zp857/workspace/tools/jwt/keys.txt`（12.6 万条） | 5min | 超时无命中 → 结论为"弱密钥未命中，可能为强密钥" |
+| 2. 小字典快速验证 | `keys.txt` 前 1000 行 | 2min | `head -1000 ${SKILL_DIR}/references/keys.txt > /tmp/jwt_small.dict && jwtcrack crack -token <token> -dict /tmp/jwt_small.dict` |
+| 3. 全量字典 | `${SKILL_DIR}/references/keys.txt`（12.6 万条） | 5min | `jwtcrack crack -token <token> -dict ${SKILL_DIR}/references/keys.txt`；超时无命中 → 结论为"弱密钥未命中，可能为强密钥" |
 
 **编码变换**（阶段 2-3 无命中时追加）：
 - md5 编码：`secret = md5(dict_value)`
@@ -88,9 +89,15 @@ description: >
 - base64 编码：`secret = base64(dict_value)`
 
 **爆破工具选择**：
-- `hashcat -m 16500`：GPU 加速，适合全量字典
-- `john --format=HMAC-SHA256`：CPU 多核，适合中等字典
-- Python `pyjwt` + 多线程：灵活，适合带编码变换的场景
+- `jwtcrack crack -token <token> -dict <dict>`：首选，本地 Mac 与 Docker 容器均已预装（`/usr/local/bin/jwtcrack`），输出命中密钥或"破解失败"
+- `jwtcrack brute -token <token> -minLen 1 -maxLen 6 -threads 0`：短密钥字符爆破（多线程全核），字典未命中时的补充
+- Python `pyjwt` + 多线程：适合带编码变换（md5/base64）的场景，jwtcrack 不支持变换
+- `hashcat -m 16500` / `john --format=HMAC-SHA256`：jwtcrack 不可用时的备选
+
+**jwtcrack 注意**：
+- 只验签名、不校验 `exp`/`nbf` 等 claims（ARTEX 定制补丁版），**过期 token 也能正常破解**
+- 仅接受三段式 `header.payload.signature` 结构；token 不完整时先用离线解码确认结构
+- `crack` 单线程但速度快（约 30 万次/秒），全量 12.6 万字典约 1 秒跑完，远低于 5min 超时
 
 **拿到密钥后**：立即伪造高权限 token（篡改 `role`/`userId`/`isAdmin`），用真实请求验证是否被接受。
 

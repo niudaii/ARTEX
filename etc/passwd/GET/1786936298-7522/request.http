@@ -1,0 +1,4 @@
+GET /test_cdn/../../../../etc/passwd HTTP/2.0
+Accept: */*
+User-Agent: Mozilla/5.0
+

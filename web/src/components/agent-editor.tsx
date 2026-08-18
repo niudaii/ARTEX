@@ -84,7 +84,9 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
       .then((d) => {
         setDetail(d);
         setPrompt(d.prompt ?? "");
-        setVariables(d.variables ?? []);
+        // Dedupe by name (chips are keyed by v.name): catalog entries may
+        // collide with global runtime vars like {{.Now}}.
+        setVariables((d.variables ?? []).filter((v, i, all) => all.findIndex((x) => x.name === v.name) === i));
         setVersions(d.versions ?? []);
         setMcpVisible(d.visibility?.mcp ?? []);
         setSkillVisible(d.visibility?.skill ?? []);

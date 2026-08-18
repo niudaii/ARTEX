@@ -720,7 +720,7 @@ export default function ChatPage() {
 
   const selected = convs.find((c) => c.id === selectedId) ?? null;
   // conversation agents: custom agents + conversational built-ins (role=assistant,
-  // e.g. Auto / 渗透测试). The orchestration built-ins (goals/planner/mainagent/worker)
+  // e.g. Auto). The orchestration built-ins (goals/planner/mainagent/worker)
   // are task-specific and stay hidden from the chat page.
   const chatAgents = agents.filter((a) => !a.builtin || a.role === "assistant");
 

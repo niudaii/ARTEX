@@ -1,0 +1,4 @@
+GET /favicon.ico/../../../../etc/passwd HTTP/1.1
+User-Agent: curl/8.7.1
+Accept: */*
+

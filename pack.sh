@@ -7,7 +7,7 @@
 #   目标架构：amd64（默认）/ arm64
 #
 # 产出 artex-deploy/，内含交叉编译的 Linux 二进制 + 一键启动脚本
-# 更新二进制：重新编译 → scp 覆盖 → docker compose restart
+# 更新二进制：重新编译 → scp 覆盖 → ./restart.sh
 # ─────────────────────────────────────────────────────────
 set -euo pipefail
 cd "$(cd "$(dirname "$0")" && pwd)"
@@ -25,16 +25,12 @@ die(){  printf '\033[31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
 command -v go >/dev/null 2>&1 || die "未检测到 Go，请先安装 Go >= 1.26"
 ok "Go: $(go version)"
 
-# ── 检查前端静态产物 ──
-if [ ! -d server/webui/dist ] || [ -z "$(ls -A server/webui/dist 2>/dev/null)" ]; then
-    info "前端静态产物不存在，开始构建…"
-    command -v npm >/dev/null 2>&1 || die "未检测到 npm，请先安装 Node.js"
-    ( cd web && npm ci && npm run build:static )
-    mkdir -p server/webui && rm -rf server/webui/dist && cp -r web/out server/webui/dist
-    ok "前端静态产物已就绪"
-else
-    ok "前端静态产物已存在（server/webui/dist/）"
-fi
+# ── 构建前端静态产物 ──
+info "构建前端静态产物…"
+command -v npm >/dev/null 2>&1 || die "未检测到 npm，请先安装 Node.js"
+( cd web && npm ci && npm run build:static )
+mkdir -p server/webui && rm -rf server/webui/dist && cp -r web/out server/webui/dist
+ok "前端静态产物已就绪"
 
 # ── 交叉编译 Linux 二进制 ──
 info "交叉编译 Linux/${ARCH} 二进制…"
@@ -83,7 +79,7 @@ services:
       - "8788:8788"
     volumes:
       # bind-mount 本地二进制，覆盖镜像内置的 /app/artex
-      # 更新二进制：替换 ./artex 后 docker compose restart artex
+      # 更新二进制：替换 ./artex 后 ./restart.sh
       - ./artex:/app/artex
       - ./data:/app/data
       - ./skills:/app/skills
@@ -120,123 +116,36 @@ else
     warn "skills/ 不存在，容器将使用镜像内置的 skills"
 fi
 
-# ── build.sh（远程/本地交叉编译新二进制）──────────────────
-cat > "$DEST/build.sh" << 'BUILD'
+# ── restart.sh（更新二进制后重启）──────────────────────
+cat > "$DEST/restart.sh" << 'RESTART'
 #!/usr/bin/env bash
 # ──────────────────────────────────────────────
-# 交叉编译 Linux 二进制（在有 Go + 前端产物的环境运行）
-# 用法：./build.sh [amd64|arm64]
-# ──────────────────────────────────────────────
-set -euo pipefail
-cd "$(cd "$(dirname "$0")" && pwd)"
-ARCH="${1:-amd64}"
-
-echo "[*] 交叉编译 Linux/${ARCH}…"
-# 需要在项目根目录有前端产物 server/webui/dist
-# 如果没有，先在项目根执行：cd web && npm ci && npm run build:static && cp -r web/out server/webui/dist
-CGO_ENABLED=0 GOOS=linux GOARCH="$ARCH" go build -tags embedui -trimpath -o artex.new ./cmd/artex
-chmod +x artex.new
-echo "[+] 编译完成 → artex.new ($(du -h artex.new | awk '{print $1}'))"
-echo "[*] 替换旧二进制…"
-mv artex.new artex
-echo "[+] 完成。重启容器生效：docker compose restart artex"
-BUILD
-chmod +x "$DEST/build.sh"
-ok "已生成 build.sh（交叉编译脚本）"
-
-# ── start.sh（一键启动）──────────────────────────────────
-cat > "$DEST/start.sh" << 'START'
-#!/usr/bin/env bash
-# ──────────────────────────────────────────────
-# ARTEX 一键启动（本地二进制 bind-mount 模式）
+# ARTEX 重启（更新二进制后执行）
 # ──────────────────────────────────────────────
 set -euo pipefail
 cd "$(cd "$(dirname "$0")" && pwd)"
 
-info(){ printf '\033[36m[*]\033[0m %s\n' "$*"; }
-ok(){   printf '\033[32m[+]\033[0m %s\n' "$*"; }
-warn(){ printf '\033[33m[!]\033[0m %s\n' "$*"; }
-die(){  printf '\033[31m[x]\033[0m %s\n' "$*" >&2; exit 1; }
-rand(){ head -c 24 /dev/urandom | base64 | tr -dc 'A-Za-z0-9' | head -c 24; }
+DC="docker compose"
+if ! $DC version >/dev/null 2>&1; then DC="docker-compose"; fi
 
-# ── Docker 检测 ──
-if ! command -v docker >/dev/null 2>&1; then
-    die "未检测到 Docker，请先安装：curl -fsSL https://get.docker.com | sh"
-fi
-# 自动检测 docker compose V2 或 docker-compose V1
-DC=""
-if docker compose version >/dev/null 2>&1; then
-    DC="docker compose"
-elif command -v docker-compose >/dev/null 2>&1 && docker-compose version >/dev/null 2>&1; then
-    DC="docker-compose"
+# 容器不存在时自动创建，已存在则 restart
+if $DC ps artex | grep -q "artex"; then
+    echo "[*] 重启 artex…"
+    $DC restart artex
 else
-    die "未检测到 docker compose，请安装：sudo apt-get install -y docker-compose-plugin"
-fi
-ok "Docker $(docker --version | awk '{print $3}' | tr -d ',') · $DC"
-
-# ── 二进制检测 ──
-if [ ! -f artex ]; then
-    die "artex 二进制不存在。请在项目根目录用 pack.sh 打包，或在有 Go 的环境运行 ./build.sh"
-fi
-if file artex | grep -q "ELF"; then
-    ok "artex 二进制就绪（Linux ELF, $(du -h artex | awk '{print $1}')）"
-else
-    warn "artex 二进制格式非 ELF，可能架构不匹配——继续尝试启动"
+    echo "[*] 容器不存在，启动…"
+    $DC up -d
 fi
 
-# ── .env 初始化 ──
-if [ ! -f .env ]; then
-    warn ".env 不存在，正在生成…"
-    cat > .env << ENV
-ARTEX_TAG=latest
-POSTGRES_USER=artex
-POSTGRES_PASSWORD=$(rand)
-POSTGRES_DB=artex
-ANTHROPIC_API_KEY=
-OPENAI_API_KEY=
-ARTEX_LLM_PROVIDER=
-ARTEX_LLM_MODEL=
-ARTEX_LLM_BASE_URL=
-ARTEX_LLM_PROXY=
-ARTEX_TASK_URL=
-ENV
-    ok "已生成 .env（Postgres 密码已随机生成）"
-    warn "请编辑 .env 填入 ANTHROPIC_API_KEY 或 OPENAI_API_KEY"
-    read -rp "已编辑好 .env？按回车继续，Ctrl-C 退出…"
-fi
-
-# ── 拉取镜像（仅运行时环境，二进制用本地的）──
-info "拉取运行时镜像（autumn27/artex）…"
-$DC pull
-
-# ── 启动 ──
-info "启动容器…"
-$DC up -d
-
-# ── 等待就绪 ──
-info "等待服务就绪…"
+echo "[*] 等待就绪…"
 for i in $(seq 1 30); do
-    if curl -sf http://localhost:8787/api/health >/dev/null 2>&1; then
-        ok "ARTEX 已就绪！"
-        break
-    fi
+    curl -sf http://localhost:8787/api/health >/dev/null 2>&1 && { echo "[+] ARTEX 已就绪"; break; }
     sleep 2
-    [ "$i" -eq 30 ] && warn "30s 未就绪，检查日志：$DC logs -f artex"
+    [ "$i" -eq 30 ] && echo "[!] 检查日志：$DC logs -f artex"
 done
-
-HOST_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "localhost")
-echo ""
-echo "═══════════════════════════════════════════════"
-echo "  ARTEX 已启动（本地二进制 bind-mount 模式）"
-echo ""
-echo "  访问地址：  http://${HOST_IP}:8787"
-echo "  首次进入：  http://${HOST_IP}:8787/setup"
-echo ""
-echo "  更新二进制：替换 ./artex → $DC restart artex"
-echo "  查看日志：  $DC logs -f artex"
-echo "  停止服务：  $DC down"
-echo "═══════════════════════════════════════════════"
-START
+RESTART
+chmod +x "$DEST/restart.sh"
+ok "已生成 restart.sh（更新二进制后重启）"
 
 # ── build-local.sh（服务器上本地构建镜像，不依赖 Docker Hub）──────────
 cat > "$DEST/build-local.sh" << 'BUILDLOCAL'
@@ -318,8 +227,6 @@ echo "════════════════════════�
 BUILDLOCAL
 chmod +x "$DEST/build-local.sh"
 ok "已生成 build-local.sh（服务器上本地构建镜像，Docker Hub 拉不到时用）"
-chmod +x "$DEST/start.sh"
-ok "已生成 start.sh（一键启动）"
 
 # ── README.md ───────────────────────────────────────────
 cat > "$DEST/README.md" << 'README'
@@ -327,34 +234,23 @@ cat > "$DEST/README.md" << 'README'
 
 ## 原理
 
-Docker 镜像 `autumn27/artex` 提供运行时环境（Python / Node / Playwright / nmap 等），
+Docker 镜像 `artex:local`（本地构建）提供运行时环境（Python / Node / Playwright / nmap 等），
 `./artex` 二进制通过 bind-mount 覆盖镜像内置的 `/app/artex`。
-**更新二进制不需要重新拉镜像**，替换文件 + restart 即可。
+**更新二进制不需要重新构建镜像**，替换文件 + `./restart.sh` 即可。
 
-## 快速启动
+## 首次部署
 
 ```bash
-./start.sh
+./build-local.sh    # 本地构建镜像 + 启动
 ```
 
-## 更新二进制
+## 更新二进制（日常）
 
-在有 Go + 前端产物的环境（项目根目录）：
-
-```bash
-# 方式一：用 pack.sh 重新打包
-./pack.sh
-
-# 方式二：只编译新二进制（在部署包目录里，需要 Go + 前端产物）
-./build.sh           # 默认 amd64
-./build.sh arm64     # arm64 服务器
-```
-
-编译完成后，传到服务器替换：
+本地重新打包后，传新二进制到服务器，然后重启：
 
 ```bash
-scp artex user@server:~/artex-deploy/
-ssh user@server 'cd artex-deploy && docker compose restart artex'
+scp artex-deploy/artex user@server:~/artex-deploy/
+ssh user@server 'cd artex-deploy && ./restart.sh'
 ```
 
 ## 文件说明
@@ -365,19 +261,17 @@ ssh user@server 'cd artex-deploy && docker compose restart artex'
 | `docker-compose.yml` | 容器编排（bind-mount 二进制 + skills + data） |
 | `.env` | 环境变量配置 |
 | `skills/` | Skill 定义目录 |
-| `start.sh` | 一键启动 |
-| `build.sh` | 交叉编译新二进制 |
-| `build-local.sh` | 服务器上本地构建镜像（Docker Hub 拉不到时用） |
+| `build-local.sh` | 首次部署：本地构建镜像 + 启动 |
+| `restart.sh` | 更新二进制后重启 |
 
 ## 常用命令
 
 ```bash
-./start.sh                         # 启动（需能拉 Docker Hub）
-./build-local.sh                   # Docker Hub 拉不到时，本地构建镜像后启动
-docker compose restart artex      # 更新二进制后重启
+./build-local.sh                  # 首次部署（构建镜像 + 启动）
+./restart.sh                      # 更新二进制后重启
 docker compose logs -f artex      # 查看日志
 docker compose down               # 停止
-docker compose pull && docker compose up -d  # 更新运行时镜像（非二进制）
+docker compose up -d              # 启动（已构建镜像后）
 ```
 README
 ok "已生成 README.md"
@@ -390,12 +284,12 @@ echo ""
 echo "═══════════════════════════════════════════════"
 echo "  打包完成！（本地二进制 bind-mount 模式）"
 echo ""
-echo "  传到服务器："
+echo "  首次部署："
 echo "    scp ${DEST}.tar.gz user@server:~/"
-echo "    ssh user@server 'tar xzf ${DEST}.tar.gz && cd ${DEST} && ./start.sh'"
+echo "    ssh user@server 'tar xzf ${DEST}.tar.gz && cd ${DEST} && ./build-local.sh'"
 echo ""
 echo "  更新二进制（日常）："
 echo "    ./pack.sh                                    # 本地重新打包"
 echo "    scp ${DEST}/artex user@server:~/artex-deploy/ # 只传二进制"
-echo "    ssh user@server 'cd artex-deploy && docker compose restart artex'"
+echo "    ssh user@server 'cd artex-deploy && ./restart.sh'"
 echo "═══════════════════════════════════════════════"

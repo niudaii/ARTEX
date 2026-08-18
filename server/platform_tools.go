@@ -7,6 +7,7 @@ import (
 	"log"
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"sync"
 
@@ -28,6 +29,7 @@ func (s *Server) platformTools() []actool.CoreTool {
 		s.toolUpdateMCP(),
 		s.toolDeleteAssetsByHost(),
 		s.toolSendMe(),
+		s.toolArchiveTaskReport(),
 	}
 }
 
@@ -38,6 +40,7 @@ var platformToolKeys = []string{
 	"create_mcp", "update_mcp",
 	"delete_assets_by_host",
 	"send_me",
+	"archive_task_report",
 }
 
 // ---- assets ----
@@ -78,6 +81,45 @@ func (s *Server) toolDeleteAssetsByHost() actool.CoreTool {
 				"deleted":         total,
 				"deleted_by_type": counts,
 			})
+		})
+}
+
+// ---- report ----
+
+// toolArchiveTaskReport writes the agent-assembled archive report back to a task
+// (overwrites the task's persisted report). It is the closing action of the
+// 「报告归档」 flow driven by the Auto agent from the report tab.
+func (s *Server) toolArchiveTaskReport() actool.CoreTool {
+	return wrTool("archive_task_report",
+		"把归档好的渗透测试报告(Markdown)写回指定任务，覆盖该任务已保存的报告。\n"+
+			"「报告归档」的收尾动作：报告按归档要求组装完成后调用本工具；写回成功后简要回复归档结果即可。",
+		objSchema(map[string]any{
+			"task_id":  strParam("要归档的任务 id"),
+			"markdown": strParam("完整归档报告 Markdown(含漏洞总结表 + 按域名分组的漏洞正文)"),
+		}, "task_id", "markdown"),
+		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			var a struct {
+				TaskID   string `json:"task_id"`
+				Markdown string `json:"markdown"`
+			}
+			_ = json.Unmarshal(in, &a)
+			t := s.m.ResolveTask(strings.TrimSpace(a.TaskID))
+			if t == nil {
+				return actool.Errorf("task 不存在: " + a.TaskID), nil
+			}
+			md := strings.TrimSpace(a.Markdown)
+			if len([]rune(md)) < 200 {
+				return actool.Errorf("报告内容过短(<200字)，拒绝写回；先组装完整归档报告"), nil
+			}
+			taskIDInt, err := strconv.ParseInt(t.ID, 10, 64)
+			if err != nil {
+				return actool.Errorf("task id 非法: " + t.ID), nil
+			}
+			if err := s.m.PG().SaveReport(taskIDInt, md); err != nil {
+				return actool.Errorf("归档写回失败: " + err.Error()), nil
+			}
+			log.Printf("[report/archive] task %s: agent archived report (%d chars)", t.ID, len(md))
+			return jsonResult(map[string]any{"task_id": t.ID, "saved_chars": len(md)})
 		})
 }
 
@@ -327,6 +369,8 @@ func (s *Server) toolUpdateMCP() actool.CoreTool {
 // ---- notify ----
 
 // popoRobot is a lazily-initialized singleton; the token is cached inside.
+const settingTaskURL = "task_url"
+
 var (
 	popoOnce   sync.Once
 	popoRobot  *popo.Robot
@@ -397,11 +441,21 @@ func (s *Server) notifyTaskDone(taskID string) {
 		desc = string([]rune(desc)[:80]) + "…"
 	}
 	msg := fmt.Sprintf("✅ ARTEX 任务完成\n任务ID: %s\n描述: %s\n状态: %s", taskID, desc, t.Status)
-	if base := os.Getenv("ARTEX_TASK_URL"); base != "" {
-		msg += fmt.Sprintf("\n链接: %s/function/tasks/detail/%s", strings.TrimRight(base, "/"), taskID)
+	if base := s.taskURLBase(); base != "" {
+		url := fmt.Sprintf("%s/function/tasks/detail?id=%s", strings.TrimRight(base, "/"), taskID)
+		msg += fmt.Sprintf("\n链接: %s", url)
 	}
 	robot := popoRobotSingleton()
 	if err := robot.SendMessage(popoConfig.notifyTo, msg); err != nil {
 		log.Printf("[notify] task %s: POPO 发送失败: %v", taskID, err)
 	}
+}
+
+// taskURLBase returns the base URL for task detail links. It reads from the DB
+// settings table first, then falls back to the ARTEX_TASK_URL env var.
+func (s *Server) taskURLBase() string {
+	if v, ok, _ := s.m.pg.GetSetting(settingTaskURL); ok && strings.TrimSpace(v) != "" {
+		return strings.TrimSpace(v)
+	}
+	return os.Getenv("ARTEX_TASK_URL")
 }

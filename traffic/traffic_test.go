@@ -244,3 +244,81 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		t.Fatalf("blobC still exists after last reference removed: %v", err)
 	}
 }
+
+// TestPageCounts verifies the pagination contract on the host-summary fast
+// path: unfiltered and host-filtered totals are exact (from host_stats, kept
+// in sync by the ex_ins/ex_del triggers), an unknown host filter yields an
+// empty page, and deletes update the summary.
+func TestPageCounts(t *testing.T) {
+	dir := t.TempDir()
+	tr, err := Open(dir, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+
+	seed := func(id, h string, ts int64) {
+		if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			id, ts, h, "GET", "/", "http://"+h+"/", 200, "text/html", 0, 0, h+"/GET/"+id); err != nil {
+			t.Fatal(err)
+		}
+	}
+	for i := 0; i < 3; i++ {
+		seed(fmt.Sprintf("1-%04d", i+1), "a.example.com", int64(i+1))
+	}
+	seed("1-0010", "b.example.com", 10)
+	seed("1-0011", "b.example.com", 11)
+
+	// Unfiltered: all 5 rows, newest first, uncapped.
+	rows, total, capped, err := tr.Page("", "", "", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 5 || capped || len(rows) != 5 {
+		t.Fatalf("unfiltered: total=%d capped=%v rows=%d; want 5/false/5", total, capped, len(rows))
+	}
+	if rows[0].Host != "b.example.com" {
+		t.Fatalf("rows[0]=%s, want newest host b.example.com", rows[0].Host)
+	}
+
+	// Host substring resolves through the summary to exact hosts.
+	rows, total, capped, err = tr.Page("a.example", "", "", 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if total != 3 || capped || len(rows) != 3 {
+		t.Fatalf("host filter: total=%d capped=%v rows=%d; want 3/false/3", total, capped, len(rows))
+	}
+	for _, r := range rows {
+		if r.Host != "a.example.com" {
+			t.Fatalf("row host=%s leaked past the host filter", r.Host)
+		}
+	}
+
+	// Unknown host: empty page, zero total, no error.
+	rows, total, _, err = tr.Page("nope", "", "", 0, 10)
+	if err != nil || total != 0 || len(rows) != 0 {
+		t.Fatalf("unknown host: total=%d rows=%d err=%v; want 0/0/nil", total, len(rows), err)
+	}
+
+	// Global count agrees with the summary.
+	if c, err := tr.Count(); err != nil || c != 5 {
+		t.Fatalf("Count()=%d, err=%v; want 5", c, err)
+	}
+
+	// Deletes keep the summary in sync.
+	if _, err := tr.DeleteHost("a.example"); err != nil {
+		t.Fatal(err)
+	}
+	if c, err := tr.Count(); err != nil || c != 2 {
+		t.Fatalf("Count() after delete=%d, err=%v; want 2", c, err)
+	}
+	hosts, err := tr.Hosts()
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(hosts) != 1 || hosts[0].Host != "b.example.com" || hosts[0].Count != 2 {
+		t.Fatalf("Hosts() after delete=%+v; want [b.example.com/2]", hosts)
+	}
+}

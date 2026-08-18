@@ -4,6 +4,7 @@ import (
 	"archive/zip"
 	"bytes"
 	"context"
+	"database/sql"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -349,8 +350,8 @@ func (s *Server) pgGetAgent(w http.ResponseWriter, r *http.Request) {
 	}
 	writeJSON(w, 200, map[string]any{
 		"agent": agentDTO(a), "prompt": cur, "variables": vars, "versions": vers,
-		"visibility":               map[string]any{"mcp": mcp, "skill": sk},
-		"llm_profiles":             llmProfiles, // 可绑定的 LLM 配置候选
+		"visibility":   map[string]any{"mcp": mcp, "skill": sk},
+		"llm_profiles": llmProfiles, // 可绑定的 LLM 配置候选
 
 		"wrapup_prompt":            a.WrapupPrompt,                  // 已保存的收尾提示词(空=用内置默认)
 		"wrapup_default":           agent.WrapupDefault(a.Key),      // 内置默认(供占位/恢复默认)
@@ -1596,6 +1597,10 @@ func (s *Server) pgActivateProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if err := pg.SetActiveProfile(body.ID); err != nil {
+		if err == sql.ErrNoRows {
+			writeErr(w, 404, "profile 不存在")
+			return
+		}
 		writeErr(w, 500, err.Error())
 		return
 	}
@@ -1754,8 +1759,21 @@ var globalPromptVars = []db.PromptVar{
 
 // withGlobalVars appends the universal runtime vars onto an agent's own catalog,
 // so validation / the UI variable list / preview all recognize {{.Now}} etc.
+// Same-named catalog entries (e.g. the legacy seeded "Now") are dropped in favor
+// of the global entry, whose description/example matches the actual runtime value
+// (agent.nowStr). This also guarantees unique names — the UI keys chips by name.
 func withGlobalVars(vars []db.PromptVar) []db.PromptVar {
-	return append(append([]db.PromptVar{}, vars...), globalPromptVars...)
+	global := make(map[string]bool, len(globalPromptVars))
+	for _, g := range globalPromptVars {
+		global[g.Name] = true
+	}
+	out := make([]db.PromptVar, 0, len(vars)+len(globalPromptVars))
+	for _, v := range vars {
+		if !global[v.Name] {
+			out = append(out, v)
+		}
+	}
+	return append(out, globalPromptVars...)
 }
 
 // validateTemplate parses the template and rejects any {{.Var}} not in the catalog.

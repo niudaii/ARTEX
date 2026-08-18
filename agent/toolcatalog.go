@@ -40,9 +40,6 @@ func builtinToolsByAgent() map[string][]actool.CoreTool {
 		// auto 默认绑漏洞上报 + 资产管理工具，其他域工具可在 UI 按需勾选。
 		// 新库由此 seed 写入；老库由 seedAutoDefaultBindings 迁移。
 		"auto": {ts.addFinding(), ts.insertAssets(), ts.addCompanyScope(), ts.listAssets(), ts.listCompanies()},
-		// pentest（独立渗透 agent）默认绑：查资产 / 插资产 / 报漏洞 / 查漏洞 / 查企业。
-		// 新库由此 seed 写入；老库由 seedPentestDefaultBindings 迁移。
-		"pentest": {ts.listAssets(), ts.insertAssets(), ts.addFinding(), ts.listFindings(), ts.listCompanies()},
 	}
 }
 
@@ -50,7 +47,7 @@ func builtinToolsByAgent() map[string][]actool.CoreTool {
 // list_assets 三者都有）合成一条，Agents 取并集。顺序稳定（mainagent→planner→worker）。
 func BuiltinToolSeeds() []ToolSeed {
 	byAgent := builtinToolsByAgent()
-	order := []string{"mainagent", "planner", "worker", "auto", "pentest"}
+	order := []string{"mainagent", "planner", "worker", "auto"}
 
 	type acc struct {
 		tool   actool.CoreTool

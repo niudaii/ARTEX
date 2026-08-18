@@ -164,7 +164,7 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				return actool.Errorf("invalid input: " + err.Error()), nil
 			}
 			// task_id 由程序权威赋值(worker: SetTaskID)，不接受模型传入——避免模型漏传/错传
-			// 导致资产未归任务或归错任务。无任务上下文的调用方(auto/pentest/chat)其 t.taskID=0。
+			// 导致资产未归任务或归错任务。无任务上下文的调用方(auto/chat)其 t.taskID=0。
 			taskID := t.taskID
 
 			type result struct {

@@ -8,6 +8,17 @@ CREATE OR REPLACE FUNCTION set_updated_at() RETURNS trigger AS $$
 BEGIN NEW.updated_at = now(); RETURN NEW; END;
 $$ LANGUAGE plpgsql;
 
+-- 安全 inet 转换：assets.ip 是 agent 写入的 TEXT，可能混入主机名等非法值
+-- （历史脏数据）。直接 ::inet 会让整条查询 500；此函数对非法输入返回 NULL。
+CREATE OR REPLACE FUNCTION inet_or_null(text) RETURNS inet AS $$
+BEGIN
+    IF $1 IS NULL OR $1 = '' THEN RETURN NULL; END IF;
+    RETURN $1::inet;
+EXCEPTION WHEN OTHERS THEN
+    RETURN NULL;
+END;
+$$ LANGUAGE plpgsql IMMUTABLE;
+
 -- =====================================================================
 -- A. 资产层：companies / assets / company_scope
 -- =====================================================================

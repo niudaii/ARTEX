@@ -428,7 +428,7 @@ func (t *ToolSet) listFacts() actool.CoreTool {
 }
 
 func (t *ToolSet) nodeDetail() actool.CoreTool {
-	return readTool("node_detail", "按 id 取某个【探索图节点】的完整内容(事实/发现/意图/目标：摘要 + 详情/证据/PoC)。仅限探索图节点 id(来自 list_facts / list_findings / graph_overview 的 recent_facts 返回的 id)。查【资产】请用 list_assets / asset_neighbors——资产 id 不是探索节点 id,不要传进来。",
+	return readTool("node_detail", "按 id 取某个【探索图节点】的完整内容(事实/发现/意图/目标：摘要 + 详情/证据/PoC)。仅限探索图节点 id(来自 list_facts / list_findings / graph_overview 的 recent_facts 返回的 id)。查【资产】请用 list_assets——资产 id 不是探索节点 id,不要传进来。",
 		obj(map[string]any{"id": idp("探索图节点 id(非资产 id)")}, "id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -444,7 +444,7 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 				return actool.Errorf(err.Error()), nil
 			}
 			if n == nil {
-				return actool.Errorf(fmt.Sprintf("未找到探索节点 %d。若你想查的是资产，请用 list_assets / asset_neighbors（资产与探索节点是不同的 id 空间，资产 id 不能传给 node_detail）。", id)), nil
+				return actool.Errorf(fmt.Sprintf("未找到探索节点 %d。若你想查的是资产，请用 list_assets（资产与探索节点是不同的 id 空间，资产 id 不能传给 node_detail）。", id)), nil
 			}
 			return jsonResult(n) // full payload incl. detail / evidence
 		})

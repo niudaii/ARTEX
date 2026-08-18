@@ -10,6 +10,8 @@ import {
   Loader2Icon,
   Trash2Icon,
   ListChecksIcon,
+  DownloadIcon,
+  ChevronDownIcon,
 } from "lucide-react";
 
 import {
@@ -47,7 +49,14 @@ import {
   PopoverContent,
   PopoverTrigger,
 } from "@/components/ui/popover";
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger,
+} from "@/components/ui/dropdown-menu";
 import { Checkbox } from "@/components/ui/checkbox";
+import { toast } from "sonner";
 import { cn } from "@/lib/utils";
 import { api } from "@/lib/api";
 import type { TrafficExchange, TrafficResp, TrafficDetail, TrafficHost } from "@/lib/types";
@@ -103,6 +112,7 @@ export default function TrafficPage() {
 
   const [deleteMode, setDeleteMode] = React.useState<"filter" | "selected" | null>(null); // null = dialog closed
   const [deleting, setDeleting] = React.useState(false);
+  const [exporting, setExporting] = React.useState(false);
   const [reloadTick, setReloadTick] = React.useState(0); // manual refetch trigger
 
   // Debounce both filters so we don't refetch on every keystroke.
@@ -124,19 +134,25 @@ export default function TrafficPage() {
   // through history isn't yanked out from under the user.
   React.useEffect(() => {
     let alive = true;
+    let busy = false;
     const load = () => {
-      api
-        .traffic(page, size, hostQ, method, queryQ)
-        .then((r) => {
-          if (alive) setTraffic(r);
+      // Skip the tick if the previous poll is still in flight — a filtered
+      // query over a large index can take seconds, and stacking identical
+      // requests only makes the page feel slower.
+      if (busy) return;
+      busy = true;
+      Promise.allSettled([
+        api.traffic(page, size, hostQ, method, queryQ),
+        api.trafficHosts(),
+      ])
+        .then(([tr, hs]) => {
+          if (!alive) return;
+          if (tr.status === "fulfilled") setTraffic(tr.value);
+          if (hs.status === "fulfilled") setHosts(hs.value.hosts ?? []);
         })
-        .catch(() => {});
-      api
-        .trafficHosts()
-        .then((r) => {
-          if (alive) setHosts(r.hosts ?? []);
-        })
-        .catch(() => {});
+        .finally(() => {
+          busy = false;
+        });
     };
     load();
     const t = setInterval(() => {
@@ -172,6 +188,18 @@ export default function TrafficPage() {
       })
       .catch(() => {})
       .finally(() => setDeleting(false));
+  };
+
+  // Export with the current filters in the chosen format (raw default).
+  const doExport = async (format: "raw" | "json") => {
+    setExporting(true);
+    try {
+      await api.trafficExport(hostQ, method === "all" ? "" : method, queryQ, 2000, format);
+    } catch (e) {
+      toast.error((e as Error).message || "导出失败");
+    } finally {
+      setExporting(false);
+    }
   };
 
   // Lazy-load the raw request/response for the selected exchange.
@@ -328,6 +356,25 @@ export default function TrafficPage() {
           <Trash2Icon className="size-3.5" />
           删除该目标
         </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button
+              variant="outline"
+              size="sm"
+              className="h-8"
+              disabled={exporting || (traffic?.count ?? 0) === 0}
+              title="按当前过滤条件导出（含报文正文，最多 5000 条）"
+            >
+              {exporting ? <Loader2Icon className="animate-spin size-3.5" /> : <DownloadIcon className="size-3.5" />}
+              导出
+              <ChevronDownIcon className="size-3 opacity-60" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="start">
+            <DropdownMenuItem onClick={() => doExport("raw")}>RAW 文本（默认）</DropdownMenuItem>
+            <DropdownMenuItem onClick={() => doExport("json")}>JSON</DropdownMenuItem>
+          </DropdownMenuContent>
+        </DropdownMenu>
         <div className="relative max-w-sm flex-1">
           <SearchIcon className="absolute top-1/2 left-2.5 size-4 -translate-y-1/2 text-muted-foreground" />
           <Input
@@ -366,6 +413,7 @@ export default function TrafficPage() {
         <div className="ml-auto flex items-center gap-2 text-xs text-muted-foreground">
           <span className="tabular-nums">
             {rangeStart}–{rangeEnd} / {total}
+            {traffic?.total_capped ? "+" : ""}
           </span>
           <Button
             variant="outline"

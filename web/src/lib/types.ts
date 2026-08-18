@@ -400,6 +400,7 @@ export interface TrafficResp {
   proxy?: string;
   count?: number; // global total (unfiltered)
   total?: number; // rows matching the current filter (for pagination)
+  total_capped?: boolean; // true when total hit the server cap (display "N+")
   page?: number;
   size?: number;
   exchanges?: TrafficExchange[];
@@ -433,8 +434,8 @@ export interface Settings {
   // 独立出口代理(http/https/socks5)，用于访问搜索端点；与记录流量的 MITM 代理无关。空=直连。
   web_search_proxy?: string;
   python_interpreter?: string; // 自定义脚本工具的 python 解释器路径(空=运行时检测)
-  filter_prompt?: string; // LLM 漏洞过滤提示词(空=内置默认)
   workers?: number; // 并发工作 agent 数(默认3)；对之后启动的任务生效
+  task_url?: string; // 任务完成推送消息中的链接 base URL(空=不附带链接)
 }
 
 // ---- LLM config ----

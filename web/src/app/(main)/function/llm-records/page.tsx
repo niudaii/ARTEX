@@ -87,7 +87,7 @@ export default function LLMRecordsPage() {
   const [total, setTotal] = React.useState(0);
   const [loading, setLoading] = React.useState(false);
 
-  // Recording on/off toggle (settings.llm_record; default off). When off the
+  // Recording on/off toggle (settings.llm_record; default on). When off the
   // backend records nothing.
   const [recEnabled, setRecEnabled] = React.useState(false);
   const [recBusy, setRecBusy] = React.useState(false);

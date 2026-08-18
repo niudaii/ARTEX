@@ -98,12 +98,22 @@ func (d *DB) DeleteProfile(id int64) error {
 }
 
 // SetActiveProfile makes one profile the global default (single-default invariant).
+// It fails with sql.ErrNoRows when id does not exist: otherwise a stale/bad id
+// would clear the current default, activate nothing, and silently leave the
+// engine without any LLM after the next restart.
 func (d *DB) SetActiveProfile(id int64) error {
 	tx, err := d.Begin()
 	if err != nil {
 		return err
 	}
 	defer tx.Rollback()
+	var exists bool
+	if err := tx.QueryRow(`SELECT EXISTS(SELECT 1 FROM llm_profiles WHERE id=$1)`, id).Scan(&exists); err != nil {
+		return err
+	}
+	if !exists {
+		return sql.ErrNoRows
+	}
 	if _, err := tx.Exec(`UPDATE llm_profiles SET is_default=false WHERE is_default`); err != nil {
 		return err
 	}
