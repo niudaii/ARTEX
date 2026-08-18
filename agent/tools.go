@@ -121,6 +121,17 @@ func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
 	return &ToolSet{ts: ts, worker: worker}
 }
 
+// errNoTaskGraph is the tool error returned by exploration-graph tools when the
+// ToolSet has no exploration store. Task-independent agents (chat page, custom
+// agents, Auto conversations) get domain tools injected from a server-level
+// registry built with a nil store (buildDomainReg); a graph tool bound to such
+// an agent via the tools table can never work there — no task graph exists by
+// design. Degrading to a tool error (report_finding's precedent) keeps one bad
+// binding from nil-deref'ing and crashing the whole process.
+func errNoTaskGraph(name string) (actool.Result, error) {
+	return actool.Errorf(name + " 需要任务上下文（exploration store 未初始化）"), nil
+}
+
 // SetTaskID sets the PG task id on this ToolSet so that report_finding can
 // dual-write to the standalone findings table (which survives task deletion).
 func (t *ToolSet) SetTaskID(id int64) { t.taskID = id }
@@ -149,7 +160,7 @@ func (t *ToolSet) SetOwnerNode(id int64) { t.ownerNode = id }
 // (no-op if unset). Provenance only — the asset graph is global and shared, so
 // this no longer affects which assets a task can read.
 func (t *ToolSet) anchorOwner(assetID int64) {
-	if t.ownerNode > 0 && assetID > 0 {
+	if t.ts != nil && t.ownerNode > 0 && assetID > 0 {
 		_ = t.ts.Anchor(t.ownerNode, assetID)
 	}
 }
@@ -234,6 +245,9 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 		"(探索链路图)探索态势蒸馏摘要：资产计数、无接口的站点、frontier、发现、hints(人类/主 agent 的战略提示，生成意图时须纳入)。规划时先调它。",
 		obj(map[string]any{}),
 		func(context.Context, json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("graph_overview")
+			}
 			return jsonResult(t.graphOverviewData())
 		})
 }
@@ -398,6 +412,9 @@ func (t *ToolSet) listFindings() actool.CoreTool {
 	return readTool("list_findings", "列【确认漏洞】(紧凑：id+task_id+intent_id+vulnclass+severity+摘要+状态)。task_id=该漏洞所属任务, intent_id=产生它的意图。这里只有漏洞,不含普通探索事实(那是 list_facts)。详情用 node_detail(id)。",
 		obj(map[string]any{}),
 		func(context.Context, json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("list_findings")
+			}
 			f, _ := t.ts.ListByKind(db.KindFinding, 500)
 			intentOf, _ := t.ts.FindingIntents() // finding id -> 产生它的 intent id
 			taskID := t.ts.ID()                  // exploration id = 任务 id（本 store 内所有 finding 同属）
@@ -418,6 +435,9 @@ func (t *ToolSet) listFacts() actool.CoreTool {
 	return readTool("list_facts", "列【探索事实/结论】(紧凑：id+摘要+状态),即 worker 按意图探出的结论(含'端口关闭/不可注入'等否定结论)。详情用 node_detail(id)。漏洞看 list_findings。",
 		obj(map[string]any{}),
 		func(context.Context, json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("list_facts")
+			}
 			f, _ := t.ts.ListByKind(db.KindFact, 500)
 			out := make([]map[string]any, 0, len(f))
 			for _, n := range f {
@@ -431,6 +451,9 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 	return readTool("node_detail", "按 id 取某个【探索图节点】的完整内容(事实/发现/意图/目标：摘要 + 详情/证据/PoC)。仅限探索图节点 id(来自 list_facts / list_findings / graph_overview 的 recent_facts 返回的 id)。查【资产】请用 list_assets——资产 id 不是探索节点 id,不要传进来。",
 		obj(map[string]any{"id": idp("探索图节点 id(非资产 id)")}, "id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("node_detail")
+			}
 			var a struct {
 				ID json.RawMessage `json:"id"`
 			}
@@ -519,6 +542,9 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			"priority":   intp("优先级 0-10，默认5"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("add_intent")
+			}
 			var a struct {
 				Intents    []intentItem `json:"intents"`
 				intentItem              // 单条模式：顶层 summary/asset_ids/parent_ids/priority
@@ -559,6 +585,9 @@ func (t *ToolSet) listGoals() actool.CoreTool {
 	return readTool("list_goals", "列出本任务的目标节点及其状态（open/met），用于判断是否达成。",
 		obj(map[string]any{}),
 		func(context.Context, json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("list_goals")
+			}
 			g, _ := t.ts.ListByKind(db.KindGoal, 100)
 			return jsonResult(g)
 		})
@@ -591,6 +620,9 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 			"reason":      str("为什么这个证据满足该目标"),
 		}, "goal_id", "evidence_id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("prove_goal")
+			}
 			var a struct {
 				GoalID     json.RawMessage `json:"goal_id"`
 				EvidenceID json.RawMessage `json:"evidence_id"`
@@ -639,6 +671,9 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 	return writeTool("goal_met", "【立即结束整个任务】——仅当你确认任务的【全部目标都已真正达成、整体收官】时才调（注意是任务【整体】完成；仅仅达成了其中某一个目标/某一个 flag/某一个漏洞【不算】——那种情况用 prove_goal 标记该目标即可）。⚠️它不是用来“结束本轮规划”的：本轮没有新意图要派、或在等 worker 产出，都【直接结束本轮即可，不要调本工具】（0 个意图是完全正常的）。正常判定优先用 prove_goal 逐个证明目标；goal_met 只是绕过逐个证明、直接从全局收官的手段。",
 		obj(map[string]any{"reason": str("达成理由（必须是目标真正达成的证据，不能是“本轮无新方向”这类结束本轮的理由）")}, "reason"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("goal_met")
+			}
 			var a struct{ Reason string }
 			_ = json.Unmarshal(in, &a)
 			t.GoalMet = true
@@ -803,6 +838,9 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 			"asset_ids":  map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "相关资产 id（可选，0/1/多个）：该事实涉及哪些资产"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("record_fact")
+			}
 			var a struct {
 				Facts    []factItem `json:"facts"`
 				factItem            // 单条模式 + 批量默认 intent_id
@@ -872,6 +910,9 @@ func (t *ToolSet) addHint() actool.CoreTool {
 			"asset_ids": map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "锚定的资产 id（可选，0/1/多个）"},
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("add_hint")
+			}
 			var a struct {
 				Hints    []hintItem `json:"hints"`
 				hintItem            // 单条模式：顶层 text/asset_ids
@@ -969,6 +1010,9 @@ func (t *ToolSet) getWorkerOutput() actool.CoreTool {
 	return readTool("get_worker_output", "取某条意图(work)的最终输出结论。正常结束返回其总结；被终止(stopped)/异常的 work 返回其截至中止时的最后输出(terminated=true)。",
 		obj(map[string]any{"intent_id": idp("意图 id（= work 句柄）")}, "intent_id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("get_worker_output")
+			}
 			var a struct {
 				IntentID json.RawMessage `json:"intent_id"`
 			}
@@ -1040,6 +1084,9 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 			"limit":     intp("摘要流/检索的返回上限（可选）"),
 		}, "intent_id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("get_worker_trace")
+			}
 			var a struct {
 				IntentID json.RawMessage   `json:"intent_id"`
 				Q        string            `json:"q"`
@@ -1103,6 +1150,9 @@ func (t *ToolSet) searchAllWorkerTraces() actool.CoreTool {
 			"limit": intp("返回上限，默认 100（可选）"),
 		}, "q"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("search_all_worker_traces")
+			}
 			var a struct {
 				Q     string `json:"q"`
 				Limit int    `json:"limit"`
@@ -1148,6 +1198,9 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 			"limit": intp("返回上限，默认 50（可选）"),
 		}),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
+			if t.ts == nil {
+				return errNoTaskGraph("list_worker_traces")
+			}
 			var a struct {
 				Q     string `json:"q"`
 				Limit int    `json:"limit"`

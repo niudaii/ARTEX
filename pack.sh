@@ -268,6 +268,23 @@ BUILDLOCAL
 chmod +x "$DEST/build-local.sh"
 ok "已生成 build-local.sh（服务器上本地构建镜像，Docker Hub 拉不到时用）"
 
+# ── .dockerignore（build-local.sh 在部署目录内 docker build，必须排除运行时数据）──
+cat > "$DEST/.dockerignore" << 'DIGNORE'
+# 运行时数据目录（compose 挂载产生，含 jwt.key/任务产物，且多为 root 属主，
+# 不排除会导致 docker build 读 context 失败或向 daemon 泄露敏感文件）
+data/
+logs/
+# 环境变量（含密钥，不参与构建）
+.env
+# 部署包自身与文档/辅助脚本（不参与构建）
+*.tar.gz
+*.md
+restart.sh
+# artex 已拷入 dist/amd64/，顶层原件无需进 context
+/artex
+DIGNORE
+ok "已生成 .dockerignore（排除 data/ 等运行时文件）"
+
 # ── README.md ───────────────────────────────────────────
 cat > "$DEST/README.md" << 'README'
 # ARTEX 部署包（本地二进制 bind-mount 模式）

@@ -332,6 +332,8 @@ func contains(ss []string, v string) bool {
 // (real AssetStore, nil ExplorationStore, taskID=0). Used by ToolResolve to inject
 // domain tools into agents (Auto, custom) that don't own a per-task ToolSet.
 // nil as → returns nil (no injection, graceful degradation).
+// Exploration-graph tools injected from here have no store to read; their
+// handlers degrade to a tool error (agent.errNoTaskGraph) instead of crashing.
 func buildDomainReg(as *db.AssetStore) map[string]actool.CoreTool {
 	if as == nil {
 		return nil
