@@ -159,6 +159,7 @@ export default function DashboardPage() {
   const [convTokens, setConvTokens] = React.useState<ConvTokenSummary[]>([]);
   const [assetCounts, setAssetCounts] = React.useState<Record<string, number>>({});
   const [traffic, setTraffic] = React.useState<TrafficExchange[]>([]);
+  const [trafficCount, setTrafficCount] = React.useState(0);
   const [agents, setAgents] = React.useState<Agent[]>([]);
   const [mcpServers, setMcpServers] = React.useState<MCPServer[]>([]);
   const [skills, setSkills] = React.useState<SkillItem[]>([]);
@@ -215,6 +216,8 @@ export default function DashboardPage() {
           ]);
         if (!alive) return;
         setTraffic(traf.exchanges ?? []);
+        // 卡片总数用后端全局总数（分页只拉 50 条，不能用数组长度）
+        setTrafficCount(traf.count ?? traf.exchanges?.length ?? 0);
         setAssetCounts(counts ?? {});
         setAgents(agentList);
         setMcpServers(mcpList);
@@ -520,7 +523,7 @@ export default function DashboardPage() {
               <ActivityIcon className="size-3" /> 流量交互
             </div>
             <div className="text-2xl font-semibold tabular-nums">
-              {traffic.length}
+              {trafficCount}
             </div>
           </CardHeader>
           <CardContent className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
@@ -1038,7 +1041,7 @@ export default function DashboardPage() {
 
         {/* 流量状态码 */}
         <Card className="p-4">
-          <SectionTitle icon={ActivityIcon} sub={`${traffic.length} 次请求`}>
+          <SectionTitle icon={ActivityIcon} sub={`近 ${traffic.length} 条请求`}>
             流量状态码
           </SectionTitle>
 

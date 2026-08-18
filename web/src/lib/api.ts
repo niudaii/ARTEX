@@ -9,7 +9,7 @@ import type {
   Task, Stats, Asset, AssetNode, Edge, Company, TaskNode, Finding, Activity,
   Audit, TrafficResp, TrafficDetail, TrafficHost, Settings, LLMProfile, Agent, AgentDetail, PromptVar,
   PromptVersion, MCPServer, MCPTool, SkillItem, TokenUsage, TokenTotal, DailyTokenBucket,
-  Tool, Conversation, AgentTrigger,
+  Tool, Conversation, AgentTrigger, ChatAttachment,
   InterceptRule, InterceptPending, InterceptApprovalRow,
   TaskAssetView, SSProject, SSTask, ConvTokenSummary, CoverageGraphData, CoverageAssetRefs,
   WorkspaceListing, WorkspaceFile,
@@ -120,6 +120,10 @@ export const api = {
     }),
   deleteTask: (id: string) => del<{ deleted: number }>(`/tasks/${id}`),
   controlTask: (id: string, action: "pause" | "resume") => post<{ id: string; paused: boolean }>(`/tasks/${id}/control`, { action }),
+  // 重跑一条没跑成功的意图(blocked/exhausted/stopped)：置回 open，worker 会重新认领、从头再跑。
+  rerunIntent: (taskId: string, intentId: string) => post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/${intentId}/rerun`),
+  // 批量重跑本任务全部 blocked 意图（一次网络/LLM 断连导致多条 blocked 时一键全部重试）。
+  rerunBlocked: (taskId: string) => post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/rerun-blocked`),
   setActive: (id: string) => post<{ active: string }>("/active", { id }),
   // ---- stats ----
   stats: (task?: string) => get<Stats>(`/stats${tq(task)}`),
@@ -371,7 +375,22 @@ export const api = {
       filtered: r.headers.get("X-Report-Filtered") === "1",
     };
   },
-  chat: (message: string, task?: string) => post<{ reply: string; mode: string }>(`/chat${tq(task)}`, { message }),
+  chat: (message: string, task?: string, attachments?: ChatAttachment[]) =>
+    post<{ reply: string; mode: string }>(`/chat${tq(task)}`, { message, attachments }),
+  // 方式1 文件上传:落到会话/任务工作目录 uploads/，返回可供 agent Read 的相对路径。
+  chatUpload: async (scope: "task" | "session", id: string, files: File[]) => {
+    if (MOCK) return { attachments: files.map((f) => ({ name: f.name, path: `uploads/${f.name}`, size: f.size })) };
+    const fd = new FormData();
+    for (const f of files) fd.append("file", f);
+    const token = getToken();
+    const r = await fetch(`/api/chat/upload?scope=${scope}&id=${encodeURIComponent(id)}`, {
+      method: "POST",
+      headers: { ...(token ? { Authorization: `Bearer ${token}` } : {}) },
+      body: fd,
+    });
+    if (!r.ok) throw new Error(`上传失败: ${r.status} ${await r.text()}`);
+    return r.json() as Promise<{ attachments: ChatAttachment[] }>;
+  },
   stopChat: (taskId: string) => post<{ status: string }>(`/tasks/${taskId}/chat/stop`, {}),
   gc: (ttl = 86400) => post<{ removed: number }>(`/gc?ttl=${ttl}`, {}),
 

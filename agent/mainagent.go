@@ -48,6 +48,7 @@ const mainAgentDefaultTmpl = `你是一个授权渗透测试系统的"主 agent"
 2. 操舵（把人的意图落到系统）：
    - 人想"改方向/强调某类漏洞/重点某区域" → 用 add_hint 写提示（规划者下次会读到）。
    - 人想"立刻测某个具体目标" → 用 add_intent 直接注入一条高优先级意图（priority 8-10）。
+   - 人想"新增一个要达成的最终目标" → 用 set_goals 增补目标。系统会把该目标写入任务图并**自动把已完成/暂停的任务拉回运行态继续跑**（规划者随后会据此重新判断是否达成），无需人工再点恢复。
 3. 用人话简洁回复，说明你做了什么。
 
 当前任务目标：{{.Goal}}
@@ -63,18 +64,20 @@ func mainAgentSystem(goal, dataDir, workDir string) string {
 // non-nil, receives each execution step (thinking / tool_use / tool_result /
 // text / result) so the main-agent session shows its work — exactly like the
 // worker/planner sessions — not just the final answer.
-func (m *MainAgent) Chat(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify func()) (string, error) {
+func (m *MainAgent) Chat(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal func([]string)) (string, error) {
 	tsx := NewToolSet(ts, "human")
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())
 	}
 	tsx.SetTaskID(taskID)
-	tsx.SetNotify(notify) // add_hint wakes this task's planner (debounced)
+	tsx.SetNotify(notify)          // add_hint wakes this task's planner (debounced)
+	tsx.SetResumeTask(resume)      // set_goals 新增目标 → 把已完成/暂停的任务拉回 running
+	tsx.SetNotifyGoal(notifyGoal)  // set_goals 新增目标 → 给 planner 记一条「人新增了目标：…」触发
 	// 领域工具 + 基础默认工具集（Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash）
 	base := append(tsx.MainAgentTools(), actool.DefaultTools()...)
 	tools, def, cleanup := AugmentTools(ctx, "mainagent", base)
 	defer cleanup()
-	// 本任务的工作目录 <workDir>/<taskID>，先建好。
+	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	mainDir := ensureRunDir(m.workDir, taskID, 0)
 	system, boundary := deferredSystem(mainAgentSystem(goal, m.workDir, mainDir), def)
 	opts := agentcore.Options{
@@ -96,12 +99,12 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, as *db.AssetStore, t
 		TavilySearchAPIKey: m.webSearch.TavilyKey,
 		WebSearchProxy:     m.webSearch.Proxy,
 		BashEnv:            proxyEnv(m.proxyAddr, m.proxyCACert), // Bash 子命令默认走代理+信任 CA
-		WorkingDir:         mainDir,                              // 本任务工作目录 <workDir>/<taskID>
+		WorkingDir:         mainDir,                              // 本任务工作目录 <workDir>/tasks/<taskID>
 		ToolOutputDir:      cmdOutDir(mainDir),
 		MaxTurns:           m.maxTurns,                 // 0 = unlimited (configurable in agent management)
 		Compaction:         compactionConfig(m.window), // long chats stay within the window
 		Todos:              actool.NewTodoStore(),      // 会话级临时待办（TodoWrite），纯规划用，退出即丢
-		// 命中预算(步数)→ SDK 跑收尾:向用户输出一句进展总结。Prompt 与收尾轮数可后台编辑(默认 5 轮)。
+		// 命中预算(步数)→ SDK 跑收尾:向用户输出一句进展总结。Prompt 与收尾轮数可后台编辑(默认 10 轮)。
 		Settlement: wrapupSettlement("mainagent", nil),
 	}
 	if m.tx != nil { // persist raw human↔AI conversation; one accumulating file per task

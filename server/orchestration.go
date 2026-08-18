@@ -240,6 +240,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			"llm_profile_id":    map[string]any{"type": "integer", "description": "可选：指定本子任务 planner/worker 用的 LLM 配置 id(见 list_llm_profiles)；留空则继承父任务、再回退全局激活配置"},
 			"timeout_seconds":   map[string]any{"type": "integer", "description": "可选：任务级超时(秒)。到点后触发优雅收尾并进入 timeout 终态；留空或 0 = 不限时"},
 			"plan_heartbeat_seconds": map[string]any{"type": "integer", "description": "可选：planner 心跳触发间隔(秒)。距上轮规划结束/任务开始满该值且期间无触发 → 触发一轮规划(兜底死锁 + 唤醒去监督飞行中的 worker)。留空或 0 = 默认 600(10min)；"},
+			"seed_first_intent":      map[string]any{"type": "boolean", "description": "可选：对于简单任务可开启，创建时直接下发一条种子意图(内容=描述+目标)让 worker 免等首轮 planner 直接开跑测试；默认 false(走标准先规划再执行)。"},
 		}, "description", "goal"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -247,6 +248,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				LLMProfileID                 json.RawMessage `json:"llm_profile_id"`
 				TimeoutSeconds               int             `json:"timeout_seconds"`
 				PlanHeartbeatSeconds         int             `json:"plan_heartbeat_seconds"`
+				SeedFirstIntent              bool            `json:"seed_first_intent"`
 			}
 			_ = json.Unmarshal(in, &a)
 			if strings.TrimSpace(a.Description) == "" {
@@ -282,8 +284,8 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			}
 			// 共享的建后流程,与 HTTP 建任务(server.go createTask)复用同一段 launchTask:
 			// seed + 后台可见地做目标分解(第0轮/LLM步骤/逐条goal) + engine.Run。
-			// spawn_task 不暴露 seed_first_intent:工具创建的任务一律走标准先规划再执行(false)。
-			s.launchTask(t, a.Description+" "+a.Goal, false)
+			// seed_first_intent 默认 false(标准先规划再执行);简单任务可开启直接下发一 work 测试。
+			s.launchTask(t, a.Description+" "+a.Goal, a.SeedFirstIntent)
 			return actool.Text(fmt.Sprintf("task created: %s", t.ID)), nil
 		})
 }
@@ -396,6 +398,10 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
 	s.seedAutoReportFindingBinding()
+	s.unbindGoalMetDefault()
+	// 注：pentest 的默认工具绑定无需迁移——BuiltinToolSeeds 在全新初始化时就把
+	// list_assets/insert_assets/report_finding/list_findings/list_companies 连同
+	// pentest 一起 seed 好了（项目尚无旧库，不做迁移）。
 }
 
 // refreshBuiltinToolSchemas propagates code schema/description changes on the
@@ -404,7 +410,7 @@ func (s *Server) seedOrchestrationTools() {
 // reaches an old DB otherwise. Preserves each tool's agent binding + enabled flag.
 // Bump the flag whenever these tools' schemas/descriptions change in code.
 func (s *Server) refreshBuiltinToolSchemas() {
-	const flag = "tool_schema_refresh_v6_send_me"
+	const flag = "tool_schema_refresh_v7_upstream_merge"
 	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
 		return
 	}
@@ -428,6 +434,23 @@ func (s *Server) refreshBuiltinToolSchemas() {
 	}
 	_ = s.m.pg.SetSetting(flag, "true")
 	log.Printf("[tools] 已刷新 orchestration/platform 工具 schema 到代码默认(一次性)")
+}
+
+// unbindGoalMetDefault removes goal_met's default "planner" binding ONCE (guarded by
+// a settings flag), so existing DBs match the new default of NO agent. goal_met bypasses
+// per-goal prove_goal to declare the whole task done — powerful/risky and redundant with
+// the prove_goal→auto-complete path — so it ships unbound; users can re-bind it per agent
+// in the UI. A user's own binding to another agent is untouched (we only strip planner).
+func (s *Server) unbindGoalMetDefault() {
+	const flag = "goal_met_unbind_default_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	if err := s.m.pg.RemoveAgentFromTool("planner", "goal_met"); err != nil {
+		log.Printf("[tools] goal_met 解绑 planner 失败: %v", err)
+		return
+	}
+	_ = s.m.pg.SetSetting(flag, "true")
 }
 
 // seedAutoReportFindingBinding adds "auto" to report_finding's binding ONCE so

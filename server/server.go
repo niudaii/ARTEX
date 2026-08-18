@@ -583,6 +583,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/workspace/upload", s.wsUpload)
 	mux.HandleFunc("GET /api/tasks/{id}/scope", s.taskScopeList)
 	mux.HandleFunc("POST /api/tasks/{id}/control", s.control)
+	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/rerun", s.rerunIntent)      // 重跑单条 blocked/exhausted/stopped 意图
+	mux.HandleFunc("POST /api/tasks/{id}/intents/rerun-blocked", s.rerunBlocked)   // 批量重跑本任务全部 blocked 意图
 	mux.HandleFunc("POST /api/active", s.setActive)
 
 	mux.HandleFunc("GET /api/llm", s.getLLM)
@@ -634,6 +636,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/report", s.getReport)
 	mux.HandleFunc("POST /api/report/archive", s.archiveReport)
 	mux.HandleFunc("POST /api/chat", s.chat)
+	mux.HandleFunc("POST /api/chat/upload", s.chatUpload) // 方式1 文件上传:落到会话/任务工作目录 uploads/
 	mux.HandleFunc("POST /api/tasks/{id}/chat/stop", s.stopChat)
 
 	// --- 管理后台 API (PostgreSQL 数据源; 新版数据库与管理后台方案) ---
@@ -943,6 +946,54 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[task] #%s %s", t.ID, map[bool]string{true: "已暂停", false: "已恢复"}[paused])
 	writeJSON(w, 200, map[string]any{"id": t.ID, "paused": paused})
+}
+
+// rerunIntent 重跑一条没跑成功的意图(blocked/exhausted/stopped):把它置回 open,worker
+// 会重新认领、从头再跑(已写回图谱的 fact/finding/asset 保留);若任务已终态/暂停则顺带复活。
+// 用于「出错的 work 点击继续运行」——网络/LLM 抖动导致 blocked 后可一键重试。
+func (s *Server) rerunIntent(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.m.Task(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	iid, err := strconv.ParseInt(r.PathValue("iid"), 10, 64)
+	if err != nil {
+		writeErr(w, 400, "bad intent id")
+		return
+	}
+	reopened, err := t.Store.ReopenIntent(iid)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if !reopened {
+		writeErr(w, 409, "该意图不是可重跑状态(仅 blocked/exhausted/stopped 可重跑)")
+		return
+	}
+	s.reviveTask(t) // 终态/暂停 → 拉回 running,确保 worker 循环存活并重新认领
+	log.Printf("[task] #%s 意图 #%d 已重开(重跑)", t.ID, iid)
+	writeJSON(w, 200, map[string]any{"id": t.ID, "reopened": iid})
+}
+
+// rerunBlocked 批量重跑本任务全部 blocked 意图(适合一次网络/LLM 断连导致多条 blocked 后
+// 一键全部重试),置回 open 并复活任务;返回重开的条数。
+func (s *Server) rerunBlocked(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.m.Task(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	n, err := t.Store.ReopenBlockedIntents()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if n > 0 {
+		s.reviveTask(t)
+		log.Printf("[task] #%s 批量重开 %d 条 blocked 意图", t.ID, n)
+	}
+	writeJSON(w, 200, map[string]any{"id": t.ID, "reopened": n})
 }
 
 // getLLM returns the current LLM config (key never exposed).
@@ -2085,7 +2136,8 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	var req struct {
-		Message string `json:"message"`
+		Message     string           `json:"message"`
+		Attachments []chatAttachment `json:"attachments,omitempty"` // 方式1 上传的文件(路径相对任务工作目录)
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -2093,8 +2145,10 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	// Persist + broadcast the human turn so the 主 Agent 编排会话 survives page
 	// reloads and updates live: the conversation lives in the activity stream as
-	// worker="mainagent" (the per-task activity table, replayed via SSE).
-	s.engine.emitActivity(t, db.Activity{Worker: "mainagent", Kind: "user", Summary: req.Message})
+	// worker="mainagent" (the per-task activity table, replayed via SSE). With
+	// attachments, the activity's Detail carries {text, attachments} so the transcript
+	// renders attachment cards.
+	s.engine.emitActivity(t, userActivityWithAttachments("mainagent", req.Message, req.Attachments))
 	if ma := s.mainAgentRef(); ma != nil {
 		// Serialize per task: one main-agent run at a time so concurrent messages
 		// don't corrupt the shared exp<id>-main transcript. If a prior turn is still
@@ -2130,7 +2184,12 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			// is the captured "result" step — no separate reply emit (would duplicate).
 			emit := func(rec db.Activity) { s.engine.emitActivity(t, rec) }
 			maTaskID, _ := strconv.ParseInt(t.ID, 10, 64)
-			if _, err := ma.Chat(ctx, maTaskID, s.m.Assets(), t.Store, t.Goal, req.Message, emit, t.Notify); err != nil && ctx.Err() == nil {
+			resume := func() { s.reviveTask(t) } // set_goals 新增目标 → 把任务拉回 running
+			// 把上传附件的【绝对路径】清单拼进发给 agent 的消息,它据此用 Read/Bash 打开文件。
+			// taskDir = agent 的工作目录(CWD),与 chatUpload 落盘、ensureRunDir 一致。
+			taskDir := filepath.Join(s.m.dir, "tasks", t.ID)
+			agentMsg := composeAgentMessage(req.Message, req.Attachments, taskDir)
+			if _, err := ma.Chat(ctx, maTaskID, s.m.Assets(), t.Store, t.Goal, agentMsg, emit, t.Notify, resume, t.NotifyGoal); err != nil && ctx.Err() == nil {
 				s.engine.emitActivity(t, db.Activity{Worker: "mainagent", Kind: "text", IsError: true, Summary: "（主 Agent 出错：" + err.Error() + "）"})
 			}
 		}()
@@ -2223,10 +2282,11 @@ func (s *Server) persistTaskReport(taskID string) {
 }
 
 // startArchiveRun creates a conversation for the built-in Auto agent with the
-// Harness-style archive instruction and runs it in the background, holding
-// reportFiltering for the duration. Shared by the report-tab button and the
-// task-completion auto archive; notifyOnDone sends the POPO task-done push
-// after the agent run ends (completion path only, not the manual button).
+// archive trigger message (invoking the report-archive skill, or the built-in
+// flow as fallback) and runs it in the background, holding reportFiltering
+// for the duration. Shared by the report-tab button and the task-completion
+// auto archive; notifyOnDone sends the POPO task-done push after the agent
+// run ends (completion path only, not the manual button).
 func (s *Server) startArchiveRun(t *Task, notifyOnDone bool) (int64, error) {
 	pg := s.m.PG()
 	c, err := pg.CreateConversation("auto", "报告归档 · task#"+t.ID, nil)
@@ -2272,9 +2332,10 @@ func (s *Server) generateReport(t *Task) string {
 }
 
 // archiveReport starts an agent-driven report archive run and returns immediately.
-// A conversation is created for the built-in Auto agent with a Harness-style
-// instruction (read findings → filter → group/merge → assemble → write back via
-// archive_task_report). The frontend polls GET /api/report until
+// A conversation is created for the built-in Auto agent, which invokes the
+// report-archive skill (read findings → filter/score → group/merge → assemble
+// → write back via archive_task_report); when the skill is unavailable the
+// built-in flow is injected instead. The frontend polls GET /api/report until
 // X-Report-Filtering clears.
 // POST /api/report/archive?task=xxx
 func (s *Server) archiveReport(w http.ResponseWriter, r *http.Request) {
@@ -2300,10 +2361,11 @@ func (s *Server) archiveReport(w http.ResponseWriter, r *http.Request) {
 }
 
 // archiveMessage builds the instruction for the Auto agent's archive run:
-// a task header (id/description/goal) followed by the archive flow (phases +
-// gates + boundaries) loaded from skills/report-archive/SKILL.md, with the
-// {{TASK_ID}} placeholder substituted. When the skill file is missing or has
-// no instructions, the built-in archiveFlowDefault is used instead.
+// a task header (id/description/goal), then — when the report-archive skill
+// is loadable by the auto agent (on disk with instructions AND visible to
+// "auto") — a short trigger telling the agent to invoke the skill itself via
+// the Skill tool. When the skill is unavailable, the built-in
+// archiveFlowDefault is injected instead so the archive run still completes.
 func (s *Server) archiveMessage(t *Task) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "【报告归档任务】task_id=%s\n", t.ID)
@@ -2314,25 +2376,56 @@ func (s *Server) archiveMessage(t *Task) string {
 		fmt.Fprintf(&b, "任务目标：%s\n", v)
 	}
 	b.WriteString("\n")
-	b.WriteString(strings.ReplaceAll(s.archiveFlow(), "{{TASK_ID}}", t.ID))
+	if s.archiveSkillUsable() {
+		b.WriteString("请调用 Skill 工具（name=\"report-archive\"）加载报告归档流程，并按该流程完成本任务报告的归档。\n" +
+			"归档完成后只回复一行归档结果摘要（归档条目数/等级分布/写回状态），不要输出报告全文。")
+		return b.String()
+	}
+	b.WriteString(strings.ReplaceAll(archiveFlowDefault, "{{TASK_ID}}", t.ID))
 	return b.String()
 }
 
-// archiveFlow loads the archive flow body from skills/report-archive/SKILL.md
-// so the archive standard can be edited (系统 → Skills 页面) without
-// recompiling. It falls back to archiveFlowDefault when the skill is absent
-// or has no instructions.
-func (s *Server) archiveFlow() string {
-	if reg, err := skill.LoadDir(s.skillDir); err == nil {
-		for _, sk := range reg.List() {
-			if sk.Dir != "" && filepath.Base(sk.Dir) == "report-archive" {
-				if ins := strings.TrimSpace(sk.Instructions); ins != "" {
-					return ins
-				}
-			}
+// archiveSkillUsable reports whether the auto agent can load the
+// report-archive skill at runtime: the skill file exists with non-empty
+// instructions AND the skill is visible to the "auto" agent. When false,
+// archiveMessage falls back to injecting archiveFlowDefault.
+func (s *Server) archiveSkillUsable() bool {
+	if !archiveSkillOnDisk(s.skillDir) {
+		return false
+	}
+	if s.m == nil || s.m.PG() == nil {
+		return false
+	}
+	pg := s.m.PG()
+	a, err := pg.GetAgentByKey("auto")
+	if err != nil || a == nil {
+		return false
+	}
+	names, err := pg.AgentSkillNames(a.ID)
+	if err != nil {
+		return false
+	}
+	for _, n := range names {
+		if n == "report-archive" {
+			return true
 		}
 	}
-	return archiveFlowDefault
+	return false
+}
+
+// archiveSkillOnDisk reports whether skills/report-archive/SKILL.md exists
+// and carries non-empty instructions.
+func archiveSkillOnDisk(skillDir string) bool {
+	reg, err := skill.LoadDir(skillDir)
+	if err != nil {
+		return false
+	}
+	for _, sk := range reg.List() {
+		if sk.Dir != "" && filepath.Base(sk.Dir) == "report-archive" && strings.TrimSpace(sk.Instructions) != "" {
+			return true
+		}
+	}
+	return false
 }
 
 // archiveFlowDefault is the built-in archive flow used when
