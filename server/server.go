@@ -2249,12 +2249,13 @@ func (s *Server) fallbackChat(t *Task, msg string) string {
 // persistTaskReport archives the task report when a task reaches terminal state
 // (done/timeout): runs the same agent-driven deep archive as the report-tab
 // button, and sends the POPO completion notification AFTER the archive finishes.
-// Falls back to an instant unfiltered report (notified immediately) when the
-// chat agent isn't configured, so a completed task always has a report.
+// No fallback: if the archive cannot run (LLM 未配置 / skill 不可用 / 启动失败),
+// the error is logged loudly and the completion notification still goes out,
+// but NO degraded report is silently persisted.
 func (s *Server) persistTaskReport(taskID string) {
 	t := s.m.ResolveTask(taskID)
 	if t == nil {
-		log.Printf("[report/persist] task %s: task not in memory, skipping", taskID)
+		log.Printf("[report/persist] task %s: archive failed: task not in memory", taskID)
 		s.notifyTaskDone(taskID)
 		return
 	}
@@ -2263,37 +2264,38 @@ func (s *Server) persistTaskReport(taskID string) {
 		s.notifyTaskDone(taskID)
 		return
 	}
-	if s.chatAgentRef() != nil {
-		if convID, err := s.startArchiveRun(t, true); err != nil {
-			log.Printf("[report/persist] task %s: start archive failed: %v", taskID, err)
-		} else {
-			log.Printf("[report/persist] task %s: agent archive started (conv %d), notify after completion", taskID, convID)
-			return
-		}
+	if s.chatAgentRef() == nil {
+		log.Printf("[report/persist] task %s: archive failed: LLM 未配置(chat agent 未初始化)", taskID)
+		s.notifyTaskDone(taskID)
+		return
 	}
-	md := s.generateReport(t)
-	taskIDInt, _ := strconv.ParseInt(taskID, 10, 64)
-	if err := s.m.PG().SaveReport(taskIDInt, md); err != nil {
-		log.Printf("[report/persist] task %s: %v", taskID, err)
-	} else {
-		log.Printf("[report/persist] task %s: unfiltered report saved (%d chars)", taskID, len(md))
+	convID, err := s.startArchiveRun(t, true)
+	if err != nil {
+		log.Printf("[report/persist] task %s: archive failed: %v", taskID, err)
+		s.notifyTaskDone(taskID)
+		return
 	}
-	s.notifyTaskDone(taskID)
+	log.Printf("[report/persist] task %s: agent archive started (conv %d), notify after completion", taskID, convID)
 }
 
 // startArchiveRun creates a conversation for the built-in Auto agent with the
-// archive trigger message (invoking the report-archive skill, or the built-in
-// flow as fallback) and runs it in the background, holding reportFiltering
-// for the duration. Shared by the report-tab button and the task-completion
-// auto archive; notifyOnDone sends the POPO task-done push after the agent
-// run ends (completion path only, not the manual button).
+// archive trigger message (invoking the report-archive skill) and runs it in
+// the background, holding reportFiltering for the duration. The trigger
+// message is built FIRST: if the skill is unavailable the run is refused with
+// an error and no conversation is created (no fallback flow). Shared by the
+// report-tab button and the task-completion auto archive; notifyOnDone sends
+// the POPO task-done push after the agent run ends (completion path only,
+// not the manual button).
 func (s *Server) startArchiveRun(t *Task, notifyOnDone bool) (int64, error) {
+	msg, err := s.archiveMessage(t)
+	if err != nil {
+		return 0, err
+	}
 	pg := s.m.PG()
 	c, err := pg.CreateConversation("auto", "报告归档 · task#"+t.ID, nil)
 	if err != nil {
 		return 0, err
 	}
-	msg := s.archiveMessage(t)
 	if _, err := pg.AppendConvActivity(c.ID, db.Activity{Worker: c.AgentKey, Kind: "user", Summary: firstLine(msg, 200), Detail: msg}); err != nil {
 		log.Printf("[report/archive] conv %d append msg failed: %v", c.ID, err)
 	}
@@ -2361,12 +2363,14 @@ func (s *Server) archiveReport(w http.ResponseWriter, r *http.Request) {
 }
 
 // archiveMessage builds the instruction for the Auto agent's archive run:
-// a task header (id/description/goal), then — when the report-archive skill
-// is loadable by the auto agent (on disk with instructions AND visible to
-// "auto") — a short trigger telling the agent to invoke the skill itself via
-// the Skill tool. When the skill is unavailable, the built-in
-// archiveFlowDefault is injected instead so the archive run still completes.
-func (s *Server) archiveMessage(t *Task) string {
+// a task header (id/description/goal), then a short trigger telling the agent
+// to invoke the report-archive skill itself via the Skill tool. When the skill
+// is unavailable (missing/empty on disk, or not visible to the auto agent) it
+// returns an error — there is NO built-in fallback flow.
+func (s *Server) archiveMessage(t *Task) (string, error) {
+	if !s.archiveSkillUsable() {
+		return "", fmt.Errorf("report-archive skill 不可用: skills/report-archive/SKILL.md 缺失/为空,或未对 auto agent 开启可见")
+	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "【报告归档任务】task_id=%s\n", t.ID)
 	if v := strings.TrimSpace(t.Description); v != "" {
@@ -2376,19 +2380,15 @@ func (s *Server) archiveMessage(t *Task) string {
 		fmt.Fprintf(&b, "任务目标：%s\n", v)
 	}
 	b.WriteString("\n")
-	if s.archiveSkillUsable() {
-		b.WriteString("请调用 Skill 工具（name=\"report-archive\"）加载报告归档流程，并按该流程完成本任务报告的归档。\n" +
-			"归档完成后只回复一行归档结果摘要（归档条目数/等级分布/写回状态），不要输出报告全文。")
-		return b.String()
-	}
-	b.WriteString(strings.ReplaceAll(archiveFlowDefault, "{{TASK_ID}}", t.ID))
-	return b.String()
+	b.WriteString("请调用 Skill 工具（name=\"report-archive\"）加载报告归档流程，并按该流程完成本任务报告的归档。\n" +
+		"归档完成后只回复一行归档结果摘要（归档条目数/等级分布/写回状态），不要输出报告全文。")
+	return b.String(), nil
 }
 
 // archiveSkillUsable reports whether the auto agent can load the
 // report-archive skill at runtime: the skill file exists with non-empty
 // instructions AND the skill is visible to the "auto" agent. When false,
-// archiveMessage falls back to injecting archiveFlowDefault.
+// archiveMessage returns an error (no fallback).
 func (s *Server) archiveSkillUsable() bool {
 	if !archiveSkillOnDisk(s.skillDir) {
 		return false
@@ -2427,47 +2427,6 @@ func archiveSkillOnDisk(skillDir string) bool {
 	}
 	return false
 }
-
-// archiveFlowDefault is the built-in archive flow used when
-// skills/report-archive/SKILL.md is missing or empty. Keep it in sync with
-// the skill file.
-const archiveFlowDefault = `按以下阶段执行报告归档，上一阶段完成并自检后才进入下一阶段：
-
-## 阶段 1 · 读取发现（门槛：必须读全）
-调用 list_task_findings(task_id="{{TASK_ID}}") 读取该任务全部确认漏洞（含漏洞类型/等级/摘要/PoC/证据）。
-- 结果被截断或提示更多时继续读全；只凭部分条目归档视为失败。
-
-## 阶段 2 · 过滤误报
-逐条判定并剔除：扫描器误报、证据不支持结论的、无实际利用影响的纯信息类条目。
-- 判定只依据该条目自身证据，不允许臆测。
-- 记住被剔除条目的数量与原因概要，写入报告头部说明。
-
-## 阶段 3 · 分组与合并
-1. 按域名分组：从每条漏洞的 PoC/证据中提取目标 hostname，按站点归组。
-2. 重复合并：同域名 + 同漏洞类型 + 相同/相似端点 → 合并为一条；描述拼接，PoC 取最完整的。
-3. 攻击链合并：同域名内多条漏洞构成逻辑利用链（如 RCE → 凭据泄露 → 数据失陷）→ 合并为一条主漏洞，子漏洞以 N.x 层级展开；只合并有因果链的，不机械合并。
-
-## 阶段 4 · 组装归档报告（Markdown）
-1. 标题：# 渗透测试报告 — {任务描述}
-2. 概览：原始发现数 → 归档后数量、剔除说明、等级分布（严重/高危/中危/低危）、覆盖域名列表。
-3. 漏洞总结表（顶格书写，勿缩进）：
-   表头：| # | 等级 | 域名 | 标题 | 大概内容 | 修复状态 |
-   等级用 emoji（🔴 严重 / 🟠 高危 / 🟡 中危 / 🟢 低危）；修复状态默认 ⬜ 待修复；按影响从高到低排列，与正文编号一一对应。
-4. 正文按域名分组，每条漏洞使用统一模板，字段齐全：
-   ## N. [等级] 漏洞标题
-   **漏洞详情**（原始描述）/ **请求包**（http 代码块）/ **响应包**（http 代码块，截断至 1500 字符）/ **复现命令**（bash 代码块）/ **漏洞危害** / **修复建议**（编号列表）
-   请求/响应包必须来自 finding 证据原文，缺失则注明「证据缺失」，禁止编造。
-5. 排序与编号：等级优先（严重>高危>中危>低危）；同等级按实际影响（RCE/代码执行 > 数据读写篡改 > 大量敏感数据泄露 > 认证绕过 > 越权 > SSRF/内网探测 > 信息泄露）；攻击链置于所属域名组首位；编号跨域名组全局递增。
-
-## 阶段 5 · 写回归档（门槛：必须调用工具）
-调用 archive_task_report(task_id="{{TASK_ID}}", markdown=完整报告) 写回。
-- 写回成功即归档完成；之后只回复一行归档结果摘要（归档条目数/等级分布/写回状态），不要输出报告全文。
-
-## 边界
-- 只读整理：禁止对任何目标发起请求、攻击、复测或扫描。
-- 禁止编造、夸大或润色漏洞事实；凭据类证据保持原样（证据完整性）。
-- 过滤后为 0 条时，仍写回一份说明「无可归档漏洞及原因」的简报。
-`
 
 func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))

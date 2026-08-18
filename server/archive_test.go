@@ -38,29 +38,24 @@ func TestArchiveSkillOnDisk(t *testing.T) {
 	}
 }
 
-// TestArchiveMessageFallback covers the degraded path: without a DB or skill
-// file the built-in flow is injected with the task id substituted.
-func TestArchiveMessageFallback(t *testing.T) {
+// TestArchiveMessageNoSkillErrors covers the no-skill path: without the
+// report-archive skill on disk, archiveMessage returns an error instead of
+// silently degrading to a built-in flow (fallback removed).
+func TestArchiveMessageNoSkillErrors(t *testing.T) {
 	task := &Task{ID: "42", Description: "example.com 渗透测试", Goal: "拿到 flag"}
-	msg := (&Server{skillDir: t.TempDir()}).archiveMessage(task)
-	for _, want := range []string{
-		"【报告归档任务】task_id=42",
-		"任务描述：example.com 渗透测试",
-		"任务目标：拿到 flag",
-		"按以下阶段执行报告归档",
-		`list_task_findings(task_id="42")`,
-		`archive_task_report(task_id="42"`,
-	} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("fallback message missing %q:\n%s", want, msg)
-		}
+	msg, err := (&Server{skillDir: t.TempDir()}).archiveMessage(task)
+	if err == nil {
+		t.Fatalf("expected error without skill, got message:\n%s", msg)
+	}
+	if msg != "" {
+		t.Fatalf("expected empty message on error, got:\n%s", msg)
 	}
 }
 
 // TestArchiveMessageInvokesSkill covers the happy path against a real DB:
 // the skill is on disk and seeded visible to auto, so archiveMessage sends a
-// short Skill-invocation trigger instead of injecting the flow. Toggling the
-// visibility off drops back to the injected flow.
+// short Skill-invocation trigger. Toggling the visibility off makes it fail
+// with an error (no fallback flow).
 func TestArchiveMessageInvokesSkill(t *testing.T) {
 	m, err := NewManager(t.TempDir(), "")
 	if err != nil {
@@ -72,7 +67,10 @@ func TestArchiveMessageInvokesSkill(t *testing.T) {
 	s := &Server{m: m, skillDir: skillDir}
 
 	task := &Task{ID: "42", Description: "example.com 渗透测试"}
-	msg := s.archiveMessage(task)
+	msg, err := s.archiveMessage(task)
+	if err != nil {
+		t.Fatalf("archiveMessage with usable skill: %v", err)
+	}
 	for _, want := range []string{
 		"【报告归档任务】task_id=42",
 		`Skill 工具（name="report-archive"）`,
@@ -80,9 +78,6 @@ func TestArchiveMessageInvokesSkill(t *testing.T) {
 		if !strings.Contains(msg, want) {
 			t.Fatalf("invoke message missing %q:\n%s", want, msg)
 		}
-	}
-	if strings.Contains(msg, "按以下阶段执行报告归档") {
-		t.Fatalf("full flow injected although the skill is usable:\n%s", msg)
 	}
 
 	a, err := m.PG().GetAgentByKey("auto")
@@ -92,8 +87,8 @@ func TestArchiveMessageInvokesSkill(t *testing.T) {
 	if err := m.PG().ToggleSkillVisibility(a.ID, "report-archive", false); err != nil {
 		t.Fatal(err)
 	}
-	msg = s.archiveMessage(task)
-	if !strings.Contains(msg, "按以下阶段执行报告归档") || !strings.Contains(msg, `list_task_findings(task_id="42")`) {
-		t.Fatalf("expected injected fallback flow after visibility off:\n%s", msg)
+	msg, err = s.archiveMessage(task)
+	if err == nil {
+		t.Fatalf("expected error after visibility off, got:\n%s", msg)
 	}
 }
