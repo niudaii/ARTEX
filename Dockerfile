@@ -22,7 +22,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
 # 预装 Playwright MCP 与 CLI（全局），运行时不再 npx 联网下载。
-# @playwright/mcp：browser MCP 直接 `npx @playwright/mcp`（已全局装好，无需 -y/@latest）。
+# @playwright/mcp：browser MCP 直接调全局 bin `playwright-mcp`（npm install -g 已装），
+# 跳过 npx 联网验证版本 + 进程解析，per-run 连接握手更快，避免 agent context 先结束被 cancel。
 # @playwright/cli：提供 playwright-cli，装完顺带 --help 验证可执行。
 # 再装 playwright（提供浏览器管理），装完用 --with-deps 预置 chromium 及其系统依赖，
 # 这样容器内 MCP/CLI 首次启动即可用，不再联网下载浏览器。

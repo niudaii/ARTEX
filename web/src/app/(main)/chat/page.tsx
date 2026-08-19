@@ -51,6 +51,10 @@ function fmtDuration(ms: number): string {
   return `${h}h${String(m % 60).padStart(2, "0")}m`;
 }
 
+// isArchiveConv identifies report-archive conversations auto-created by the
+// 报告归档 flow (startArchiveRun creates a conversation titled "报告归档 · task#<id>").
+const isArchiveConv = (c: Conversation) => c.title.startsWith("报告归档 · task#");
+
 // HISTORY_PAGE is how many steps one history page loads: the latest page on open,
 // then one more page each time the user scrolls to the top. Kept modest so a long
 // thread stays snappy (only ~a page of rows is in the DOM until you scroll up).
@@ -815,7 +819,10 @@ export default function ChatPage() {
   // by ChatView on mount; ids never repeat, so leftover entries are harmless).
   const [pendingByConv, setPendingByConv] = React.useState<
     Record<number, { input?: string; attachments?: ChatAttachment[] }>
-  >({});
+ >({});
+
+  // Collapse report-archive conversations by default; expandable on click.
+  const [showArchive, setShowArchive] = React.useState(false);
 
   const reloadConvs = React.useCallback(() => {
     api
@@ -864,6 +871,14 @@ export default function ChatPage() {
   // are task-specific and stay hidden from the chat page.
   const chatAgents = agents.filter((a) => !a.builtin || a.role === "assistant");
 
+  // Report-archive conversations (auto-created by 报告归档 flow) are grouped
+  // and collapsed by default; the user can expand to browse them. Selecting
+  // one (e.g. via URL ?c=) auto-expands so the active thread stays visible.
+  const archiveConvs = convs.filter(isArchiveConv);
+  const regularConvs = convs.filter((c) => !isArchiveConv(c));
+  const archiveSelected = !!selected && isArchiveConv(selected);
+  const showArchiveSection = showArchive || archiveSelected;
+
   async function del(id: number) {
     try {
       await api.deleteConversation(id);
@@ -907,7 +922,7 @@ export default function ChatPage() {
           <ScrollArea type="auto" className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
             <div className="flex min-w-0 flex-col gap-0.5 p-2">
               {convs.length === 0 && <p className="text-muted-foreground px-2 py-6 text-center text-xs">暂无对话</p>}
-              {convs.map((c) => (
+              {regularConvs.map((c) => (
                 <ConversationItem
                   key={c.id}
                   conv={c}
@@ -922,6 +937,39 @@ export default function ChatPage() {
                   onDelete={() => del(c.id)}
                 />
               ))}
+              {archiveConvs.length > 0 && (
+                <>
+                  <button
+                    type="button"
+                    onClick={() => setShowArchive((v) => !v)}
+                    className="text-muted-foreground hover:text-foreground mt-1 flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium"
+                  >
+                    <ChevronDownIcon
+                      className={cn("size-3 transition-transform", !showArchiveSection && "-rotate-90")}
+                    />
+                    报告归档
+                    <Badge variant="secondary" className="px-1 py-0 text-[10px]">
+                      {archiveConvs.length}
+                    </Badge>
+                  </button>
+                  {showArchiveSection &&
+                    archiveConvs.map((c) => (
+                      <ConversationItem
+                        key={c.id}
+                        conv={c}
+                        agent={agents.find((a) => a.key === c.agent_key)}
+                        active={selectedId === c.id}
+                        renaming={renamingId === c.id}
+                        renameText={renameText}
+                        onSelect={() => setSelectedId(c.id)}
+                        onStartRename={() => startRename(c)}
+                        onRenameText={setRenameText}
+                        onCommitRename={commitRename}
+                        onDelete={() => del(c.id)}
+                      />
+                    ))}
+                </>
+              )}
             </div>
           </ScrollArea>
         </div>

@@ -1,7 +1,0 @@
-interface:
-  display_name: "Upstream Sync"
-  short_description: "分析上游提交，人工确认后合并，本地为主"
-  default_prompt: "Use $upstream-sync to sync upstream commits into local repo."
-
-policy:
-  allow_implicit_invocation: true

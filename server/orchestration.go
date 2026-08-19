@@ -445,7 +445,6 @@ func (s *Server) seedOrchestrationTools() {
 	s.refreshBuiltinToolSchemas()
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
-	s.seedPlannerListAssetsBinding()
 	s.unbindGoalMetDefault()
 	// 注：pentest 的默认工具绑定无需迁移——BuiltinToolSeeds 在全新初始化时就把
 	// list_assets/insert_assets/report_finding/list_findings/list_companies 连同
@@ -512,25 +511,6 @@ func (s *Server) seedPlannerDefaultBindings() {
 	}
 	if err := s.m.pg.AddAgentToToolBinding("planner", []string{"report_finding"}); err != nil {
 		log.Printf("[planner] report_finding 默认绑定失败: %v", err)
-		return
-	}
-	_ = s.m.pg.SetSetting(flag, "true")
-}
-
-// seedPlannerListAssetsBinding adds "planner" to list_assets's binding ONCE
-// (guarded by a settings flag). The planner prompt (planner.go) instructs the
-// planner to query the global asset graph via list_assets on demand, but
-// list_assets was historically seeded only to worker/mainagent/auto — so every
-// planner call to list_assets returned "unknown tool" (289 of 316 list_assets
-// errors). Fresh DBs get it via PlannerTools(); this only backfills existing
-// DBs without overriding a user unbind.
-func (s *Server) seedPlannerListAssetsBinding() {
-	const flag = "planner_list_assets_v1"
-	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
-		return
-	}
-	if err := s.m.pg.AddAgentToToolBinding("planner", []string{"list_assets"}); err != nil {
-		log.Printf("[planner] list_assets 默认绑定失败: %v", err)
 		return
 	}
 	_ = s.m.pg.SetSetting(flag, "true")

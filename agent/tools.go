@@ -1401,9 +1401,5 @@ func (t *ToolSet) PlannerTools() []actool.CoreTool {
 		t.addTaskScope(),
 		// list_untested_assets：按需查本任务范围内未测资产(类型+分页)，自行决定补测。
 		t.listUntestedAssets(),
-		// list_assets：按需 pull 资产细节（DSL 搜索/id 直取，分页）。planner 提示已教用此
-		// 工具查全局资产图，但历史默认绑定遗漏了 planner（仅 worker/mainagent/auto）→ 调用
-		// 一律 unknown tool。Plan() 里 as!=nil 时已 SetAssetStore，handler 不会返回"未启用"。
-		t.listAssets(),
 	}
 }
