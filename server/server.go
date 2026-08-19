@@ -28,6 +28,11 @@ import (
 	"github.com/Autumn-27/norma/transcript"
 )
 
+// BuildVersion is the backend application version, injected from cmd/artex at
+// startup (which in turn gets it from -ldflags "-X main.version=<tag>").
+// Defaults to "dev" for local builds. Exposed to the frontend via GET /api/health.
+var BuildVersion = "dev"
+
 // Server exposes the ARTEX backend over a JSON HTTP API for the shadcn/ui
 // frontend.
 type Server struct {
@@ -607,6 +612,10 @@ func (s *Server) Handler() http.Handler {
 
 	mux.HandleFunc("GET /api/exploration/frontier", s.frontier)
 	mux.HandleFunc("GET /api/exploration/findings", s.findings)
+	mux.HandleFunc("GET /api/exploration/findings/stats", s.findingStats)
+	mux.HandleFunc("GET /api/exploration/findings/{id}", s.getFinding)
+	mux.HandleFunc("GET /api/exploration/findings/{id}/lineage", s.findingLineage)
+	mux.HandleFunc("PATCH /api/exploration/findings/{id}", s.patchFinding)
 	mux.HandleFunc("GET /api/exploration/intents", s.intents)
 	mux.HandleFunc("GET /api/exploration/graph", s.explorationGraph)
 	mux.HandleFunc("GET /api/exploration/activity", s.activity)
@@ -747,7 +756,7 @@ func (s *Server) Handler() http.Handler {
 // --- handlers ---
 
 func (s *Server) health(w http.ResponseWriter, r *http.Request) {
-	writeJSON(w, 200, map[string]any{"ok": true, "service": "artex"})
+	writeJSON(w, 200, map[string]any{"ok": true, "service": "artex", "version": BuildVersion})
 }
 
 func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
@@ -806,7 +815,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	terminal := isTerminalStatus(s.m.TaskStatus(t.ID))
 	running := !terminal && s.engine.Ready() && s.engine.Started(t.ID) && !paused
 	// stalled: running but no activity for a while and nothing in flight.
-	stalled := running && inFlight == 0 && last > 0 && time.Now().Unix()-last > 60
+	stalled := running && inFlight == 0 && last > 0 && time.Now().Unix()-last > 120
 
 	// engine_mode follows the spec enum (exploring|paused|stalled|idle).
 	switch {
@@ -1386,15 +1395,43 @@ func (s *Server) frontier(w http.ResponseWriter, r *http.Request) {
 func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 	// 无 task 参数 → 全局「发现」页：从独立 findings 表读取（任务删除后 finding 依然保留）。
 	// 带 task 参数 → 仅该任务（任务概览/发现 Tab 用），从 exploration_nodes 读（任务在则节点在）。
-	taskParam := r.URL.Query().Get("task")
+	q := r.URL.Query()
+	taskParam := q.Get("task")
 	if taskParam == "" {
-		// 不设上限：页面基于全量数据在客户端聚合总数/等级/任务统计，截断会导致总数停在 500。
-		fs, _ := s.m.pg.ListFindings(0)
+		// 带 page/limit → 服务端分页 {items,total,...}；不带 → 裸数组（dashboard 汇总用，
+		// 与 intents 端点的兼容策略一致）。筛选/排序统一下推到 SQL。
+		if q.Get("page") == "" && q.Get("limit") == "" {
+			// 不设上限：页面基于全量数据在客户端聚合总数/等级/任务统计，截断会导致总数停在 500。
+			fs, _ := s.m.pg.ListFindings(0)
+			assets := s.resolveFindingAssets(fs)
+			out := make([]FindingDTO, 0, len(fs))
+			for _, f := range fs {
+				out = append(out, findingFromDB(f, assets))
+			}
+			writeJSON(w, 200, out)
+			return
+		}
+		page := atoiDefault(q.Get("page"), 1)
+		limit := min(atoiDefault(q.Get("limit"), 20), 200)
+		filter := db.FindingFilter{
+			Severity:  normFilter(q.Get("severity")),
+			Status:    normFilter(q.Get("status")),
+			VulnClass: normFilter(q.Get("vulnclass")),
+			// task_id(独立于会切到「按任务节点」分支的 task 参数):全局表按任务筛选。
+			TaskID: normFilter(q.Get("task_id")),
+			Sort:   q.Get("sort"),
+		}
+		fs, total, err := s.m.pg.ListFindingsPage(filter, page, limit)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		assets := s.resolveFindingAssets(fs)
 		out := make([]FindingDTO, 0, len(fs))
 		for _, f := range fs {
-			out = append(out, findingFromDB(f))
+			out = append(out, findingFromDB(f, assets))
 		}
-		writeJSON(w, 200, out)
+		writeJSON(w, 200, map[string]any{"items": out, "total": total, "page": page, "page_size": limit})
 		return
 	}
 	t := s.m.ResolveTask(taskParam)
@@ -1403,7 +1440,217 @@ func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	f, _ := t.Store.ListByKind(db.KindFinding, 200)
-	writeJSON(w, 200, findingDTOsForTask(t, f))
+	tid, _ := strconv.ParseInt(t.ID, 10, 64)
+	meta, err := s.m.pg.FindingMetaByNodeID(tid)
+	if err != nil {
+		log.Printf("[findings] task=%s meta: %v", t.ID, err)
+	}
+	var aidSet []int64
+	for _, m := range meta {
+		aidSet = append(aidSet, m.AssetIDs...)
+	}
+	assets := s.resolveAssetIDs(aidSet)
+	writeJSON(w, 200, findingDTOsForTask(t, f, meta, assets))
+}
+
+// normFilter maps the frontend's "all" sentinel (and empty) to "" so the DB layer
+// treats it as no filter.
+func normFilter(v string) string {
+	if v == "all" {
+		return ""
+	}
+	return v
+}
+
+// resolveFindingAssets loads every asset anchored by the given findings, keyed by
+// id, so each finding DTO can render its assets' labels.
+func (s *Server) resolveFindingAssets(fs []*db.DBFinding) map[int64]*db.Asset {
+	var ids []int64
+	for _, f := range fs {
+		ids = append(ids, f.AssetIDs...)
+	}
+	return s.resolveAssetIDs(ids)
+}
+
+// resolveAssetIDs de-dupes ids and loads their asset rows into an id→asset map.
+func (s *Server) resolveAssetIDs(ids []int64) map[int64]*db.Asset {
+	assets := map[int64]*db.Asset{}
+	seen := map[int64]bool{}
+	var uniq []int64
+	for _, id := range ids {
+		if id > 0 && !seen[id] {
+			seen[id] = true
+			uniq = append(uniq, id)
+		}
+	}
+	if len(uniq) == 0 {
+		return assets
+	}
+	list, err := s.m.pg.Assets().GetByIDs(uniq)
+	if err != nil {
+		log.Printf("[findings] resolve assets: %v", err)
+	}
+	for _, a := range list {
+		assets[a.ID] = a
+	}
+	return assets
+}
+
+// findingStats serves the whole-table aggregates (stat cards + vuln-class filter)
+// for the paginated 发现 page.
+func (s *Server) findingStats(w http.ResponseWriter, r *http.Request) {
+	st, err := s.m.pg.FindingStats()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, st)
+}
+
+// getFinding returns one finding by its standalone-table id (DTO finding_id),
+// with anchored assets resolved for display.
+func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
+	id := int64(atoiDefault(r.PathValue("id"), 0))
+	if id <= 0 {
+		writeErr(w, 400, "bad finding id")
+		return
+	}
+	f, err := s.m.pg.GetFinding(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if f == nil {
+		writeErr(w, 404, "finding not found")
+		return
+	}
+	assets := s.resolveAssetIDs(f.AssetIDs)
+	writeJSON(w, 200, findingFromDB(f, assets))
+}
+
+// findingLineage returns the exploration sub-DAG from the task root to this
+// finding's node — the finding node + all its ancestors + edges among them — so
+// the detail page can show "how this finding was reached". Empty {nodes,edges}
+// when the finding has no node/task (e.g. the originating task was deleted).
+func (s *Server) findingLineage(w http.ResponseWriter, r *http.Request) {
+	id := int64(atoiDefault(r.PathValue("id"), 0))
+	if id <= 0 {
+		writeErr(w, 400, "bad finding id")
+		return
+	}
+	f, err := s.m.pg.GetFinding(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if f == nil {
+		writeErr(w, 404, "finding not found")
+		return
+	}
+	empty := map[string]any{"nodes": []any{}, "edges": []any{}}
+	if f.NodeID == nil || f.TaskID == nil {
+		writeJSON(w, 200, empty)
+		return
+	}
+	t := s.m.ResolveTask(i64s(*f.TaskID))
+	if t == nil {
+		writeJSON(w, 200, empty)
+		return
+	}
+	nodes, edges, err := t.Store.FindingLineage(*f.NodeID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes), "edges": edgeDTOs(edges)})
+}
+
+// patchFinding partially updates a finding: any subset of {status, severity}.
+// The id is the standalone findings-table id (DTO finding_id). Severity edits are
+// mirrored onto the originating exploration node so the per-task view stays in
+// sync. Returns the updated finding DTO.
+func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
+	id := int64(atoiDefault(r.PathValue("id"), 0))
+	if id <= 0 {
+		writeErr(w, 400, "bad finding id")
+		return
+	}
+	var body struct {
+		Status    *string `json:"status"`
+		Severity  *string `json:"severity"`
+		Name      *string `json:"name"`
+		VulnClass *string `json:"vulnclass"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "bad json: "+err.Error())
+		return
+	}
+	if body.Status == nil && body.Severity == nil && body.Name == nil && body.VulnClass == nil {
+		writeErr(w, 400, "nothing to update: provide status/severity/name/vulnclass")
+		return
+	}
+	if body.Status != nil {
+		if !db.ValidFindingStatus(*body.Status) {
+			writeErr(w, 400, "bad status: "+*body.Status)
+			return
+		}
+		n, err := s.m.pg.SetFindingStatus(id, *body.Status)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if n == 0 {
+			writeErr(w, 404, "finding not found")
+			return
+		}
+	}
+	if body.Severity != nil {
+		if !db.ValidSeverity(*body.Severity) {
+			writeErr(w, 400, "bad severity: "+*body.Severity)
+			return
+		}
+		n, err := s.m.pg.SetFindingSeverity(id, *body.Severity)
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if n == 0 {
+			writeErr(w, 404, "finding not found")
+			return
+		}
+	}
+	if body.Name != nil {
+		n, err := s.m.pg.SetFindingName(id, strings.TrimSpace(*body.Name))
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if n == 0 {
+			writeErr(w, 404, "finding not found")
+			return
+		}
+	}
+	if body.VulnClass != nil {
+		n, err := s.m.pg.SetFindingVulnClass(id, strings.TrimSpace(*body.VulnClass))
+		if err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		if n == 0 {
+			writeErr(w, 404, "finding not found")
+			return
+		}
+	}
+	f, err := s.m.pg.GetFinding(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if f == nil {
+		writeErr(w, 404, "finding not found")
+		return
+	}
+	writeJSON(w, 200, findingFromDB(f, s.resolveAssetIDs(f.AssetIDs)))
 }
 
 func (s *Server) intents(w http.ResponseWriter, r *http.Request) {

@@ -179,6 +179,7 @@ func (t *ToolSet) ListFindingsTool() actool.CoreTool       { return t.listFindin
 func (t *ToolSet) GetWorkerTraceTool() actool.CoreTool     { return t.getWorkerTrace() }
 func (t *ToolSet) ListWorkerTracesTool() actool.CoreTool   { return t.listWorkerTraces() }
 func (t *ToolSet) SearchWorkerTracesTool() actool.CoreTool { return t.searchAllWorkerTraces() }
+func (t *ToolSet) NodeDetailTool() actool.CoreTool         { return t.nodeDetail() }
 func (t *ToolSet) AddHintTool() actool.CoreTool            { return t.addHint() }
 
 // SetEnrich wires the async enrichment engine (DNS/HTTP auto-completion).
@@ -741,11 +742,12 @@ func (t *ToolSet) goalMet() actool.CoreTool {
 func (t *ToolSet) addFinding() actool.CoreTool {
 	return writeTool("report_finding", "[重要]发现漏洞时必须调用该工具进行记录!记录一个确认的漏洞发现。在任务上下文中 intent_id 必填（当前正在执行的意图 id）；在会话上下文中 intent_id 可不填。",
 		obj(map[string]any{
-			"vulnclass":   str("漏洞类"),
-			"severity":    str("high|medium|low"),
+			"vulnclass":   str("漏洞类（分类，如 SQL Injection / IDOR / XSS）"),
+			"name":        str("漏洞名称（具体可读的标题，如『用户中心订单接口存在越权访问』；建议填写，留空时前端回退展示 vulnclass）"),
+			"severity":    str("critical|high|medium|low（严重/高/中/低）"),
 			"summary":     str("发现摘要"),
 			"intent_id":   idp("产生本发现的意图 id（任务上下文必填；会话上下文可不填）"),
-			"asset_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "受影响资产 id（可选，0/1/多个）：参数/端点/站点等。一个漏洞影响多处可全填，纯观察可不填。"},
+			"asset_ids":   map[string]any{"type": "array", "items": map[string]any{"type": "integer"}, "description": "【存在时尽量填写，否则在摘要中必须要写清楚漏洞位置】受影响资产 id（可选，0/1/多个）：参数/端点/站点等。一个漏洞影响多处可全填，纯观察可不填。"},
 			"evidence":    str("证据/PoC 文本"),
 			"source_file": str("泄露源文件（可选）：当漏洞涉及前端 JS 凭证泄露或算法泄露时，填写泄露了密钥/签名算法/加密逻辑的具体 JS 文件 URL 或路径（如 https://example.com/static/js/main.abc123.js）。非此类漏洞不填。"),
 			"harm":        str("漏洞危害（可选）：利用场景与影响范围描述。会话快速记录时可留空，报告生成时补充。"),
@@ -756,12 +758,14 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 		}, "vulnclass", "severity", "summary"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
-				VulnClass, Severity, Summary, Evidence, SourceFile, Harm, Fix, Request, Response, ReproCmd string
-				IntentID                                                                                   json.RawMessage   `json:"intent_id"`
-				AssetIDs                                                                                   []json.RawMessage `json:"asset_ids"`
+				VulnClass, Name, Severity, Summary, Evidence, Harm, Fix, Request, Response string
+				SourceFile                                                                 string            `json:"source_file"`
+				ReproCmd                                                                   string            `json:"repro_cmd"`
+				IntentID                                                                   json.RawMessage   `json:"intent_id"`
+				AssetIDs                                                                   []json.RawMessage `json:"asset_ids"`
 			}
 			_ = json.Unmarshal(in, &a)
-			payload := map[string]any{"vulnclass": a.VulnClass, "severity": a.Severity, "summary": a.Summary,
+			payload := map[string]any{"vulnclass": a.VulnClass, "name": a.Name, "severity": a.Severity, "summary": a.Summary,
 				"evidence": map[string]any{"by": t.worker, "poc": a.Evidence}}
 			if a.SourceFile != "" {
 				payload["source_file"] = a.SourceFile
@@ -797,7 +801,7 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 				if intent := pid(a.IntentID); intent > 0 {
 					_ = t.ts.Link(intent, db.RelYields, id) // chain: intent -> finding
 				}
-				_, _ = t.ts.AddStandaloneFinding(t.taskID, id, a.VulnClass, a.Severity, a.Summary, a.Evidence, t.worker, anchors, a.SourceFile, a.Harm, a.Fix, a.Request, a.Response, a.ReproCmd)
+				_, _ = t.ts.AddStandaloneFinding(t.taskID, id, a.VulnClass, a.Name, a.Severity, a.Summary, a.Evidence, t.worker, anchors, a.SourceFile, a.Harm, a.Fix, a.Request, a.Response, a.ReproCmd)
 				// 确证漏洞落库 → 当场唤醒本任务 planner（不等 worker 收工，debounce 合并）。
 				// 优先带上下文(哪个意图+finding摘要);intent 用工具参数,缺省回退到 owner 意图。
 				if t.notifyFinding != nil {

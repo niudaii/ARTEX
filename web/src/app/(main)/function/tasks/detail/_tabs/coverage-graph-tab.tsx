@@ -498,14 +498,19 @@ function GraphInner({ taskId }: { taskId: string }) {
 
   const applyData = React.useCallback(() => {
     const graph = graphRef.current;
-    if (!graph) return;
+    if (!graph || graph.destroyed) return;
     try {
       graph.stopLayout();
     } catch {
       /* 上一次布局尚未启动 */
     }
     graph.setData(gDataRef.current);
-    void graph.render();
+    // render() 异步跑 d3-force 布局;若组件在布局落地前被卸载/销毁,g6 会在已清空的
+    // context 上访问 transform 抛错(见 runtime/layout transformDataAfterLayout)。这是纯
+    // teardown 竞态,吞掉它,不影响功能;真正的渲染错误(图未销毁)仍打日志。
+    void graph.render().catch((err) => {
+      if (!graph.destroyed) console.error("[coverage-graph] render:", err);
+    });
   }, []);
 
   // 建图（一次）。动态 import 避开 SSR/静态导出期的 window 依赖。

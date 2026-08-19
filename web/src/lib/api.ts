@@ -23,6 +23,10 @@ import type {
   DailyTokenBucket,
   Edge,
   Finding,
+  FindingQuery,
+  FindingStats,
+  FindingStatus,
+  FindingsPage,
   InterceptApprovalRow,
   InterceptPending,
   InterceptRule,
@@ -35,6 +39,7 @@ import type {
   PromptVar,
   PromptVersion,
   Settings,
+  Severity,
   SkillItem,
   SSProject,
   SSTask,
@@ -136,6 +141,9 @@ const arr = <T>(x: T[] | null | undefined): T[] => x ?? [];
 const tq = (task?: string, sep: "?" | "&" = "?") => (task ? `${sep}task=${encodeURIComponent(task)}` : "");
 
 export const api = {
+  // 后端应用版本号（release 时由 ldflags 注入，默认 "dev"）。
+  health: () => get<{ ok: boolean; service: string; version: string }>("/health"),
+
   // ---- auth ----
   authStatus: () => get<{ initialized: boolean }>("/auth/status"),
   login: (username: string, password: string) => post<{ token: string }>("/auth/login", { username, password }),
@@ -292,6 +300,29 @@ export const api = {
   // ---- exploration (per task) ----
   frontier: (task?: string) => get<TaskNode[]>(`/exploration/frontier${tq(task)}`).then(arr),
   findings: (task?: string) => get<Finding[]>(`/exploration/findings${tq(task)}`).then(arr),
+  findingsPage: (q: FindingQuery) => {
+    const p = new URLSearchParams({ page: String(q.page), limit: String(q.pageSize) });
+    if (q.severity && q.severity !== "all") p.set("severity", q.severity);
+    if (q.status && q.status !== "all") p.set("status", q.status);
+    if (q.vulnclass && q.vulnclass !== "all") p.set("vulnclass", q.vulnclass);
+    if (q.task && q.task !== "all") p.set("task_id", q.task);
+    if (q.sort) p.set("sort", q.sort);
+    return get<FindingsPage>(`/exploration/findings?${p.toString()}`);
+  },
+  findingStats: () => get<FindingStats>("/exploration/findings/stats"),
+  getFinding: (id: string) => get<Finding>(`/exploration/findings/${id}`),
+  // 漏洞链路:该漏洞节点回溯到任务初始节点的子图(节点 + 关系)。
+  findingLineage: (id: string) =>
+    get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/findings/${id}/lineage`),
+  setFindingStatus: (id: string, status: FindingStatus) =>
+    patch<Finding>(`/exploration/findings/${id}`, { status }),
+  setFindingSeverity: (id: string, severity: Severity) =>
+    patch<Finding>(`/exploration/findings/${id}`, { severity }),
+  // 一次保存漏洞的名称/类别/严重等级(发现列表行内编辑用),只传出现的字段。
+  updateFinding: (
+    id: string,
+    fields: { name?: string; vulnclass?: string; severity?: Severity; status?: FindingStatus },
+  ) => patch<Finding>(`/exploration/findings/${id}`, fields),
   intents: (task?: string) => get<TaskNode[]>(`/exploration/intents${tq(task)}`).then(arr),
   tokenStats: (task?: string) =>
     get<{ workers: TokenUsage[]; total: TokenTotal }>(`/exploration/tokens${tq(task)}`).then((r) => ({
@@ -442,8 +473,8 @@ export const api = {
   chat: (message: string, task?: string, attachments?: ChatAttachment[]) =>
     post<{ reply: string; mode: string }>(`/chat${tq(task)}`, { message, attachments }),
   // 方式1 文件上传:落到会话/任务工作目录 uploads/，返回可供 agent Read 的相对路径。
-  chatUpload: async (scope: "task" | "session", id: string, files: File[]) => {
-    if (MOCK) return { attachments: files.map((f) => ({ name: f.name, path: `uploads/${f.name}`, size: f.size })) };
+  chatUpload: async (scope: "task" | "session" | "staging", id: string, files: File[]) => {
+    if (MOCK) return { attachments: files.map((f) => ({ name: f.name, path: `uploads/${f.name}`, size: f.size, abs: `/mock/${f.name}` })) };
     const fd = new FormData();
     for (const f of files) fd.append("file", f);
     const token = getToken();
@@ -557,8 +588,8 @@ export const api = {
   },
   conversationMsgDetail: (id: number, seq: number) =>
     get<{ detail: string }>(`/conversations/${id}/messages/${seq}`).then((r) => r.detail ?? ""),
-  sendConversationMessage: (id: number, message: string) =>
-    post<{ status: string }>(`/conversations/${id}/messages`, { message }),
+  sendConversationMessage: (id: number, message: string, attachments?: ChatAttachment[]) =>
+    post<{ status: string }>(`/conversations/${id}/messages`, { message, attachments }),
   stopConversation: (id: number) => post<{ status: string }>(`/conversations/${id}/stop`, {}),
   saveAgentPrompt: (key: string, template: string, note = "") =>
     put<{ version: number }>(`/agents/${key}/prompt`, { template, note }),

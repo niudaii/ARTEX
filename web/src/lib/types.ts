@@ -238,12 +238,33 @@ export interface TaskNode {
 }
 
 // ---- Findings ----
-export type Severity = "high" | "medium" | "low";
+export type Severity = "critical" | "high" | "medium" | "low";
+
+// 漏洞处置状态:待处理 / 处理中 / 已确认 / 已处理 / 误报 / 忽略 / 重复 / 风险接受。
+export type FindingStatus =
+  | "pending"
+  | "in_progress"
+  | "confirmed"
+  | "resolved"
+  | "false_positive"
+  | "ignored"
+  | "duplicate"
+  | "risk_accepted";
+
+// FindingAsset 是一个漏洞绑定的资产(已在后端预渲染 label)。
+export interface FindingAsset {
+  id: string;
+  type: string;
+  label: string;
+}
 
 export interface Finding {
   id: string;
+  finding_id?: string; // 独立 findings 表的行 id,状态更新的句柄(任务内旧节点可能缺失)
   vulnclass: string;
+  name?: string; // 漏洞名称;为空时展示回退到 vulnclass
   severity: Severity;
+  status: FindingStatus;
   summary: string;
   evidence: string;
   source_file?: string;
@@ -252,11 +273,52 @@ export interface Finding {
   request?: string;
   response?: string;
   repro_cmd?: string;
+  report?: string; // 详细报告(Markdown);仅详情接口返回,列表为空
   intent_id?: string;
   param_id?: string;
   task_id?: string;
   task_description?: string;
+  assets?: FindingAsset[];
   ts: string;
+}
+
+// FindingsPage 是发现列表的服务端分页响应。
+export interface FindingsPage {
+  items: Finding[];
+  total: number;
+  page: number;
+  page_size: number;
+}
+
+// FindingStats 是发现全表聚合(统计卡 + 漏洞类型下拉),服务端计算,不受分页影响。
+export interface FindingStats {
+  total: number;
+  pending: number;
+  critical: number;
+  high: number;
+  medium: number;
+  low: number;
+  vulnclasses: string[];
+  tasks: FindingTaskOption[];
+}
+
+// FindingTaskOption 是发现页「按任务」筛选下拉的一项:有漏洞的任务(描述为空表示任务已删除,
+// 前端回退展示 id)及其漏洞条数。
+export interface FindingTaskOption {
+  id: number;
+  description: string;
+  count: number;
+}
+
+// FindingQuery 是发现列表分页/筛选/排序参数。
+export interface FindingQuery {
+  page: number;
+  pageSize: number;
+  severity?: "all" | Severity;
+  status?: "all" | FindingStatus;
+  vulnclass?: string;
+  task?: string; // 任务 id;"all"/空 = 不按任务筛选
+  sort?: "severity" | "time";
 }
 
 // ---- Activity / sessions ----
@@ -277,6 +339,7 @@ export interface ChatAttachment {
   name: string;
   path: string;
   size: number;
+  abs?: string; // 绝对路径(scope=staging 暂存上传时返回;建任务前把它写进描述)
 }
 
 export interface Activity {
