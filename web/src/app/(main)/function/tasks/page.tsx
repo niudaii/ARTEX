@@ -12,6 +12,7 @@ import {
   ChevronRightIcon,
   PaperclipIcon,
   Loader2Icon,
+  ClockIcon,
 } from "lucide-react";
 
 import { StatusBadge } from "@/components/status-badge";
@@ -55,6 +56,16 @@ function fmtBytes(n: number): string {
   if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
   if (n >= 1 << 10) return `${(n / (1 << 10)).toFixed(1)} KB`;
   return `${n} B`;
+}
+
+// toScheduledRFC3339 把 datetime-local 本地值(YYYY-MM-DDTHH:MM[,SS])按 CST(+08:00) 转成 RFC3339,
+// 供后端 scheduled_start_at 解析;空串/不合法返回 undefined(立即开始)。固定偏移避免浏览器本地时区干扰。
+function toScheduledRFC3339(local: string): string | undefined {
+  if (!local) return undefined;
+  const s = local.length === 16 ? `${local}:00` : local; // 默认无秒,补到秒
+  const withOffset = `${s}+08:00`;
+  if (Number.isNaN(new Date(withOffset).getTime())) return undefined; // 非法日期
+  return withOffset;
 }
 
 // UPLOAD_MARKER labels the auto-appended block of uploaded-file paths inside the task
@@ -318,11 +329,17 @@ const TaskRow = React.memo(function TaskRow({
           <span className="truncate" title={task.description}>
             {task.description}
           </span>
+          {task.status === "scheduled" && (
+            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 text-xs font-medium text-violet-600 whitespace-nowrap dark:text-violet-400" title={task.scheduled_start_at ? `定时启动 ${task.scheduled_start_at}` : undefined}>
+              <ClockIcon className="size-3" />
+              定时 {fmtDateTime(task.scheduled_start_unix)}
+            </span>
+          )}
         </div>
       </TableCell>
       <TableCell className="text-muted-foreground max-w-xs truncate">{task.goal}</TableCell>
       <TableCell>
-        {isTerminalTaskStatus(task.status) ? (
+        {task.status === "scheduled" || isTerminalTaskStatus(task.status) ? (
           <StatusBadge domain="task" value={task.status} dot />
         ) : (
           <StatusBadge domain="engine" value={task.engine_mode ?? "idle"} dot />
@@ -417,6 +434,7 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
   const [timeoutMin, setTimeoutMin] = React.useState(""); // 任务级超时(分钟);空/0 = 不限时
   const [heartbeatMin, setHeartbeatMin] = React.useState("10"); // planner 心跳(分钟);默认10,下限10(与后端一致)
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑;默认关闭,走标准先规划再执行
+  const [scheduledStartAt, setScheduledStartAt] = React.useState(""); // 定时启动(datetime-local 本地值);空=立即开始
   // 方式1 文件上传:建任务前把文件暂存到 drafts/<draftId>/uploads/,拿回绝对路径追加进描述。
   const [uploading, setUploading] = React.useState(false);
   const [uploadCount, setUploadCount] = React.useState(0);
@@ -462,14 +480,24 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
       const pid = llmProfile === ACTIVE_PROFILE ? undefined : Number(llmProfile);
       const timeoutSec = Math.max(0, Math.floor(Number(timeoutMin) || 0)) * 60;
       const heartbeatSec = Math.max(10, Math.floor(Number(heartbeatMin) || 10)) * 60; // 下限 10min，与后端归一一致
-      await api.createTask(description.trim(), goal.trim(), pid, timeoutSec, seedFirstIntent, heartbeatSec);
-      toast.success("任务已创建");
+      const scheduled = toScheduledRFC3339(scheduledStartAt);
+      if (scheduledStartAt && !scheduled) {
+        toast.error("执行时间格式不正确");
+        return;
+      }
+      if (scheduled && new Date(scheduled).getTime() <= Date.now()) {
+        toast.error("执行时间需晚于当前时间，留空则立即开始");
+        return;
+      }
+      await api.createTask(description.trim(), goal.trim(), pid, timeoutSec, seedFirstIntent, heartbeatSec, scheduled);
+      toast.success(scheduled ? "任务已创建，到点自动启动" : "任务已创建");
       setDescription("");
       setGoal("");
       setLlmProfile(ACTIVE_PROFILE);
       setTimeoutMin("");
       setHeartbeatMin("10");
       setSeedFirstIntent(false);
+      setScheduledStartAt("");
       setUploadCount(0);
       draftIdRef.current = "";
       setOpen(false);
@@ -566,12 +594,25 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
             <Collapsible>
               <CollapsibleTrigger className="group flex w-full items-center gap-2 border-t pt-4 text-sm font-medium">
                 <ChevronRightIcon className="text-muted-foreground size-4 transition-transform group-data-[state=open]:rotate-90" />
-                高级设置
-                <span className="text-muted-foreground ml-auto text-xs font-normal">超时 · 心跳 · 首个意图</span>
-              </CollapsibleTrigger>
-              <CollapsibleContent className="grid gap-5 pt-5">
+               高级设置
+                <span className="text-muted-foreground ml-auto text-xs font-normal">定时 · 超时 · 心跳 · 首个意图</span>
+             </CollapsibleTrigger>
+             <CollapsibleContent className="grid gap-5 pt-5">
                 <div className="grid gap-2">
-                  <Label htmlFor="timeout-min">任务超时（分钟，可选）</Label>
+                  <Label htmlFor="scheduled-start">定时启动（可选）</Label>
+                  <Input
+                    id="scheduled-start"
+                    type="datetime-local"
+                    className="w-56"
+                    value={scheduledStartAt}
+                    onChange={(e) => setScheduledStartAt(e.target.value)}
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    留空=创建即开始；选择未来时刻则到点自动启动（重启后可重排补启）。
+                  </p>
+                </div>
+               <div className="grid gap-2">
+                 <Label htmlFor="timeout-min">任务超时（分钟，可选）</Label>
                   <Input
                     id="timeout-min"
                     type="number"

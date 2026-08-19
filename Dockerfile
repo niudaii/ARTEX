@@ -34,7 +34,9 @@ RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@late
     && rm -rf /var/lib/apt/lists/*
 # 预装安全测试常用 Python 包（避免 agent 运行时遇 ModuleNotFoundError）。
 # 清单源自 worker trace 错误分析：impacket/msgpack/Crypto/bcrypt/boto3/capstone/h2/hpack/PIL/ds_store 等。
-RUN pip install --no-cache-dir \
+RUN pip config set global.root-user-action ignore \
+    && pip config set global.disable-pip-version-check true \
+    && pip install --no-cache-dir \
       requests urllib3 beautifulsoup4 lxml pyyaml cryptography \
       pycryptodome paramiko pyjwt dnspython \
       impacket msgpack bcrypt boto3 capstone \

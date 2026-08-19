@@ -2765,8 +2765,20 @@ func archiveSkillOnDisk(skillDir string) bool {
 }
 
 func (s *Server) getReport(w http.ResponseWriter, r *http.Request) {
-	t := s.m.ResolveTask(r.URL.Query().Get("task"))
+	taskID := r.URL.Query().Get("task")
+	t := s.m.ResolveTask(taskID)
 	if t == nil {
+		// Task not in memory (e.g. deleted/archived). Try persisted report from DB
+		// so reports remain accessible after task deletion.
+		if id, err := strconv.ParseInt(taskID, 10, 64); err == nil {
+			if md, ok, _ := s.m.PG().GetReport(id); ok {
+				w.Header().Set("X-Report-Filtered", "1")
+				w.Header().Set("Content-Type", "text/markdown; charset=utf-8")
+				w.WriteHeader(200)
+				_, _ = w.Write([]byte(md))
+				return
+			}
+		}
 		writeErr(w, 404, "no active task")
 		return
 	}
