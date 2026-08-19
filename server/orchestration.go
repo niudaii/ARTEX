@@ -10,7 +10,6 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
-	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -447,7 +446,6 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
 	s.unbindGoalMetDefault()
-	s.seedReporterAgent() // 预置「报告撰写」agent + 工具绑定 + finding 触发器(一次性)
 	// 注：pentest 的默认工具绑定无需迁移——BuiltinToolSeeds 在全新初始化时就把
 	// list_assets/insert_assets/report_finding/list_findings/list_companies 连同
 	// pentest 一起 seed 好了（项目尚无旧库，不做迁移）。
@@ -500,59 +498,6 @@ func (s *Server) unbindGoalMetDefault() {
 		return
 	}
 	_ = s.m.pg.SetSetting(flag, "true")
-}
-
-// seedReporterAgent 预置一个「报告撰写」自定义 agent(builtin=false，可在 UI 编辑/删除)：
-// 绑定 update_finding_report + 任务查询工具，并挂一个「report_finding 被调用即触发」的
-// 触发器 —— 每登记一个漏洞就唤起它写详细报告。一次性(settings flag 守卫)：用户删掉后不再重建。
-// 依赖：orchestration 工具已在本函数上方 SeedTool 入库，故绑定得上。
-func (s *Server) seedReporterAgent() {
-	const flag = "reporter_agent_seed_v1"
-	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
-		return
-	}
-	defer func() { _ = s.m.pg.SetSetting(flag, "true") }() // 无论成功与否只尝试一次
-
-	if exist, _ := s.m.pg.GetAgentByKey("reporter"); exist != nil {
-		return // key 已被占用(用户手建过)——不覆盖
-	}
-	a, err := s.m.pg.CreateAgent("reporter", "报告撰写",
-		"漏洞详细报告撰写：发现漏洞时自动触发，查取证据与执行过程后写 Markdown 报告并回写。")
-	if err != nil {
-		log.Printf("[reporter] 创建 agent 失败: %v", err)
-		return
-	}
-	if err := s.m.pg.SeedPromptIfEmpty(a.ID, agent.ReporterDefaultPrompt); err != nil {
-		log.Printf("[reporter] seed prompt 失败: %v", err)
-	}
-	// 触发运行策略：parallel + none —— 一漏洞一报告、多个 finding 并发各写各的。
-	// merge 必须为 none：否则(默认 all)一波 finding 会被合并成一次运行，并行就没意义。
-	// maxParallel=5：同时最多 5 个报告会话，避免瞬时太多 LLM 调用。
-	if err := s.m.pg.SetAgentTriggerBehavior("reporter", "parallel", "none", 5); err != nil {
-		log.Printf("[reporter] 设置触发运行策略失败: %v", err)
-	}
-	// 绑定它需要的工具：写报告 + 读证据/执行过程/态势。
-	if err := s.m.pg.AddAgentToToolBinding("reporter", []string{
-		"update_finding_report", "get_task_node_detail", "list_task_findings",
-		"get_task_worker_trace", "list_task_worker_traces", "search_task_worker_traces",
-		"get_task_graph",
-	}); err != nil {
-		log.Printf("[reporter] 绑定工具失败: %v", err)
-	}
-	// 触发器：report_finding 被调用即触发（工具返回 "finding recorded: <id>" 带上 finding_id，
-	// 任务 id 也在触发消息里）。
-	if _, err := s.m.pg.CreateTrigger(&db.AgentTrigger{
-		AgentKey:   "reporter",
-		Enabled:    true,
-		OnToolCall: true,
-		ToolNames:  []string{"report_finding"},
-		ToolCallMessage: "上面刚有一个漏洞被 report_finding 登记。请从触发上下文里取出 finding_id" +
-			"（工具返回 \"finding recorded: <id>\" 里的数字）与任务 id，按你的职责撰写该漏洞的详细报告，" +
-			"最后调用 update_finding_report(finding_id, report) 保存。",
-	}); err != nil {
-		log.Printf("[reporter] 创建触发器失败: %v", err)
-	}
-	log.Printf("[reporter] 已预置「报告撰写」agent + finding 触发器")
 }
 
 // seedPlannerDefaultBindings adds "planner" to report_finding's binding ONCE

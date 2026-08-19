@@ -186,6 +186,22 @@ ON CONFLICT (agent_id, var_name) DO UPDATE
 		}
 		_ = d.SetSetting("drop_builtin_pentest_v1", "done")
 	}
+	// 一次性清理：reporter(「报告撰写」) agent 由 upstream seedReporterAgent 预置,
+	// 每次 report_finding 都会创建一个对话。本地已由 persistTaskReport 在任务终态
+	// 自动归档一次,不需要 per-finding 报告。删除旧库遗留的 reporter agent + 触发器,
+	// 语义对齐 pgDeleteAgent。
+	if v, _, _ := d.GetSetting("drop_reporter_agent_v1"); v != "done" {
+		if _, err := d.Exec(`DELETE FROM agents WHERE key='reporter'`); err != nil {
+			return fmt.Errorf("drop reporter agent: %w", err)
+		}
+		if err := d.RemoveAgentFromToolBindings("reporter"); err != nil {
+			return fmt.Errorf("drop reporter tool bindings: %w", err)
+		}
+		if err := d.DeleteTriggersForAgent("reporter"); err != nil {
+			return fmt.Errorf("drop reporter triggers: %w", err)
+		}
+		_ = d.SetSetting("drop_reporter_agent_v1", "done")
+	}
 	// Seed the built-in browser (Playwright) MCP once — DISABLED by default (用户
 	// 需要时自行启用), no proxy by default. The traffic-capture toggle injects/strips
 	// the recording proxy + CA at runtime (server.Manager.syncBrowserMCPProxy).
