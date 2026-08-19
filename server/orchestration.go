@@ -445,10 +445,8 @@ func (s *Server) seedOrchestrationTools() {
 	s.refreshBuiltinToolSchemas()
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
+	s.seedWorkerDefaultBindings()
 	s.unbindGoalMetDefault()
-	// 注：pentest 的默认工具绑定无需迁移——BuiltinToolSeeds 在全新初始化时就把
-	// list_assets/insert_assets/report_finding/list_findings/list_companies 连同
-	// pentest 一起 seed 好了（项目尚无旧库，不做迁移）。
 }
 
 // refreshBuiltinToolSchemas propagates code schema/description changes on the
@@ -511,6 +509,23 @@ func (s *Server) seedPlannerDefaultBindings() {
 	}
 	if err := s.m.pg.AddAgentToToolBinding("planner", []string{"report_finding"}); err != nil {
 		log.Printf("[planner] report_finding 默认绑定失败: %v", err)
+		return
+	}
+	_ = s.m.pg.SetSetting(flag, "true")
+}
+
+// seedWorkerDefaultBindings adds "worker" to add_task_scope's binding ONCE
+// (guarded by a settings flag). Fresh DBs already seed the worker binding via
+// WorkerTools (add_task_scope is included there); this migration only backfills
+// old DBs whose add_task_scope row was seeded planner+mainagent only (before
+// WorkerTools included it). Idempotent: won't re-add after a user unbinds.
+func (s *Server) seedWorkerDefaultBindings() {
+	const flag = "worker_add_task_scope_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	if err := s.m.pg.AddAgentToToolBinding("worker", []string{"add_task_scope"}); err != nil {
+		log.Printf("[worker] add_task_scope 默认绑定失败: %v", err)
 		return
 	}
 	_ = s.m.pg.SetSetting(flag, "true")

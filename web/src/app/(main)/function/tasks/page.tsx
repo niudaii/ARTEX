@@ -1,21 +1,24 @@
 "use client";
 
 import * as React from "react";
+
 import Link from "next/link";
-import { toast } from "sonner";
+
 import {
-  PlusIcon,
-  Trash2Icon,
   ArrowRightIcon,
-  SearchIcon,
-  XIcon,
   ChevronRightIcon,
-  PaperclipIcon,
-  Loader2Icon,
   ClockIcon,
+  Loader2Icon,
+  PaperclipIcon,
+  PlusIcon,
+  SearchIcon,
+  Trash2Icon,
+  XIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 
 import { StatusBadge } from "@/components/status-badge";
+import { TablePagination } from "@/components/table-pagination";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -30,10 +33,10 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import {
   Sheet,
   SheetClose,
@@ -44,12 +47,11 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
-import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
-import { TablePagination } from "@/components/table-pagination";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { isTerminalTaskStatus } from "@/lib/status";
-import type { Task, TaskStatus, LLMProfile, ChatAttachment } from "@/lib/types";
+import type { ChatAttachment, LLMProfile, Task, TaskStatus } from "@/lib/types";
 
 // fmtBytes renders a human file size for the upload manifest.
 function fmtBytes(n: number): string {
@@ -93,8 +95,8 @@ const POLL_MS = 10_000;
 
 // fmtTokens renders a compact token count (1234 → 1.2k, 2_000_000 → 2M).
 function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + "M";
-  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
   return String(n);
 }
 
@@ -115,14 +117,20 @@ function fmtDuration(sec: number): string {
 // created → completion for a finished task, else created → last activity. 0 when it
 // never ran (no activity yet).
 function taskDuration(task: Task, nowSec: number): number {
-  const start = task.created_unix ?? 0;
+  // 定时任务:从 scheduled_start_unix(开始时间)算,而非 created_unix(创建时间);
+  // 非定时任务保持从 created_unix 起。
+  const start = task.scheduled_start_unix && task.scheduled_start_unix > 0
+    ? task.scheduled_start_unix
+    : task.created_unix ?? 0;
   if (!start) return 0;
-  const end =
-    task.status === "running"
-      ? nowSec
-      : task.completed_unix && task.completed_unix > 0
-        ? task.completed_unix
-        : (task.last_activity_unix ?? 0);
+  let end: number;
+  if (task.status === "running") {
+    end = nowSec;
+  } else if (task.completed_unix && task.completed_unix > 0) {
+    end = task.completed_unix;
+  } else {
+    end = task.last_activity_unix ?? 0;
+  }
   return end > start ? end - start : 0;
 }
 
@@ -180,6 +188,7 @@ export default function TasksPage() {
         setTasks(next);
         setTotal(r.total ?? r.tasks.length);
       })
+      // biome-ignore lint/suspicious/noEmptyBlockStatements: 轮询刷新容错,失败静默等待下轮重试
       .catch(() => {});
   }, [page, pageSize, statusFilter, debouncedQuery]);
 
@@ -208,7 +217,7 @@ export default function TasksPage() {
         toast.success("任务已删除（全局资产图保留）");
         load();
       } catch (e) {
-        toast.error("删除失败：" + (e as Error).message);
+        toast.error(`删除失败：${(e as Error).message}`);
       }
     },
     [load],
@@ -275,10 +284,10 @@ export default function TasksPage() {
                 <TableHead>描述</TableHead>
                 <TableHead>目标</TableHead>
                 <TableHead>状态</TableHead>
-                <TableHead className="text-center">目标进度</TableHead>
-                <TableHead className="text-right">创建时间</TableHead>
-                <TableHead className="text-right">运行时长</TableHead>
-                <TableHead className="text-right">Token</TableHead>
+                <TableHead>模型</TableHead>
+                <TableHead>创建时间</TableHead>
+                <TableHead>运行时长</TableHead>
+                <TableHead>Token</TableHead>
                 <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">
                   操作
                 </TableHead>
@@ -330,7 +339,10 @@ const TaskRow = React.memo(function TaskRow({
             {task.description}
           </span>
           {task.status === "scheduled" && (
-            <span className="inline-flex shrink-0 items-center gap-1 rounded-full border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 text-xs font-medium text-violet-600 whitespace-nowrap dark:text-violet-400" title={task.scheduled_start_at ? `定时启动 ${task.scheduled_start_at}` : undefined}>
+            <span
+              className="inline-flex shrink-0 items-center gap-1 rounded-full border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 text-xs font-medium text-violet-600 whitespace-nowrap dark:text-violet-400"
+              title={task.scheduled_start_at ? `定时启动 ${task.scheduled_start_at}` : undefined}
+            >
               <ClockIcon className="size-3" />
               定时 {fmtDateTime(task.scheduled_start_unix)}
             </span>
@@ -345,17 +357,19 @@ const TaskRow = React.memo(function TaskRow({
           <StatusBadge domain="engine" value={task.engine_mode ?? "idle"} dot />
         )}
       </TableCell>
-      <TableCell className="text-muted-foreground text-center text-xs tabular-nums">
-        {typeof task.goals_total === "number" && task.goals_total > 0 ? (
-          `${task.goals_met}/${task.goals_total}`
+      <TableCell className="text-muted-foreground text-xs">
+        {task.llm_model ? (
+          <span className="block max-w-[8rem] truncate font-mono" title={task.llm_model}>
+            {task.llm_model}
+          </span>
         ) : (
           <span className="text-muted-foreground">—</span>
         )}
       </TableCell>
-      <TableCell className="text-muted-foreground text-right text-xs whitespace-nowrap tabular-nums">
+      <TableCell className="text-muted-foreground text-xs whitespace-nowrap tabular-nums">
         {fmtDateTime(task.created_unix)}
       </TableCell>
-      <TableCell className="text-right text-xs whitespace-nowrap tabular-nums">
+      <TableCell className="text-xs whitespace-nowrap tabular-nums">
         {(() => {
           const secs = taskDuration(task, nowSec);
           if (secs <= 0) return <span className="text-muted-foreground">—</span>;
@@ -367,7 +381,7 @@ const TaskRow = React.memo(function TaskRow({
         })()}
       </TableCell>
       <TableCell
-        className="text-right text-xs whitespace-nowrap tabular-nums"
+        className="text-xs whitespace-nowrap tabular-nums"
         title={
           task.tokens
             ? `输入 ${task.tokens.input_tokens} · 缓存 ${task.tokens.cache_read_tokens} · 输出 ${task.tokens.output_tokens}`
@@ -404,7 +418,7 @@ const TaskRow = React.memo(function TaskRow({
                 <AlertDialogTitle>确认删除任务 #{task.id}？</AlertDialogTitle>
                 <AlertDialogDescription>
                   {task.description
-                    ? `「${task.description.length > 80 ? task.description.slice(0, 80) + "…" : task.description}」`
+                    ? `「${task.description.length > 80 ? `${task.description.slice(0, 80)}…` : task.description}」`
                     : "该任务"}
                   的执行记录、会话与产物将被删除，此操作不可撤销（全局资产图保留）。
                 </AlertDialogDescription>
@@ -464,7 +478,7 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
       setDescription((prev) => appendUploads(prev, r.attachments));
       setUploadCount((n) => n + r.attachments.length);
     } catch (e) {
-      toast.error("上传失败：" + (e as Error).message);
+      toast.error(`上传失败：${(e as Error).message}`);
     } finally {
       setUploading(false);
       if (fileInputRef.current) fileInputRef.current.value = ""; // allow re-picking the same file
@@ -503,7 +517,7 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
       setOpen(false);
       onCreated();
     } catch (e) {
-      toast.error("创建失败：" + (e as Error).message);
+      toast.error(`创建失败：${(e as Error).message}`);
     }
   }
 
@@ -594,10 +608,10 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
             <Collapsible>
               <CollapsibleTrigger className="group flex w-full items-center gap-2 border-t pt-4 text-sm font-medium">
                 <ChevronRightIcon className="text-muted-foreground size-4 transition-transform group-data-[state=open]:rotate-90" />
-               高级设置
+                高级设置
                 <span className="text-muted-foreground ml-auto text-xs font-normal">定时 · 超时 · 心跳 · 首个意图</span>
-             </CollapsibleTrigger>
-             <CollapsibleContent className="grid gap-5 pt-5">
+              </CollapsibleTrigger>
+              <CollapsibleContent className="grid gap-5 pt-5">
                 <div className="grid gap-2">
                   <Label htmlFor="scheduled-start">定时启动（可选）</Label>
                   <Input
@@ -611,8 +625,8 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
                     留空=创建即开始；选择未来时刻则到点自动启动（重启后可重排补启）。
                   </p>
                 </div>
-               <div className="grid gap-2">
-                 <Label htmlFor="timeout-min">任务超时（分钟，可选）</Label>
+                <div className="grid gap-2">
+                  <Label htmlFor="timeout-min">任务超时（分钟，可选）</Label>
                   <Input
                     id="timeout-min"
                     type="number"
@@ -643,8 +657,12 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
                   </p>
                 </div>
                 <div className="grid gap-2">
-                  <label className="flex items-center gap-2 text-sm">
-                    <Checkbox checked={seedFirstIntent} onCheckedChange={(v) => setSeedFirstIntent(!!v)} />
+                  <label htmlFor="seed-first-intent" className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      id="seed-first-intent"
+                      checked={seedFirstIntent}
+                      onCheckedChange={(v) => setSeedFirstIntent(!!v)}
+                    />
                     直接下发首个意图（描述+目标）
                   </label>
                   <p className="text-muted-foreground text-xs">

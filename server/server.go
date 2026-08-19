@@ -236,12 +236,12 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		if t.Status == "scheduled" {
 			s.scheduleOrLaunch(t, t.Description+" "+t.Goal, false)
 		}
-	}
-	// resume the active task's engine; other tasks resume when opened (setActive).
-	// (a restored-paused task's loops still start but idle until resumed.)
-	if t := m.ActiveTask(); t != nil && t.Status != "scheduled" {
-		// scheduled 任务由上方 scheduleOrLaunch 到点再启动,这里不抢跑(否则空 engine 循环)。
-		s.engine.Run(ctx, t)
+		// 重启后自动恢复运行:非终态、非定时、非暂停的任务自动启动 engine loop,避免重启前
+		// 在跑的任务变成"已创建"空闲态。paused 任务保持暂停等待用户 resume(control 会 Run+
+		// Resume),定时任务由上方 scheduleOrLaunch 到点再启,终态任务无需恢复。
+		if !isTerminalStatus(t.Status) && t.Status != "scheduled" && !t.Paused {
+			s.engine.Run(ctx, t)
+		}
 	}
 	return s
 }
@@ -925,6 +925,18 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	lastAct, _ := s.m.PG().LastActivity(eids)
 	goalCounts, _ := s.m.PG().GoalCounts(eids)
 
+	// Resolve each task's LLM model name once; a nil profile id falls back
+	// to the active (default) profile so the overview shows what's running.
+	profs, _ := s.m.PG().ListProfiles()
+	profModel := make(map[int64]string, len(profs))
+	var defaultModel string
+	for _, p := range profs {
+		profModel[p.ID] = p.Model
+		if p.IsDefault {
+			defaultModel = p.Model
+		}
+	}
+
 	dtos := make([]TaskDTO, 0, len(pageItems))
 	for _, it := range pageItems {
 		t := it.t
@@ -937,6 +949,11 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		gc := goalCounts[t.ExpID]
 		dto.GoalsTotal = gc.Total
 		dto.GoalsMet = gc.Met
+		if t.LLMProfileID != nil {
+			dto.LLMModel = profModel[*t.LLMProfileID]
+		} else {
+			dto.LLMModel = defaultModel
+		}
 		switch {
 		case isTerminalStatus(t.Status):
 			dto.EngineMode = "idle"

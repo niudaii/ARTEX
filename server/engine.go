@@ -735,6 +735,11 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 		case reason == harness.ReasonTimeout:
 			state = "exhausted"
 			log.Printf("[worker %s] intent %d 运行超时(exhausted)，收尾后写回 %s", name, intent.ID, wrote)
+		case reason == harness.ReasonCompleted && wrote.Total() == 0:
+			// 正常结束但啥也没落库(无事实/资产/发现)：通常是模型只输出了开场文本就 end_turn、
+			// 没发任何 tool_use。别误标 done 让规划者当成已覆盖永久跳过，归 exhausted 需换角度重试。
+			state = "exhausted"
+			log.Printf("[worker %s] intent %d 正常结束但零写回(exhausted，疑似空跑未调工具)", name, intent.ID)
 		}
 		_ = t.Store.SetIntentState(intent.ID, state)
 		log.Printf("[worker %s] task %s 意图 #%d 结束: %s (写回 %s)", name, t.ID, intent.ID, state, wrote)

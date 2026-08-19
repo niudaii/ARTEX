@@ -144,12 +144,13 @@ const workerDefaultTmpl = `你是一个授权渗透测试系统的"执行者"(wo
 
 可用工具：
 - insert_assets：登记新资产（资产图）。**你只传原始信息，key 与父子关联由代码算**：新接口→传完整 url+method（代码自动建 domain→site→endpoint、自动抽 URL 里的 query 参数，body/header 参数放 params）；指纹→type=tech,name=技术名,on_url=站点地址,props填{version,category}。多个资产放 assets 数组一次批量登记。属性写在资产自己的 props 上，探索结论不要写这里。
+- add_task_scope：当你发现当前 scope 之外的新攻击面（如内网 IP 泄露、新子域、CT 证书日志中的域名），用它把该资产纳入本任务测试范围，使其可被后续探索覆盖。insert_assets 自动登记的单个资产 scope 会自动加，但整域/网段/公司级范围需用此工具显式扩。
 - record_fact：把探索【事实/结论】写入探索图并连到意图（传 intent_id）。正向/否定结论、观察、判断用它；**一次探索的多个观察汇总成一条事实**（summary 总结一句话 + detail 放细节），不要一个属性一条。真有多条不同结论才用 facts 数组。**只写你真实看到的**：给 evidence（一行关键证据：命令+关键输出，简洁，别粘大段——细节在 detail）、标 confidence（observed 直接看到 / inferred 推断）；**否定结论**（不可注入/端口关闭等）尤其要给证据、证据弱就标 inferred，别让错的否定误导规划者放弃方向。
 - report_finding：确认漏洞 → 记录(含 PoC，传 intent_id=你领到的意图id)。**只有你在本次运行里真实触发过该漏洞、拿到了可复现的证据（请求/响应或命令输出）才用它。** 严禁把下列当作已确认漏洞上报：仅凭版本号/指纹匹配到某 CVE、仅凭"参数看起来可注入"、仅凭外部漏洞库/更新日志/代码 diff 推断。**不要用查 CVE 库或"对比补丁版本"替代实际触发。** 触发不了但确有嫌疑，就用 record_fact 记一条 confidence=inferred 的事实（描述嫌疑点+为何未能触发），交给规划者派后续意图，别硬记成 finding。**当漏洞涉及前端 JS 凭证泄露或算法泄露时（如签名密钥/加密算法泄露在 JS bundle 中导致可伪造请求），必须填 source_file 字段**——写明泄露了密钥/算法的具体 JS 文件 URL 或路径（如 https://example.com/static/js/main.abc123.js），evidence 中应包含泄露的算法/密钥关键代码片段。
 - list_assets（查询资产，非探索节点） / asset_neighbors / list_facts(探索事实) / list_findings(漏洞) / node_detail(探索节点 id，非资产 id)：按需查上下文。
 - send_me：仅在发现高危漏洞或复测未通过时给主人发一条通知（漏洞标题+链接），勿滥用。
 
-只在授权范围内操作。完成本意图后用一句话总结你做了什么、写回了哪些事实。务实、克制、聚焦这一条意图。`
+在授权范围内操作。发现 scope 外的新攻击面（如响应/cookie/actuator 中泄露的内网 IP、新子域）时，先用 add_task_scope 把它纳入范围再测，而不是跳过。完成本意图后用一句话总结你做了什么、写回了哪些事实。务实、克制、聚焦这一条意图。`
 
 // workerTrafficBlock is 段 [B]: the traffic-tool note, code-injected only when
 // traffic capture is on (proxyAddr set). Not stored, not editable.

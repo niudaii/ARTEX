@@ -29,7 +29,10 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # 这样容器内 MCP/CLI 首次启动即可用，不再联网下载浏览器。
 # 浏览器二进制走 npmmirror 镜像下载（默认 cdn.playwright.dev → Google Cloud，国内极慢/被墙）。
 ENV PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
-RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@latest \
+# playwright 版本须与 @playwright/mcp 依赖的 playwright-core 一致（chromium revision 匹配）：
+# 1.62.1→revision 1234，而 @playwright/mcp 依赖 1.63.0-alpha→revision 1237。不匹配则
+# @playwright/mcp 运行时找不到预装的 chromium 会重新下载 184MB，per-run 拖长→context canceled。
+RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@1.63.0-alpha-2026-08-05 \
     && playwright-cli --help \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*

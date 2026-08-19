@@ -24,6 +24,7 @@ export interface Task {
   engine_mode?: EngineMode;
   tokens?: TokenTotal; // whole-task token consumption
   llm_profile_id?: number; // LLM profile used; absent = default profile
+  llm_model?: string; // resolved model name of the bound LLM profile (display-only)
   scheduled_start_at?: string; // RFC3339 定时启动时间;空/缺省=立即开始
   scheduled_start_unix?: number; // 定时启动 unix 秒;0/缺省=立即开始
 }
@@ -625,12 +626,12 @@ export interface Tool {
   system: boolean;
   description: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  schema: Record<string, any>; // full JSON-Schema (object with properties)
+  schema: Record<string, unknown>; // full JSON-Schema (object with properties)
   agents: string[]; // bound agent keys
   enabled: boolean;
   kind?: "builtin" | "shell" | "command" | "script" | "http"; // 自定义工具类型
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  exec?: Record<string, any>; // 自定义工具执行规格(kind!=builtin)
+  exec?: Record<string, unknown>; // 自定义工具执行规格(kind!=builtin)
   deferred?: boolean; // schema 延迟(SearchExtraTools/ExecuteExtraTool)
 }
 
@@ -673,7 +674,7 @@ export interface InterceptPending {
   agent_name: string;
   tool_name: string;
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  tool_input: Record<string, any>;
+  tool_input: Record<string, unknown>;
   status: "pending" | "allowed" | "denied" | "timeout";
   decided_at?: string;
   created_at: string;

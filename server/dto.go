@@ -45,6 +45,7 @@ type TaskDTO struct {
 	GoalsTotal         int           `json:"goals_total"`
 	GoalsMet           int           `json:"goals_met"`
 	LLMProfileID       *int64        `json:"llm_profile_id,omitempty"`       // LLM profile used for this task; nil = default
+	LLMModel           string        `json:"llm_model,omitempty"`            // resolved model name of the task's LLM profile (display-only)
 	EngineMode         string        `json:"engine_mode,omitempty"`          // exploring | paused | stalled | idle (mirrors stats)
 	ScheduledStartAt   string        `json:"scheduled_start_at,omitempty"`   // RFC3339 定时启动时间;空=立即开始
 	ScheduledStartUnix int64         `json:"scheduled_start_unix,omitempty"` // 定时启动 unix 秒;0=立即开始

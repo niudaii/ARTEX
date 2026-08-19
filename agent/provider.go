@@ -163,6 +163,12 @@ func (c Config) Provider() string {
 	return "anthropic"
 }
 
+// isQwenModel reports whether the configured model is a Qwen-family model.
+// Qwen names its top reasoning-effort tier "xhigh" instead of "max".
+func isQwenModel(model string) bool {
+	return strings.Contains(strings.ToLower(model), "qwen")
+}
+
 // NewProvider builds an llm.Provider from the config. When a rate is set, the
 // limiter lives on the single provider instance — so planner + all workers +
 // main agent (which share this provider) are bounded by one shared rate limit.
@@ -183,7 +189,12 @@ func (c Config) NewProvider() (llm.Provider, error) {
 		lc.ThinkingType = "disabled"
 	default:
 		lc.ThinkingType = "enabled"
-		lc.ReasoningEffort = c.ReasoningEffort
+		effort := c.ReasoningEffort
+		// Qwen models use "xhigh" as the top reasoning tier instead of "max".
+		if isQwenModel(c.Model) && effort == "max" {
+			effort = "xhigh"
+		}
+		lc.ReasoningEffort = effort
 	}
 	if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
 		lc.RateLimit = &llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute}

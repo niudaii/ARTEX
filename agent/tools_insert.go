@@ -586,7 +586,7 @@ func (t *ToolSet) WorkerTools() []actool.CoreTool {
 		// cross-work retrieval
 		t.searchAllWorkerTraces(), t.listWorkerTraces(), t.getWorkerTrace(),
 		// asset management (handlers guard nil store internally)
-		t.insertAssets(), t.addCompanyScope(), t.listAssets(), t.listCompanies(),
+		t.insertAssets(), t.addCompanyScope(), t.addTaskScope(), t.listAssets(), t.listCompanies(),
 	}
 }
 

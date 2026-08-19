@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"regexp"
 	"strconv"
 	"strings"
 
@@ -658,6 +659,65 @@ func reasonSuggestsSingle(reason string) bool {
 		strings.Contains(low, "one ")
 }
 
+// isGenericPentestGoal reports whether a goal text is a broad "complete the
+// pentest" objective — decomposed from a general task goal, it lacks specific
+// deliverable criteria and is prone to premature prove_goal (planner judges
+// "done" after surface findings without lateral movement into the internal network).
+func isGenericPentestGoal(text string) bool {
+	return strings.Contains(text, "渗透测试") &&
+		(strings.Contains(text, "完成") || strings.Contains(text, "确认"))
+}
+
+// hasUnexploredInternalLeads scans the task's facts for mentions of internal IPs
+// or inner subdomains that haven't been followed up with scope expansion. Returns
+// a fact summary and true when there are leads the planner hasn't acted on yet.
+func (t *ToolSet) hasUnexploredInternalLeads() (string, bool) {
+	if t.ts == nil || t.taskID <= 0 {
+		return "", false
+	}
+	facts, err := t.ts.ListByKind(db.KindFact, 200)
+	if err != nil || len(facts) == 0 {
+		return "", false
+	}
+	internalIPRe := regexp.MustCompile(`(?:10\.\d{1,3}\.\d{1,3}\.\d{1,3}|172\.(?:1[6-9]|2[0-9]|3[01])\.\d{1,3}\.\d{1,3}|192\.168\.\d{1,3}\.\d{1,3})`)
+	var lead string
+	for _, f := range facts {
+		var fp map[string]any
+		if json.Unmarshal(f.Payload, &fp) != nil {
+			continue
+		}
+		summary, _ := fp["summary"].(string)
+		detail, _ := fp["detail"].(string)
+		text := summary + " " + detail
+		// skip negative conclusions — "未发现内网入口" is not an actionable lead
+		if strings.Contains(text, "否定结论") || strings.Contains(text, "未发现") {
+			continue
+		}
+		if internalIPRe.MatchString(text) || strings.Contains(text, ".inner.") || strings.Contains(text, "内网") {
+			lead = summary
+			break
+		}
+	}
+	if lead == "" {
+		return "", false
+	}
+	// check if task scope already covers internal assets → lead is being followed
+	if t.as != nil {
+		scope, err := t.as.ListTaskScope(t.taskID)
+		if err == nil {
+			for _, s := range scope {
+				if s.Kind == "ip" && (strings.HasPrefix(s.Net, "10.") || strings.HasPrefix(s.Net, "172.") || strings.HasPrefix(s.Net, "192.168.")) {
+					return "", false
+				}
+				if s.Kind == "subdomain" && strings.Contains(s.Domain, ".inner.") {
+					return "", false
+				}
+			}
+		}
+	}
+	return lead, true
+}
+
 func (t *ToolSet) proveGoal() actool.CoreTool {
 	return writeTool("prove_goal", "当你判断某个发现/事实证明了某个目标达成时调用：把证据节点连到目标节点，并标记目标 met。⚠️**仅在目标的全部条件已满足时才调本工具**：若目标含'全部'/'所有'/'all'等字样，仅完成其中一个子项（单个 flag/单道题/单个漏洞）【不算达成】——必须所有子项都完成才算 met。只取得部分进展时用 record_fact 记录，不要 prove_goal。",
 		obj(map[string]any{
@@ -687,6 +747,14 @@ func (t *ToolSet) proveGoal() actool.CoreTool {
 					if gt, _ := gp["text"].(string); goalTextSuggestsTotal(gt) {
 						if reasonSuggestsSingle(a.Reason) {
 							return actool.Errorf("目标含'全部/所有'但 reason 仅提及单个子项达成——该目标尚未全部完成。请改用 record_fact 记录此部分进展，待全部子项完成后再 prove_goal。"), nil
+						}
+					}
+					// Guard against premature completion of generic pentest goals:
+					// if facts mention internal IPs or inner subdomains that haven't
+					// been added to scope, the planner hasn't done lateral movement.
+					if gt, _ := gp["text"].(string); isGenericPentestGoal(gt) {
+						if lead, unexplored := t.hasUnexploredInternalLeads(); unexplored {
+							return actool.Errorf(fmt.Sprintf("目标为泛化渗透测试目标，但 facts 中存在尚未跟进的内网线索（%s）——任务探索范围尚未覆盖内网资产。请先派意图探索该内网线索（子域枚举/内网探测/SSRF 等），待内网方向探索完成后再 prove_goal。", lead)), nil
 						}
 					}
 				}

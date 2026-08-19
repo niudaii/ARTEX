@@ -41,3 +41,21 @@ func TestReasonSuggestsSingle(t *testing.T) {
 		}
 	}
 }
+
+func TestIsGenericPentestGoal(t *testing.T) {
+	tests := []struct {
+		text string
+		want bool
+	}{
+		{"对 bowen-app.youdao.com 完成渗透测试，确认漏洞发现并输出完整测试报告", true},
+		{"完成渗透测试并确认全部漏洞", true},
+		{"拿到 root 权限", false},
+		{"收集全部子域名", false},
+		{"", false},
+	}
+	for _, tt := range tests {
+		if got := isGenericPentestGoal(tt.text); got != tt.want {
+			t.Errorf("isGenericPentestGoal(%q) = %v, want %v", tt.text, got, tt.want)
+		}
+	}
+}

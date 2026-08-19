@@ -59,7 +59,7 @@ var defaultUnbound = map[string]bool{"goal_met": true}
 // 多个 agent 都有）合成一条，Agents 取并集；defaultUnbound 里的工具则强制绑定为空。
 func BuiltinToolSeeds() []ToolSeed {
 	byAgent := builtinToolsByAgent()
-	order := []string{"mainagent", "goals", "planner", "worker", "auto", "pentest"}
+	order := []string{"mainagent", "goals", "planner", "worker", "auto"}
 
 	type acc struct {
 		tool   actool.CoreTool

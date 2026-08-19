@@ -472,14 +472,20 @@ func (s *Server) notifyTaskDone(taskID string) {
 // taskRunDuration renders the task's run duration (created → terminal state,
 // mirroring the web task list) as a compact human string like "2h 15m".
 func taskRunDuration(t *Task) string {
-	if t.CreatedAt <= 0 {
+	// 定时任务:从 ScheduledStartAt(开始时间)算,而非 CreatedAt(创建时间);
+	// 非定时任务保持从 CreatedAt 起。
+	start := t.CreatedAt
+	if t.ScheduledStartAt > 0 {
+		start = t.ScheduledStartAt
+	}
+	if start <= 0 {
 		return "—"
 	}
 	end := t.CompletedAt
 	if end <= 0 {
 		end = time.Now().Unix()
 	}
-	sec := end - t.CreatedAt
+	sec := end - start
 	if sec <= 0 {
 		return "—"
 	}
