@@ -28,6 +28,7 @@ import type {
   Agent,
   ConvTokenSummary,
   Finding,
+  FindingStats,
   InterceptPending,
   LLMProfile,
   MCPServer,
@@ -133,6 +134,16 @@ export default function DashboardPage() {
   // data state
   const [tasks, setTasks] = React.useState<Task[]>([]);
   const [findings, setFindings] = React.useState<Finding[]>([]);
+  const [fstats, setFstats] = React.useState<FindingStats>({
+    total: 0,
+    pending: 0,
+    critical: 0,
+    high: 0,
+    medium: 0,
+    low: 0,
+    vulnclasses: [],
+    tasks: [],
+  });
   const [stats, setStats] = React.useState<Stats | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [pending, setPending] = React.useState<InterceptPending[]>([]);
@@ -148,14 +159,15 @@ export default function DashboardPage() {
   const [tools, setTools] = React.useState<Tool[]>([]);
   const [llmProfiles, setLLMProfiles] = React.useState<LLMProfile[]>([]);
 
-  // fast poll: tasks, findings, stats, pending, activity (every 5s)
+  // fast poll: tasks, finding stats + recent 8, stats, pending, activity (every 5s)
   React.useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const [tr, fr, sr, sets, pr, act, tok, ctok] = await Promise.all([
+        const [tr, fstat, frecent, sr, sets, pr, act, tok, ctok] = await Promise.all([
           api.tasks(),
-          api.findings(),
+          api.findingStats(),
+          api.findingsPage({ page: 1, pageSize: 8, sort: "time" }),
           api.stats(),
           api.settings(),
           api.interceptPending(),
@@ -165,7 +177,8 @@ export default function DashboardPage() {
         ]);
         if (!alive) return;
         setTasks(tr.tasks);
-        setFindings(fr);
+        setFindings(frecent.items);
+        setFstats(fstat);
         setStats(sr);
         setSettings(sets);
         setPending(pr);
@@ -227,14 +240,6 @@ export default function DashboardPage() {
     for (const t of tasks) m[t.status] = (m[t.status] ?? 0) + 1;
     return m;
   }, [tasks]);
-
-  const findingsBySev = React.useMemo(() => {
-    const m = { critical: 0, high: 0, medium: 0, low: 0 };
-    for (const f of findings) {
-      if (f.severity in m) m[f.severity as keyof typeof m]++;
-    }
-    return m;
-  }, [findings]);
 
   const sortedTasks = React.useMemo(
     () =>
@@ -461,13 +466,13 @@ export default function DashboardPage() {
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
               <BugIcon className="size-3" /> 确认发现
             </div>
-            <div className="text-2xl font-semibold tabular-nums">{findings.length}</div>
+            <div className="text-2xl font-semibold tabular-nums">{fstats.total}</div>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-2.5 text-[10px]">
-            <span className="text-rose-500">严重 {findingsBySev.critical}</span>
-            <span className="text-red-400">高危 {findingsBySev.high}</span>
-            <span className="text-amber-400">中危 {findingsBySev.medium}</span>
-            <span className="text-slate-400">低危 {findingsBySev.low}</span>
+            <span className="text-rose-500">严重 {fstats.critical}</span>
+            <span className="text-red-400">高危 {fstats.high}</span>
+            <span className="text-amber-400">中危 {fstats.medium}</span>
+            <span className="text-slate-400">低危 {fstats.low}</span>
           </CardContent>
         </Card>
 

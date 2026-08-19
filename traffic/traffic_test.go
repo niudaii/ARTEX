@@ -322,3 +322,107 @@ VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		t.Fatalf("Hosts() after delete=%+v; want [b.example.com/2]", hosts)
 	}
 }
+
+// TestQueryStatusMin verifies the statusMin filter in query(): only exchanges
+// whose status >= statusMin are returned. Also checks that contains now
+// matches content_type, and that Get surfaces a missing-file error instead of
+// returning empty strings silently.
+func TestQueryStatusMin(t *testing.T) {
+	dir := t.TempDir()
+	tr, err := Open(dir, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+
+	type seedRow struct {
+		id, host, url, ct string
+		status            int
+	}
+	seeds := []seedRow{
+		{"1-0001", "t.example.com", "http://t.example.com/", "text/html", 200},
+		{"1-0002", "t.example.com", "http://t.example.com/api/login", "application/json", 401},
+		{"1-0003", "t.example.com", "http://t.example.com/api/crash", "application/json", 500},
+		{"1-0004", "t.example.com", "http://t.example.com/api/gateway", "text/html", 502},
+		{"1-0005", "t.example.com", "http://t.example.com/api/svc", "text/html", 503},
+	}
+	for i, s := range seeds {
+		if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+			s.id, i+1, s.host, "GET", "/", s.url, s.status, s.ct, 0, 0,
+			s.host+"/GET/"+s.id); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	// statusMin=500 → only 3 rows (500, 502, 503).
+	rows, err := tr.query("t.example.com", "", 500, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 3 {
+		t.Fatalf("statusMin=500: got %d rows, want 3", len(rows))
+	}
+	for _, r := range rows {
+		if r.Status < 500 {
+			t.Fatalf("status=%d leaked past statusMin=500", r.Status)
+		}
+	}
+
+	// statusMin=400 → 4 rows (401, 500, 502, 503).
+	rows, err = tr.query("t.example.com", "", 400, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 4 {
+		t.Fatalf("statusMin=400: got %d rows, want 4", len(rows))
+	}
+
+	// statusMin=0 → all 5 rows (filter disabled).
+	rows, err = tr.query("t.example.com", "", 0, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 5 {
+		t.Fatalf("statusMin=0: got %d rows, want 5", len(rows))
+	}
+
+	// contains now also matches content_type: "json" → 2 rows (401, 500).
+	rows, err = tr.query("t.example.com", "json", 0, 0, 10)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(rows) != 2 {
+		t.Fatalf("contains=json: got %d rows, want 2", len(rows))
+	}
+
+	// Get on a row whose files were never written → error, not silent empty.
+	_, _, err = tr.Get("1-0003")
+	if err == nil {
+		t.Fatal("Get on missing files: got nil error, want non-nil")
+	}
+}
+
+// TestGetMissingFile ensures Get returns an error when the response file is
+// absent (e.g. deleted on disk), so the agent doesn't mistake it for empty.
+func TestGetMissingFile(t *testing.T) {
+	dir := t.TempDir()
+	tr, err := Open(dir, "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer tr.Close()
+
+	// Seed a row pointing at a directory we never create.
+	if _, err := tr.DB().Exec(`INSERT INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
+		"1-0001", 1, "t.example.com", "GET", "/", "http://t.example.com/", 200, "text/html", 0, 0,
+		"t.example.com/GET/1-0001"); err != nil {
+		t.Fatal(err)
+	}
+
+	_, _, err = tr.Get("1-0001")
+	if err == nil {
+		t.Fatal("Get on non-existent file: expected error, got nil")
+	}
+}

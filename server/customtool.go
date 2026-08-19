@@ -14,6 +14,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -343,7 +344,16 @@ func (s *Server) runCommandTool(ctx context.Context, execRaw json.RawMessage, pa
 		ctx, cancel = context.WithTimeout(ctx, timeoutOr(spec.TimeoutMs, 120000))
 		defer cancel()
 	}
-	return actool.NewBash().Call(ctx, bashIn, tc)
+	r, err := actool.NewBash().Call(ctx, bashIn, tc)
+	if err != nil {
+		return r, err
+	}
+	if hint := environHint(r.Flatten()); hint != "" {
+		nr := actool.Text(r.Flatten() + "\n" + hint)
+		nr.IsError = r.IsError
+		return nr, nil
+	}
+	return r, nil
 }
 
 // ---------- script(仅 Python):临时文件 + stdin JSON + env ----------
@@ -370,7 +380,11 @@ func (s *Server) runScriptTool(ctx context.Context, key string, execRaw json.Raw
 	if err != nil {
 		return actool.Errorf(err.Error()), nil
 	}
-	return actool.Text(clipOutput(body, tc)), nil
+	out := clipOutput(body, tc)
+	if hint := environHint(body); hint != "" {
+		out += "\n" + hint
+	}
+	return actool.Text(out), nil
 }
 
 // execPython writes the code to a temp .py under workDir/.tools, runs it via interp
@@ -528,6 +542,44 @@ func scalarStr(v any) (string, bool) {
 	default:
 		return "", false
 	}
+}
+
+// environHint scans tool output for environment-caused errors and returns an
+// actionable hint the agent can use to self-correct. Returns "" when no known
+// pattern is found. Checked against the FULL (pre-clip) body so hints survive
+// output truncation.
+func environHint(body string) string {
+	lower := strings.ToLower(body)
+	if strings.Contains(lower, "modulenotfounderror") {
+		if m := moduleNotFoundName(body); m != "" {
+			return "⚠ [环境缺包] Python 缺少模块 " + m + " — 尝试 pip install " + m + "；若报 externally-managed-environment 则加 --break-system-packages 或用 python -m venv 创建虚拟环境"
+		}
+		return "⚠ [环境缺包] Python 依赖缺失 — 尝试 pip install <包名>；若报 externally-managed-environment 则加 --break-system-packages 或用 venv"
+	}
+	if strings.Contains(lower, "externally-managed-environment") {
+		return "⚠ [PEP 668] 系统 Python 禁止全局 pip install — 加 --break-system-packages 或用 python -m venv 创建虚拟环境"
+	}
+	if strings.Contains(lower, "importerror") {
+		return "⚠ [环境缺包] Python import 失败 — 依赖缺失或版本不兼容，检查 pip install 或解释器路径"
+	}
+	if strings.Contains(lower, "command not found") || strings.Contains(lower, "exit code 127") {
+		return "⚠ [命令缺失] 命令未安装或不在 PATH 中 — macOS 常缺 getent/jq/nmap 等，用 brew install 安装；注意 traffic_search 等是工具而非 shell 命令"
+	}
+	if strings.Contains(lower, "x509") && strings.Contains(lower, "certificate") {
+		return "⚠ [TLS 证书] 证书不受信任 — 若目标用自签证书，需信任 CA 或设 SSL_CERT_FILE/REQUESTS_CA_BUNDLE"
+	}
+	return ""
+}
+
+// moduleNotFoundName extracts the module name from a ModuleNotFoundError line.
+var moduleNotFoundRe = regexp.MustCompile("ModuleNotFoundError: No module named '([^']+)'")
+
+func moduleNotFoundName(body string) string {
+	m := moduleNotFoundRe.FindStringSubmatch(body)
+	if len(m) > 1 {
+		return m[1]
+	}
+	return ""
 }
 
 // clipOutput caps output to the session's MaxOutputChars (or a default).

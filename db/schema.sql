@@ -243,13 +243,14 @@ CREATE TABLE IF NOT EXISTS tasks (
     exploration_id BIGINT NOT NULL UNIQUE
                      REFERENCES explorations(id) ON DELETE RESTRICT,
     status         TEXT NOT NULL DEFAULT 'created'
-                     CHECK (status IN ('created','running','paused','done','failed','timeout')),
+                     CHECK (status IN ('created','running','paused','done','failed','timeout','scheduled')),
     paused         BOOLEAN NOT NULL DEFAULT false,
     llm_profile_id BIGINT REFERENCES llm_profiles(id) ON DELETE SET NULL,
     company_id     BIGINT REFERENCES companies(id) ON DELETE SET NULL,
     parent_ref     TEXT,
     timeout_seconds INTEGER NOT NULL DEFAULT 0,
     plan_heartbeat_seconds INTEGER NOT NULL DEFAULT 300,
+    scheduled_start_at TIMESTAMPTZ,
     first_run_at   TIMESTAMPTZ,
     deadline_at    TIMESTAMPTZ,
     deleted_at     TIMESTAMPTZ,
@@ -267,6 +268,14 @@ ALTER TABLE tasks ADD COLUMN IF NOT EXISTS plan_heartbeat_seconds INTEGER NOT NU
 
 -- 报告持久化：任务完成后将 LLM 过滤后的报告 Markdown 存入此列。
 ALTER TABLE tasks ADD COLUMN IF NOT EXISTS report_md TEXT;
+
+-- 定时启动：scheduled_start_at 非空且在未来时，任务创建后不立即启动，到点再 launch。
+-- 配合持久化 status='scheduled'(到点 launch 前的等待态)，重启后可重排或立即补启。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS scheduled_start_at TIMESTAMPTZ;
+-- 扩展 status CHECK 纳入 'scheduled'(等待定时启动)，补旧库(全新库由建表语句覆盖)。
+ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_status_check;
+ALTER TABLE tasks ADD CONSTRAINT tasks_status_check
+    CHECK (status IN ('created','running','paused','done','failed','timeout','scheduled'));
 
 -- 任务测试范围（资产覆盖度的分母 + 授权边界）。
 --   自动填(source='auto')：insertAssets 顶层按 worker 显式插入的资产类型加保守范围

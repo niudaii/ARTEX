@@ -227,13 +227,20 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		}
 		// 任务级超时:为每个未终态、带 timeout 的任务起 deadline 协调器,独立于 planner/worker
 		// loop——非活跃任务重启后也能在到点后被收尾(deadline 已过则立即走收尾时序)。
-		if !isTerminalStatus(t.Status) {
+		// scheduled 态任务尚未开始运行,不起 deadline(到点 launch 后再起)。
+		if !isTerminalStatus(t.Status) && t.Status != "scheduled" {
 			s.engine.startDeadlineCoordinator(ctx, t)
+		}
+		// 定时任务:scheduled_start_at 在未来则重排定时器(原 goroutine 随重启消失),到点再
+		// launch;已过点则立即补启。scheduleOrLaunch 内部据 ScheduledStartAt 判断走哪条路。
+		if t.Status == "scheduled" {
+			s.scheduleOrLaunch(t, t.Description+" "+t.Goal, false)
 		}
 	}
 	// resume the active task's engine; other tasks resume when opened (setActive).
 	// (a restored-paused task's loops still start but idle until resumed.)
-	if t := m.ActiveTask(); t != nil {
+	if t := m.ActiveTask(); t != nil && t.Status != "scheduled" {
+		// scheduled 任务由上方 scheduleOrLaunch 到点再启动,这里不抢跑(否则空 engine 循环)。
 		s.engine.Run(ctx, t)
 	}
 	return s
@@ -849,24 +856,80 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		active = t.ID
 	}
 	list := s.m.List()
-	toks, _ := s.m.PG().TokenTotalsAll()      // whole-task token totals, one query for all tasks
-	lastAct, _ := s.m.PG().LastActivityAll()  // persisted last-activity per task, one query
-	goalCounts, _ := s.m.PG().GoalCountsAll() // goal progress per exploration, one query
-	dtos := make([]TaskDTO, 0, len(list))
-	for _, t := range list {
-		status := "created"
+
+	// Derive each task's runtime status once (used for both filtering and DTO
+	// assembly), so a "created" task the engine is running filters as "running".
+	statuses := make([]string, len(list))
+	for i, t := range list {
+		statuses[i] = "created"
 		switch {
-		case isTerminalStatus(t.Status): // 持久化终态优先（done/failed/timeout）
-			status = t.Status
+		case isTerminalStatus(t.Status):
+			statuses[i] = t.Status
+		case t.Status == "scheduled":
+			statuses[i] = "scheduled"
 		case t.Paused || s.engine.IsPaused(t.ID):
-			status = "paused"
+			statuses[i] = "paused"
 		case s.engine.Ready() && s.engine.Started(t.ID):
-			status = "running"
+			statuses[i] = "running"
 		}
-		dto := taskDTO(t, status)
+	}
+
+	// Filter on the derived status (matches what the page shows) + a text query over
+	// description/goal/id. normFilter maps "all"/"" → "" (no filter).
+	q := r.URL.Query()
+	statusParam := normFilter(q.Get("status"))
+	qParam := strings.ToLower(strings.TrimSpace(q.Get("q")))
+	type item struct {
+		t      *Task
+		status string
+	}
+	filtered := make([]item, 0, len(list))
+	for i, t := range list {
+		if statusParam != "" && statuses[i] != statusParam {
+			continue
+		}
+		if qParam != "" &&
+			!strings.Contains(strings.ToLower(t.Description), qParam) &&
+			!strings.Contains(strings.ToLower(t.Goal), qParam) &&
+			!strings.Contains(strings.ToLower(t.ID), qParam) {
+			continue
+		}
+		filtered = append(filtered, item{t, statuses[i]})
+	}
+	total := len(filtered)
+
+	// Pagination: the three supplement queries + DTO assembly touch only the current
+	// page, so a long task list no longer triggers full-table aggregates per refresh.
+	paged := q.Get("page") != "" || q.Get("limit") != ""
+	page := atoiDefault(q.Get("page"), 1)
+	limit := min(atoiDefault(q.Get("limit"), 20), 200)
+	start := 0
+	if paged {
+		start = (page - 1) * limit
+	}
+	if start > total {
+		start = total
+	}
+	end := total
+	if paged && start+limit < end {
+		end = start + limit
+	}
+	pageItems := filtered[start:end]
+
+	// Scoped supplements: only the page's exploration ids, not the whole table.
+	eids := make([]int64, 0, len(pageItems))
+	for _, it := range pageItems {
+		eids = append(eids, it.t.ExpID)
+	}
+	toks, _ := s.m.PG().TokenTotals(eids)
+	lastAct, _ := s.m.PG().LastActivity(eids)
+	goalCounts, _ := s.m.PG().GoalCounts(eids)
+
+	dtos := make([]TaskDTO, 0, len(pageItems))
+	for _, it := range pageItems {
+		t := it.t
+		dto := taskDTO(t, it.status)
 		dto.Tokens = tokenTotalDTO(toks[t.ExpID])
-		// prefer the live in-memory heartbeat (fresher) and fall back to the
-		// persisted max activity time (survives restarts) for run-duration display.
 		dto.LastActivity = lastAct[t.ExpID]
 		if live := s.engine.LastActivity(t.ID); live > dto.LastActivity {
 			dto.LastActivity = live
@@ -874,18 +937,12 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		gc := goalCounts[t.ExpID]
 		dto.GoalsTotal = gc.Total
 		dto.GoalsMet = gc.Met
-		// engine_mode: same derivation as the stats handler so the dashboard badge
-		// matches the detail page. Terminal tasks → idle (engine not running).
 		switch {
 		case isTerminalStatus(t.Status):
 			dto.EngineMode = "idle"
 		case t.Paused || s.engine.IsPaused(t.ID):
 			dto.EngineMode = "paused"
 		case s.engine.Ready() && s.engine.Started(t.ID):
-			// stalled: engine loops alive but nothing in-flight and no activity
-			// for >60s — mirrors the stats handler so the list badge matches the
-			// detail page. Uses the in-memory inflight counter (no per-task DB
-			// query) and LastActivity already resolved above.
 			if s.engine.inflightCount(t.ID) == 0 && dto.LastActivity > 0 &&
 				time.Now().Unix()-dto.LastActivity > 60 {
 				dto.EngineMode = "stalled"
@@ -897,7 +954,12 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 		}
 		dtos = append(dtos, dto)
 	}
-	writeJSON(w, 200, map[string]any{"tasks": dtos, "active": active})
+
+	if paged {
+		writeJSON(w, 200, map[string]any{"tasks": dtos, "active": active, "total": total, "page": page, "page_size": limit})
+	} else {
+		writeJSON(w, 200, map[string]any{"tasks": dtos, "active": active})
+	}
 }
 
 func (s *Server) setActive(w http.ResponseWriter, r *http.Request) {
@@ -1111,12 +1173,13 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 }
 
 type createTaskReq struct {
-	Description          string `json:"description"`
-	Goal                 string `json:"goal"`
-	LLMProfileID         *int64 `json:"llm_profile_id,omitempty"`    // 指定运行本任务的 LLM 配置;省略/null=用激活配置
-	TimeoutSeconds       int    `json:"timeout_seconds"`             // 任务级超时(秒);0/省略=不限时
-	PlanHeartbeatSeconds int    `json:"plan_heartbeat_seconds"`      // planner 心跳触发间隔(秒);0/省略=默认600(10min);下限=默认=600,低于自动抬到600
-	SeedFirstIntent      *bool  `json:"seed_first_intent,omitempty"` // 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;省略/null=默认关闭,走标准先规划再执行。显式传 true 才开(CTF 常一 work 解决时可省掉开跑前的 planner 轮)。
+	Description          string     `json:"description"`
+	Goal                 string     `json:"goal"`
+	LLMProfileID         *int64     `json:"llm_profile_id,omitempty"`     // 指定运行本任务的 LLM 配置;省略/null=用激活配置
+	TimeoutSeconds       int        `json:"timeout_seconds"`              // 任务级超时(秒);0/省略=不限时
+	PlanHeartbeatSeconds int        `json:"plan_heartbeat_seconds"`       // planner 心跳触发间隔(秒);0/省略=默认600(10min);下限=默认=600,低于自动抬到600
+	SeedFirstIntent      *bool      `json:"seed_first_intent,omitempty"`  // 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;省略/null=默认关闭,走标准先规划再执行。显式传 true 才开(CTF 常一 work 解决时可省掉开跑前的 planner 轮)。
+	ScheduledStartAt     *time.Time `json:"scheduled_start_at,omitempty"` // 定时启动时间(RFC3339 带时区偏移;前端按 CST 解析);nil/省略/过去时间=创建后立即开始
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -1139,15 +1202,15 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	if req.TimeoutSeconds < 0 {
 		req.TimeoutSeconds = 0
 	}
-	t, err := s.m.CreateTask(req.Description, req.Goal, req.LLMProfileID, req.TimeoutSeconds, req.PlanHeartbeatSeconds)
+	t, err := s.m.CreateTask(req.Description, req.Goal, req.LLMProfileID, req.TimeoutSeconds, req.PlanHeartbeatSeconds, req.ScheduledStartAt)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	log.Printf("[task] 新建任务 #%s «%s» 目标: %s", t.ID, req.Description, req.Goal)
 	// 共享的建后流程(seed + 种子意图 + 后台目标分解 + engine.Run),与 spawn_task 复用同一段。
-	// launchTask 内部异步,不阻塞 UI —— 目标分解在后台可见地进行。
-	s.launchTask(t, req.Description+" "+req.Goal, req.SeedFirstIntent != nil && *req.SeedFirstIntent)
+	// scheduleOrLaunch: 有定时且在未来则到点再 launch(持久化 scheduled 态,重启可重排),否则立即开始。
+	s.scheduleOrLaunch(t, req.Description+" "+req.Goal, req.SeedFirstIntent != nil && *req.SeedFirstIntent)
 	writeJSON(w, 201, t)
 }
 

@@ -152,8 +152,17 @@ export const api = {
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
 
   // ---- tasks ----
-  tasks: () =>
-    get<{ tasks: Task[]; active: string }>("/tasks").then((r) => ({ tasks: arr(r.tasks), active: r.active ?? "" })),
+  tasks: (qp?: { page?: number; pageSize?: number; status?: string; query?: string }) => {
+    const p = new URLSearchParams();
+    if (qp?.page) p.set("page", String(qp.page));
+    if (qp?.pageSize) p.set("limit", String(qp.pageSize));
+    if (qp?.status && qp.status !== "all") p.set("status", qp.status);
+    if (qp?.query) p.set("q", qp.query);
+    const qs = p.toString();
+    return get<{ tasks: Task[]; active: string; total?: number; page?: number; page_size?: number }>(
+      `/tasks${qs ? `?${qs}` : ""}`,
+    ).then((r) => ({ ...r, tasks: arr(r.tasks), active: r.active ?? "" }));
+  },
   createTask: (
     description: string,
     goal: string,
@@ -161,6 +170,7 @@ export const api = {
     timeoutSeconds?: number,
     seedFirstIntent?: boolean,
     planHeartbeatSeconds?: number,
+    scheduledStartAt?: string, // RFC3339 带时区偏移(前端按 CST 转);空/省略=立即开始
   ) =>
     post<Task>("/tasks", {
       description,
@@ -169,6 +179,7 @@ export const api = {
       timeout_seconds: timeoutSeconds ?? 0,
       seed_first_intent: seedFirstIntent ?? false,
       plan_heartbeat_seconds: planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)
+      scheduled_start_at: scheduledStartAt ?? null,
     }),
   deleteTask: (id: string) => del<{ deleted: number }>(`/tasks/${id}`),
   controlTask: (id: string, action: "pause" | "resume") =>

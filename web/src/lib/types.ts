@@ -1,7 +1,7 @@
 // ARTEX domain model — types used across the UI.
 // Derived from the functional spec (section 7: 关键数据形状).
 
-export type TaskStatus = "created" | "running" | "paused" | "done" | "failed" | "timeout";
+export type TaskStatus = "created" | "running" | "paused" | "done" | "failed" | "timeout" | "scheduled";
 export type EngineMode = "exploring" | "paused" | "stalled" | "idle";
 
 export interface Task {
@@ -24,6 +24,8 @@ export interface Task {
   engine_mode?: EngineMode;
   tokens?: TokenTotal; // whole-task token consumption
   llm_profile_id?: number; // LLM profile used; absent = default profile
+  scheduled_start_at?: string; // RFC3339 定时启动时间;空/缺省=立即开始
+  scheduled_start_unix?: number; // 定时启动 unix 秒;0/缺省=立即开始
 }
 
 // ---- Asset graph (global, shared across tasks) ----

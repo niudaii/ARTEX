@@ -333,9 +333,20 @@ func contains(ss []string, v string) bool {
 // cross-task node reads). Used by ToolResolve to inject domain tools into agents
 // (Auto, custom) that don't own a per-task ToolSet.
 // nil as → returns nil (no injection, graceful degradation).
-// Exploration-graph tools injected from here have no store to read; their
-// handlers degrade to a tool error (agent.errNoTaskGraph) instead of crashing —
-// except node_detail, which resolves by-id against pg (globally unique node ids).
+// Per-task exploration-graph tools that can only errNoTaskGraph here (no
+// cross-task fallback) are OMITTED — see taskGraphNoFallback — so a
+// task-independent agent never sees (and never wastes a turn calling) a tool
+// that cannot succeed: the reads (list_findings / list_facts / graph_overview)
+// have cross-task host equivalents (get_task_graph / list_task_findings), and
+// report_finding's write path has no conversation fallback (no node id →
+// update_finding_report can't attach; the reporter trigger assumes a task).
+// Task-independent agents (Auto, custom, chat page, or a conversation pinned to a
+// task-scoped key like mainagent) reach the same data via those host tools, which
+// take an explicit task_id and delegate to that task's real store. Task agents
+// (mainagent/worker/planner) are unaffected: they build their own real-store
+// ToolSet, so these tools come from their base list — not from this registry.
+// node_detail is kept: it falls back to a by-id PG lookup (globally unique node
+// ids). Asset tools read the AssetStore, not the exploration store.
 func buildDomainReg(pg *db.DB, as *db.AssetStore) map[string]actool.CoreTool {
 	if as == nil {
 		return nil
@@ -345,9 +356,31 @@ func buildDomainReg(pg *db.DB, as *db.AssetStore) map[string]actool.CoreTool {
 	serverTS.SetExplorationDB(pg)
 	reg := make(map[string]actool.CoreTool)
 	for _, t := range serverTS.AllDomainTools() {
+		if taskGraphNoFallback[t.Name()] {
+			continue
+		}
 		reg[t.Name()] = t
 	}
 	return reg
+}
+
+// taskGraphNoFallback lists per-task exploration-graph tools (reads AND writes)
+// that can only errNoTaskGraph on a store-less ToolSet (the buildDomainReg shape)
+// and have no by-id / PG fallback. They are omitted from the task-independent
+// registry so conversation-context agents never see — and never call — a tool that
+// cannot succeed there. Reads use the cross-task host equivalents
+// (get_task_graph / list_task_findings); report_finding is a write but is included
+// too: it has no working conversation path (no node id → update_finding_report,
+// keyed by node_id, can't attach; the reporter tool-call trigger assumes a task),
+// so exposing it only makes the model waste a turn. A proper cross-task
+// report_task_finding(task_id, …) would be the way to enable conversation recording
+// later. node_detail is NOT here (PG by-id fallback); asset tools are NOT here
+// (AssetStore-backed).
+var taskGraphNoFallback = map[string]bool{
+	"graph_overview": true,
+	"list_facts":     true,
+	"list_findings":  true,
+	"report_finding": true,
 }
 
 func jsonStrSlice(raw json.RawMessage) []string {

@@ -107,3 +107,40 @@ func mustJSON(v any) json.RawMessage {
 	b, _ := json.Marshal(v)
 	return b
 }
+
+// TestBuildDomainRegOmitsTaskGraphTools locks in the fix for the
+// "list_findings 需要任务上下文" / "report_finding 需要任务上下文" errors on
+// remote: the task-independent (nil-store) registry must NOT expose per-task
+// exploration-graph tools that can only errNoTaskGraph there — reads
+// (list_findings / list_facts / graph_overview) AND report_finding (whose write
+// path has no conversation fallback). Exposing them only makes the model waste a
+// turn calling a tool that cannot succeed. Their cross-task host equivalents
+// (list_task_findings / get_task_graph) are bound separately. node_detail stays
+// (PG by-id fallback); list_assets stays (AssetStore-backed). Task agents are
+// unaffected — they build a real-store ToolSet, not this registry.
+func TestBuildDomainRegOmitsTaskGraphTools(t *testing.T) {
+	dsn, _, err := db.DSN()
+	if err != nil {
+		t.Skipf("no database config (%v) — skipping", err)
+	}
+	pg, err := db.Open(dsn)
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer pg.Close()
+
+	reg := buildDomainReg(pg, pg.Assets())
+	if reg == nil {
+		t.Skip("no AssetStore → buildDomainReg returned nil (no injection)")
+	}
+	for _, name := range []string{"list_findings", "list_facts", "graph_overview", "report_finding"} {
+		if _, ok := reg[name]; ok {
+			t.Errorf("task-independent registry must not expose %q (can only error without a per-task store)", name)
+		}
+	}
+	for _, name := range []string{"node_detail", "list_assets"} {
+		if _, ok := reg[name]; !ok {
+			t.Errorf("task-independent registry lost %q (has a cross-task fallback and must stay available)", name)
+		}
+	}
+}

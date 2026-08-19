@@ -6,6 +6,7 @@ import (
 	"log"
 	"strconv"
 	"strings"
+	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
@@ -43,6 +44,48 @@ func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
 			s.engine.emitActivity(t, db.Activity{Worker: "planner", Kind: "text", Summary: summary})
 		}
 		s.engine.Run(s.ctx, t)
+	}()
+}
+
+// scheduleOrLaunch either launches a task immediately (no schedule / past due) or
+// defers launchTask until ScheduledStartAt. The persisted "scheduled" status makes
+// the deferred wait survive restarts: LoadExisting re-arms still-pending ones (or
+// launches them now if their time has already passed). Call from every task-creation
+// path (HTTP createTask / spawn_task) so scheduling is uniformly handled.
+func (s *Server) scheduleOrLaunch(t *Task, seedText string, seedFirstIntent bool) {
+	if t.ScheduledStartAt <= time.Now().Unix() {
+		// 过点(重启后补启)或无定时:若仍处 scheduled 等待态,先转 created 再 launch,
+		// 否则 UI 会一直显示「定时中」而引擎实已在跑。正常无定时任务 status 已是 created,跳过。
+		if t.Status == "scheduled" {
+			if err := s.m.SetTaskStatus(t.ID, "created"); err != nil {
+				log.Printf("[schedule] task %s 置 created 失败: %v", t.ID, err)
+			} else {
+				t.Status = "created"
+			}
+		}
+		s.launchTask(t, seedText, seedFirstIntent)
+		return
+	}
+	go func() {
+		tmr := time.NewTimer(time.Until(time.Unix(t.ScheduledStartAt, 0)))
+		defer tmr.Stop()
+		select {
+		case <-tmr.C:
+			// re-check: task may have been deleted/paused/already-launched while waiting.
+			cur, ok := s.m.Task(t.ID)
+			if !ok || cur.Status != "scheduled" || cur.Paused {
+				return
+			}
+			// 到点:转 created(脱离等待态),再走标准建后流程(seed + 目标分解 + engine.Run)。
+			if err := s.m.SetTaskStatus(t.ID, "created"); err != nil {
+				log.Printf("[schedule] task %s 置 created 失败: %v", t.ID, err)
+				return
+			}
+			cur.Status = "created"
+			s.launchTask(cur, seedText, seedFirstIntent)
+		case <-s.ctx.Done():
+			return
+		}
 	}()
 }
 

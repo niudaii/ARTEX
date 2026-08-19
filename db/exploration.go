@@ -641,6 +641,102 @@ func (d *DB) GoalCountsAll() (map[int64]GoalCounts, error) {
 	return out, rows.Err()
 }
 
+// intInList builds a "$1,$2,...,$N" placeholder list and matching args slice for an
+// IN clause, so paged queries can scope to a page of exploration ids without a
+// full-table scan.
+func intInList(eids []int64) (string, []any) {
+	ph := make([]string, len(eids))
+	args := make([]any, len(eids))
+	for i, eid := range eids {
+		ph[i] = fmt.Sprintf("$%d", i+1)
+		args[i] = eid
+	}
+	return strings.Join(ph, ","), args
+}
+
+// TokenTotals returns whole-task token totals for the given exploration ids only
+// (one IN-scoped query), so a paged task list avoids the full-table aggregate.
+func (d *DB) TokenTotals(eids []int64) (map[int64]TokenUsage, error) {
+	out := map[int64]TokenUsage{}
+	if len(eids) == 0 {
+		return out, nil
+	}
+	in, args := intInList(eids)
+	rows, err := d.Query(`SELECT exploration_id,
+		COALESCE(SUM(input_tokens),0), COALESCE(SUM(output_tokens),0),
+		COALESCE(SUM(cache_read_tokens),0), COALESCE(SUM(cache_write_tokens),0)
+		FROM activity WHERE kind='result' AND exploration_id IN (`+in+`)
+		GROUP BY exploration_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var eid int64
+		var u TokenUsage
+		if err := rows.Scan(&eid, &u.InputTokens, &u.OutputTokens, &u.CacheReadTokens, &u.CacheWriteTokens); err != nil {
+			return nil, err
+		}
+		out[eid] = u
+	}
+	return out, rows.Err()
+}
+
+// LastActivity returns the unix time of the most recent activity per exploration,
+// scoped to the given ids only (one IN-scoped query) for paged task lists.
+func (d *DB) LastActivity(eids []int64) (map[int64]int64, error) {
+	out := map[int64]int64{}
+	if len(eids) == 0 {
+		return out, nil
+	}
+	in, args := intInList(eids)
+	rows, err := d.Query(`SELECT exploration_id, EXTRACT(EPOCH FROM MAX(created_at))::bigint
+		FROM activity WHERE exploration_id IN (`+in+`)
+		GROUP BY exploration_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var eid, ts int64
+		if err := rows.Scan(&eid, &ts); err != nil {
+			return nil, err
+		}
+		out[eid] = ts
+	}
+	return out, rows.Err()
+}
+
+// GoalCounts returns goal totals (total / met) for the given exploration ids only
+// (one IN-scoped query), for paged task lists.
+func (d *DB) GoalCounts(eids []int64) (map[int64]GoalCounts, error) {
+	out := map[int64]GoalCounts{}
+	if len(eids) == 0 {
+		return out, nil
+	}
+	in, args := intInList(eids)
+	rows, err := d.Query(`
+		SELECT exploration_id,
+		       COUNT(*) AS total,
+		       COUNT(*) FILTER (WHERE state = 'met') AS met
+		FROM exploration_nodes
+		WHERE kind = 'goal' AND exploration_id IN (`+in+`)
+		GROUP BY exploration_id`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var eid int64
+		var gc GoalCounts
+		if err := rows.Scan(&eid, &gc.Total, &gc.Met); err != nil {
+			return nil, err
+		}
+		out[eid] = gc
+	}
+	return out, rows.Err()
+}
+
 // TokenStatsByWorker sums token usage per worker for this exploration (from the
 // kind='result' records that carry usage). Used by the per-agent token display.
 func (s *ExplorationStore) TokenStatsByWorker() ([]TokenUsage, error) {

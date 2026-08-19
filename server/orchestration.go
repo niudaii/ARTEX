@@ -275,7 +275,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 					pin = pt.LLMProfileID
 				}
 			}
-			t, err := s.m.CreateTask(a.Description, a.Goal, pin, a.TimeoutSeconds, a.PlanHeartbeatSeconds)
+			t, err := s.m.CreateTask(a.Description, a.Goal, pin, a.TimeoutSeconds, a.PlanHeartbeatSeconds, nil)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
@@ -288,7 +288,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			// 共享的建后流程,与 HTTP 建任务(server.go createTask)复用同一段 launchTask:
 			// seed + 后台可见地做目标分解(第0轮/LLM步骤/逐条goal) + engine.Run。
 			// seed_first_intent 默认 false(标准先规划再执行);简单任务可开启直接下发一 work 测试。
-			s.launchTask(t, a.Description+" "+a.Goal, a.SeedFirstIntent)
+			s.scheduleOrLaunch(t, a.Description+" "+a.Goal, a.SeedFirstIntent)
 			return actool.Text(fmt.Sprintf("task created: %s", t.ID)), nil
 		})
 }
@@ -417,6 +417,8 @@ func (s *Server) deriveTaskStatus(t *Task) string {
 	switch {
 	case isTerminalStatus(t.Status):
 		return t.Status
+	case t.Status == "scheduled":
+		return "scheduled"
 	case t.Paused || s.engine.IsPaused(t.ID):
 		return "paused"
 	case s.engine.Ready() && s.engine.Started(t.ID):
@@ -444,7 +446,6 @@ func (s *Server) seedOrchestrationTools() {
 	s.refreshBuiltinToolSchemas()
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
-	s.seedAutoReportFindingBinding()
 	s.unbindGoalMetDefault()
 	s.seedReporterAgent() // 预置「报告撰写」agent + 工具绑定 + finding 触发器(一次性)
 	// 注：pentest 的默认工具绑定无需迁移——BuiltinToolSeeds 在全新初始化时就把
@@ -552,20 +553,6 @@ func (s *Server) seedReporterAgent() {
 		log.Printf("[reporter] 创建触发器失败: %v", err)
 	}
 	log.Printf("[reporter] 已预置「报告撰写」agent + finding 触发器")
-}
-
-// seedAutoReportFindingBinding adds "auto" to report_finding's binding ONCE so
-// conversation-context agents can call it without requiring an intent_id.
-func (s *Server) seedAutoReportFindingBinding() {
-	const flag = "auto_report_finding_v1"
-	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
-		return
-	}
-	if err := s.m.pg.AddAgentToToolBinding("auto", []string{"report_finding"}); err != nil {
-		log.Printf("[auto] report_finding 默认绑定失败: %v", err)
-		return
-	}
-	_ = s.m.pg.SetSetting(flag, "true")
 }
 
 // seedPlannerDefaultBindings adds "planner" to report_finding's binding ONCE

@@ -177,10 +177,26 @@ function InterceptPendingBadge() {
       }
     }
     poll();
-    const t = setInterval(poll, 5000);
+    // adaptive backoff: 5 s when there are pending approvals (responsive), 30 s when
+    // idle (lightweight, avoids a constant global heartbeat on every page).
+    let timer: ReturnType<typeof setTimeout>;
+    async function loop() {
+      let next = 30000;
+      try {
+        const list = await api.interceptPending();
+        if (live) {
+          setCount(list.length);
+          next = list.length > 0 ? 5000 : 30000;
+        }
+      } catch {
+        /* ignore */
+      }
+      if (live) timer = setTimeout(loop, next);
+    }
+    loop();
     return () => {
       live = false;
-      clearInterval(t);
+      clearTimeout(timer);
     };
   }, []);
   if (count === 0) return null;

@@ -29,6 +29,13 @@ RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@late
     && playwright-cli --help \
     && playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
+# 预装安全测试常用 Python 包（避免 agent 运行时遇 ModuleNotFoundError）。
+# 清单源自 worker trace 错误分析：impacket/msgpack/Crypto/bcrypt/boto3/capstone/h2/hpack/PIL/ds_store 等。
+RUN pip install --no-cache-dir \
+      requests beautifulsoup4 lxml pyyaml cryptography \
+      pycryptodome paramiko pyjwt dnspython \
+      impacket msgpack bcrypt boto3 capstone \
+      h2 hpack Pillow ds_store tabulate
 WORKDIR /app
 # 预编译好的对应架构二进制（dist/amd64/artex 或 dist/arm64/artex）
 COPY dist/${TARGETARCH}/artex /app/artex

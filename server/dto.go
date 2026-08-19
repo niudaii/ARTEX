@@ -30,22 +30,24 @@ func rawString(raw json.RawMessage) string {
 
 // ---- Task (frontend "Task") ---- created_at as RFC3339, plus a derived status.
 type TaskDTO struct {
-	ID            string        `json:"id"`
-	ExplorationID int64         `json:"exploration_id"`
-	Description   string        `json:"description"`
-	Goal          string        `json:"goal"`
-	Status        string        `json:"status"` // created | running | paused | done | failed
-	CreatedAt     string        `json:"created_at"`
-	CreatedUnix   int64         `json:"created_unix"`       // created_at as unix seconds (for run-duration calc)
-	CompletedAt   string        `json:"completed_at"`       // RFC3339 finish time (done/failed); "" if unfinished
-	CompletedUnix int64         `json:"completed_unix"`     // completed_at as unix seconds (0 if unfinished)
-	LastActivity  int64         `json:"last_activity_unix"` // unix seconds of the last activity (0 if none)
-	Paused        bool          `json:"paused"`
-	Tokens        TokenTotalDTO `json:"tokens"` // whole-task token consumption
-	GoalsTotal    int           `json:"goals_total"`
-	GoalsMet      int           `json:"goals_met"`
-	LLMProfileID  *int64        `json:"llm_profile_id,omitempty"` // LLM profile used for this task; nil = default
-	EngineMode    string        `json:"engine_mode,omitempty"`    // exploring | paused | stalled | idle (mirrors stats)
+	ID                 string        `json:"id"`
+	ExplorationID      int64         `json:"exploration_id"`
+	Description        string        `json:"description"`
+	Goal               string        `json:"goal"`
+	Status             string        `json:"status"` // created | running | paused | done | failed
+	CreatedAt          string        `json:"created_at"`
+	CreatedUnix        int64         `json:"created_unix"`       // created_at as unix seconds (for run-duration calc)
+	CompletedAt        string        `json:"completed_at"`       // RFC3339 finish time (done/failed); "" if unfinished
+	CompletedUnix      int64         `json:"completed_unix"`     // completed_at as unix seconds (0 if unfinished)
+	LastActivity       int64         `json:"last_activity_unix"` // unix seconds of the last activity (0 if none)
+	Paused             bool          `json:"paused"`
+	Tokens             TokenTotalDTO `json:"tokens"` // whole-task token consumption
+	GoalsTotal         int           `json:"goals_total"`
+	GoalsMet           int           `json:"goals_met"`
+	LLMProfileID       *int64        `json:"llm_profile_id,omitempty"`       // LLM profile used for this task; nil = default
+	EngineMode         string        `json:"engine_mode,omitempty"`          // exploring | paused | stalled | idle (mirrors stats)
+	ScheduledStartAt   string        `json:"scheduled_start_at,omitempty"`   // RFC3339 定时启动时间;空=立即开始
+	ScheduledStartUnix int64         `json:"scheduled_start_unix,omitempty"` // 定时启动 unix 秒;0=立即开始
 }
 
 // TokenTotalDTO is a whole-task (all agents) token aggregate.
@@ -67,17 +69,19 @@ func tokenTotalDTO(u db.TokenUsage) TokenTotalDTO {
 
 func taskDTO(t *Task, status string) TaskDTO {
 	return TaskDTO{
-		ID:            t.ID,
-		ExplorationID: t.ExpID,
-		Description:   t.Description,
-		Goal:          t.Goal,
-		Status:        status,
-		CreatedAt:     rfc3339(time.Unix(t.CreatedAt, 0)),
-		CreatedUnix:   t.CreatedAt,
-		CompletedAt:   completedRFC(t.CompletedAt),
-		CompletedUnix: t.CompletedAt,
-		Paused:        t.Paused,
-		LLMProfileID:  t.LLMProfileID,
+		ID:                 t.ID,
+		ExplorationID:      t.ExpID,
+		Description:        t.Description,
+		Goal:               t.Goal,
+		Status:             status,
+		CreatedAt:          rfc3339(time.Unix(t.CreatedAt, 0)),
+		CreatedUnix:        t.CreatedAt,
+		CompletedAt:        completedRFC(t.CompletedAt),
+		CompletedUnix:      t.CompletedAt,
+		Paused:             t.Paused,
+		LLMProfileID:       t.LLMProfileID,
+		ScheduledStartAt:   completedRFC(t.ScheduledStartAt),
+		ScheduledStartUnix: t.ScheduledStartAt,
 	}
 }
 

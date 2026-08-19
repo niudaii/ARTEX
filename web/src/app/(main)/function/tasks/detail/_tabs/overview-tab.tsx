@@ -65,6 +65,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const [stats, setStats] = React.useState<Stats | null>(null);
   const [intents, setIntents] = React.useState<TaskNode[]>([]);
   const [findings, setFindings] = React.useState<Finding[]>([]);
+  // lastRef holds the previous poll serialized payload; the tab polls every 5 s
+  // but usually nothing changed, so skip the setState cascade when it matches.
+  const lastRef = React.useRef<string>("");
   const [coverage, setCoverage] = React.useState<{
     scope_rows: number;
     denominator: number;
@@ -123,6 +126,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
 
   React.useEffect(() => {
     let cancelled = false;
+    lastRef.current = "";
 
     const load = async () => {
       try {
@@ -133,6 +137,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           api.findings(taskId),
         ]);
         if (cancelled) return;
+        const sig = JSON.stringify([tasksResp, statsResp, intentsResp, findingsResp]);
+        if (sig === lastRef.current) return;
+        lastRef.current = sig;
         setTask(tasksResp.tasks.find((t) => t.id === taskId) ?? null);
         setStats(statsResp);
         setIntents(intentsResp);
@@ -153,7 +160,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     };
 
     load();
-    const timer = setInterval(load, 3000);
+    const timer = setInterval(load, 5000);
     return () => {
       cancelled = true;
       clearInterval(timer);
@@ -178,15 +185,11 @@ export function OverviewTab({ taskId }: { taskId: string }) {
         <CardContent className="grid grid-cols-1 gap-4 sm:grid-cols-2">
           <div className="flex flex-col gap-1.5">
             <div className="text-xs font-medium text-muted-foreground">描述</div>
-            <p className="text-sm whitespace-pre-wrap break-words">
-              {task?.description?.trim() || "—"}
-            </p>
+            <p className="text-sm whitespace-pre-wrap break-words">{task?.description?.trim() || "—"}</p>
           </div>
           <div className="flex flex-col gap-1.5">
             <div className="text-xs font-medium text-muted-foreground">目标</div>
-            <p className="text-sm whitespace-pre-wrap break-words">
-              {task?.goal?.trim() || "—"}
-            </p>
+            <p className="text-sm whitespace-pre-wrap break-words">{task?.goal?.trim() || "—"}</p>
           </div>
         </CardContent>
       </Card>

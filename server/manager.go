@@ -37,13 +37,16 @@ type Task struct {
 	LLMProfileID *int64 `json:"llm_profile_id,omitempty"` // 指定运行本任务 planner/worker 的 LLM 配置;nil=用全局激活配置
 	Status       string `json:"status"`                   // persisted lifecycle status (done/failed/timeout 为终态；空/其它则由运行态推导)
 	// 任务级超时(见 docs/任务级超时与收尾设计.md)。DeadlineAt/FirstRunAt 为 unix 秒,0=未设/未运行。
-	TimeoutSeconds       int                    `json:"timeout_seconds"`
-	PlanHeartbeatSeconds int                    `json:"plan_heartbeat_seconds"` // planner 心跳触发间隔(秒)
-	FirstRunAt           int64                  `json:"first_run_at,omitempty"`
-	DeadlineAt           int64                  `json:"deadline_at,omitempty"`
-	Store                *pgdb.ExplorationStore `json:"-"`
-	Guard                *guard.Guard           `json:"-"`
-	notify               chan struct{}
+	TimeoutSeconds       int   `json:"timeout_seconds"`
+	PlanHeartbeatSeconds int   `json:"plan_heartbeat_seconds"` // planner 心跳触发间隔(秒)
+	FirstRunAt           int64 `json:"first_run_at,omitempty"`
+	DeadlineAt           int64 `json:"deadline_at,omitempty"`
+	// ScheduledStartAt 定时启动时刻(unix 秒;0=立即开始)。非 0 且在未来时,任务创建后不立即
+	// 启动,到点由 scheduleOrLaunch 转 created 并 launch;持久化 status='scheduled' 使重启后可重排。
+	ScheduledStartAt int64                  `json:"scheduled_start_at,omitempty"`
+	Store            *pgdb.ExplorationStore `json:"-"`
+	Guard            *guard.Guard           `json:"-"`
+	notify           chan struct{}
 
 	reportFiltering atomic.Bool // true while LLM report filter is running
 
@@ -473,14 +476,15 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		LLMProfileID:   pt.LLMProfileID,
 		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds,
 		FirstRunAt: unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
-		Store: store, Guard: guard.NewWithInterceptor(ic), notify: make(chan struct{}, 1),
+		ScheduledStartAt: unixOrZero(pt.ScheduledStartAt),
+		Store:            store, Guard: guard.NewWithInterceptor(ic), notify: make(chan struct{}, 1),
 	}
 }
 
 // CreateTask creates a task + its exploration and makes it active.
 // timeoutSeconds is the task-level wall-clock budget (0 = 不限时).
-func (m *Manager) CreateTask(description, goal string, llmProfileID *int64, timeoutSeconds, planHeartbeatSeconds int) (*Task, error) {
-	pt, err := m.pg.CreateTask(description, goal, llmProfileID, timeoutSeconds, planHeartbeatSeconds)
+func (m *Manager) CreateTask(description, goal string, llmProfileID *int64, timeoutSeconds, planHeartbeatSeconds int, scheduledStartAt *time.Time) (*Task, error) {
+	pt, err := m.pg.CreateTask(description, goal, llmProfileID, timeoutSeconds, planHeartbeatSeconds, scheduledStartAt)
 	if err != nil {
 		return nil, err
 	}

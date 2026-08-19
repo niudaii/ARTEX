@@ -33,14 +33,7 @@ import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   Sheet,
   SheetClose,
@@ -51,18 +44,8 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-import {
-  Collapsible,
-  CollapsibleContent,
-  CollapsibleTrigger,
-} from "@/components/ui/collapsible";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { TablePagination } from "@/components/table-pagination";
 import { api } from "@/lib/api";
 import { isTerminalTaskStatus } from "@/lib/status";
@@ -129,7 +112,7 @@ function taskDuration(task: Task, nowSec: number): number {
       ? nowSec
       : task.completed_unix && task.completed_unix > 0
         ? task.completed_unix
-        : task.last_activity_unix ?? 0;
+        : (task.last_activity_unix ?? 0);
   return end > start ? end - start : 0;
 }
 
@@ -153,49 +136,42 @@ const STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
 
 export default function TasksPage() {
   const [tasks, setTasks] = React.useState<Task[]>([]);
+  const [total, setTotal] = React.useState(0);
   const [query, setQuery] = React.useState("");
+  const [debouncedQuery, setDebouncedQuery] = React.useState("");
   const [statusFilter, setStatusFilter] = React.useState<TaskStatus | "all">("all");
   const [page, setPage] = React.useState(1);
   const [pageSize, setPageSize] = React.useState(20);
   const [nowSec, setNowSec] = React.useState(() => Math.floor(Date.now() / 1000));
 
-  const filtered = React.useMemo(() => {
-    const q = query.trim().toLowerCase();
-    return tasks.filter((t) => {
-      if (statusFilter !== "all" && t.status !== statusFilter) return false;
-      if (!q) return true;
-      return (
-        t.description.toLowerCase().includes(q) ||
-        t.goal.toLowerCase().includes(q) ||
-        t.id.toLowerCase().includes(q)
-      );
-    });
-  }, [tasks, query, statusFilter]);
+  // debounce the search box so typing doesn't fire a server query per keystroke;
+  // commit the term + reset to page 1 once the user pauses.
+  React.useEffect(() => {
+    const t = setTimeout(() => {
+      setDebouncedQuery(query);
+      setPage(1);
+    }, 300);
+    return () => clearTimeout(t);
+  }, [query]);
 
-  // reset to page 1 whenever filters change
-  React.useEffect(() => { setPage(1); }, [query, statusFilter]);
-
-  const paginated = React.useMemo(
-    () => filtered.slice((page - 1) * pageSize, page * pageSize),
-    [filtered, page, pageSize],
-  );
-
-  // lastRef holds the previous poll's serialized payload: the list is re-fetched every
-  // POLL_MS but usually comes back unchanged, and setTasks on an identical payload would
-  // re-render the whole page for nothing. Bail out when it matches.
+  // lastRef holds the previous poll serialized payload: the list is re-fetched every
+  // POLL_MS but usually comes back unchanged, and setTasks on an identical payload
+  // would re-render the whole page for nothing. Bail out when it matches.
   const lastRef = React.useRef<string>("");
 
   const load = React.useCallback(() => {
-    api.tasks()
+    api
+      .tasks({ page, pageSize, status: statusFilter, query: debouncedQuery })
       .then((r) => {
         const next = r.tasks.map((t) => (t.id === r.active ? { ...t, active: true } : t));
-        const sig = JSON.stringify(next);
+        const sig = JSON.stringify([next, r.total]);
         if (sig === lastRef.current) return;
         lastRef.current = sig;
         setTasks(next);
+        setTotal(r.total ?? r.tasks.length);
       })
       .catch(() => {});
-  }, []);
+  }, [page, pageSize, statusFilter, debouncedQuery]);
 
   React.useEffect(() => {
     load();
@@ -215,15 +191,21 @@ export default function TasksPage() {
     return () => clearInterval(i);
   }, [hasRunning]);
 
-  const deleteTask = React.useCallback(async (id: string) => {
-    try {
-      await api.deleteTask(id);
-      toast.success("任务已删除（全局资产图保留）");
-      load();
-    } catch (e) {
-      toast.error("删除失败：" + (e as Error).message);
-    }
-  }, [load]);
+  const deleteTask = React.useCallback(
+    async (id: string) => {
+      try {
+        await api.deleteTask(id);
+        toast.success("任务已删除（全局资产图保留）");
+        load();
+      } catch (e) {
+        toast.error("删除失败：" + (e as Error).message);
+      }
+    },
+    [load],
+  );
+
+  const emptyHint =
+    debouncedQuery || statusFilter !== "all" ? "没有匹配的任务。" : "暂无任务，点击右上角「新建任务」开始。";
 
   return (
     <Card>
@@ -248,7 +230,13 @@ export default function TasksPage() {
               </button>
             )}
           </div>
-          <Select value={statusFilter} onValueChange={(v) => setStatusFilter(v as TaskStatus | "all")}>
+          <Select
+            value={statusFilter}
+            onValueChange={(v) => {
+              setStatusFilter(v as TaskStatus | "all");
+              setPage(1);
+            }}
+          >
             <SelectTrigger className="w-36">
               <SelectValue placeholder="状态" />
             </SelectTrigger>
@@ -261,19 +249,13 @@ export default function TasksPage() {
               ))}
             </SelectContent>
           </Select>
-          <span className="text-muted-foreground text-xs tabular-nums">
-            {filtered.length}/{tasks.length} 条
-          </span>
+          <span className="text-muted-foreground text-xs tabular-nums">{total} 条</span>
           <CreateTaskSheet onCreated={load} />
         </div>
 
         {tasks.length === 0 ? (
           <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
-            暂无任务，点击右上角「新建任务」开始。
-          </div>
-        ) : filtered.length === 0 ? (
-          <div className="text-muted-foreground mx-4 flex items-center justify-center rounded-lg border border-dashed py-20 text-sm lg:mx-6">
-            没有匹配的任务。
+            {emptyHint}
           </div>
         ) : (
           <Table className="**:data-[slot='table-cell']:px-4 **:data-[slot='table-head']:px-4">
@@ -287,11 +269,13 @@ export default function TasksPage() {
                 <TableHead className="text-right">创建时间</TableHead>
                 <TableHead className="text-right">运行时长</TableHead>
                 <TableHead className="text-right">Token</TableHead>
-                <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">操作</TableHead>
+                <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">
+                  操作
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
-              {paginated.map((task) => (
+              {tasks.map((task) => (
                 <TaskRow
                   key={task.id}
                   task={task}
@@ -307,7 +291,7 @@ export default function TasksPage() {
         <TablePagination
           page={page}
           pageSize={pageSize}
-          total={filtered.length}
+          total={total}
           onPageChange={setPage}
           onPageSizeChange={setPageSize}
         />
@@ -316,10 +300,6 @@ export default function TasksPage() {
   );
 }
 
-// TaskRow renders one row of the task table. Memoized so the per-second 运行时长 tick and
-// the POLL_MS list refresh only re-render the rows whose data actually moved — a table page
-// is 20 rows × (StatusBadge + Link + a Radix AlertDialog tree), far too heavy to rebuild
-// wholesale on every parent render.
 const TaskRow = React.memo(function TaskRow({
   task,
   nowSec,
@@ -339,9 +319,7 @@ const TaskRow = React.memo(function TaskRow({
           <span className="truncate" title={task.description}>
             {task.description}
           </span>
-          {task.active && (
-            <StarIcon className="size-4 shrink-0 fill-amber-400 text-amber-400" />
-          )}
+          {task.active && <StarIcon className="size-4 shrink-0 fill-amber-400 text-amber-400" />}
         </div>
       </TableCell>
       <TableCell className="text-muted-foreground max-w-xs truncate">{task.goal}</TableCell>
@@ -353,9 +331,11 @@ const TaskRow = React.memo(function TaskRow({
         )}
       </TableCell>
       <TableCell className="text-muted-foreground text-center text-xs tabular-nums">
-        {typeof task.goals_total === "number" && task.goals_total > 0
-          ? `${task.goals_met}/${task.goals_total}`
-          : <span className="text-muted-foreground">—</span>}
+        {typeof task.goals_total === "number" && task.goals_total > 0 ? (
+          `${task.goals_met}/${task.goals_total}`
+        ) : (
+          <span className="text-muted-foreground">—</span>
+        )}
       </TableCell>
       <TableCell className="text-muted-foreground text-right text-xs whitespace-nowrap tabular-nums">
         {fmtDateTime(task.created_unix)}
@@ -416,9 +396,7 @@ const TaskRow = React.memo(function TaskRow({
               </AlertDialogHeader>
               <AlertDialogFooter>
                 <AlertDialogCancel>取消</AlertDialogCancel>
-                <AlertDialogAction onClick={() => onDelete(task.id)}>
-                  删除
-                </AlertDialogAction>
+                <AlertDialogAction onClick={() => onDelete(task.id)}>删除</AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
@@ -449,7 +427,10 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
 
   // load LLM profiles once for the create-task profile picker.
   React.useEffect(() => {
-    api.llmProfiles().then(setProfiles).catch(() => setProfiles([]));
+    api
+      .llmProfiles()
+      .then(setProfiles)
+      .catch(() => setProfiles([]));
   }, []);
 
   // pickFiles uploads the chosen files into this draft's staging dir and appends their
@@ -459,8 +440,7 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
     // crypto.randomUUID 仅在安全上下文可用(https/localhost);经 IP+http 访问时降级。
     if (!draftIdRef.current) {
       draftIdRef.current =
-        globalThis.crypto?.randomUUID?.() ??
-        `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
+        globalThis.crypto?.randomUUID?.() ?? `d${Date.now().toString(36)}${Math.random().toString(36).slice(2, 10)}`;
     }
     setUploading(true);
     try {
@@ -502,156 +482,149 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
   }
 
   return (
-      <Sheet open={open} onOpenChange={setOpen}>
-        <SheetTrigger asChild>
-          <Button size="sm" className="ml-auto">
-            <PlusIcon /> 新建任务
-          </Button>
-        </SheetTrigger>
-        {/* 45vw 宽的右侧抽屉:整屏高度可滚动,长表单不再受弹窗高度限制。窄屏退化为全宽。
+    <Sheet open={open} onOpenChange={setOpen}>
+      <SheetTrigger asChild>
+        <Button size="sm" className="ml-auto">
+          <PlusIcon /> 新建任务
+        </Button>
+      </SheetTrigger>
+      {/* 45vw 宽的右侧抽屉:整屏高度可滚动,长表单不再受弹窗高度限制。窄屏退化为全宽。
             内容为 flex 列:头/脚固定,中间字段区 flex-1 独立滚动。 */}
-        <SheetContent
-          side="right"
-          className="w-full! max-w-none! gap-0 p-0 sm:w-[45vw]! sm:max-w-[45vw]!"
-        >
-          <SheetHeader className="border-b p-6">
-            <SheetTitle>新建任务</SheetTitle>
-            <SheetDescription>填写测试对象与目标，高级参数可按需展开。</SheetDescription>
-          </SheetHeader>
+      <SheetContent side="right" className="w-full! max-w-none! gap-0 p-0 sm:w-[45vw]! sm:max-w-[45vw]!">
+        <SheetHeader className="border-b p-6">
+          <SheetTitle>新建任务</SheetTitle>
+          <SheetDescription>填写测试对象与目标，高级参数可按需展开。</SheetDescription>
+        </SheetHeader>
 
-          <div className="flex-1 overflow-y-auto p-6">
-            <div className="grid gap-5">
-              <div className="grid gap-2">
-                <Label htmlFor="description">描述</Label>
-                <Textarea
-                  id="description"
-                  className="min-h-32"
-                  placeholder="测试对象与背景，例如：测试 example.com 这个站点"
-                  value={description}
-                  onChange={(e) => setDescription(e.target.value)}
+        <div className="flex-1 overflow-y-auto p-6">
+          <div className="grid gap-5">
+            <div className="grid gap-2">
+              <Label htmlFor="description">描述</Label>
+              <Textarea
+                id="description"
+                className="min-h-32"
+                placeholder="测试对象与背景，例如：测试 example.com 这个站点"
+                value={description}
+                onChange={(e) => setDescription(e.target.value)}
+              />
+              {/* 上传文件(可多选):暂存到 drafts/,把绝对路径追加进上方描述,worker 据此 Read/Bash 打开。 */}
+              <div className="flex flex-wrap items-center gap-2">
+                <input
+                  ref={fileInputRef}
+                  type="file"
+                  multiple
+                  className="hidden"
+                  onChange={(e) => void pickFiles(e.target.files)}
                 />
-                {/* 上传文件(可多选):暂存到 drafts/,把绝对路径追加进上方描述,worker 据此 Read/Bash 打开。 */}
-                <div className="flex flex-wrap items-center gap-2">
-                  <input
-                    ref={fileInputRef}
-                    type="file"
-                    multiple
-                    className="hidden"
-                    onChange={(e) => void pickFiles(e.target.files)}
-                  />
-                  <Button
-                    type="button"
-                    variant="outline"
-                    size="sm"
-                    onClick={() => fileInputRef.current?.click()}
-                    disabled={uploading}
-                  >
-                    {uploading ? (
-                      <Loader2Icon className="animate-spin" />
-                    ) : (
-                      <PaperclipIcon />
-                    )}
-                    上传文件
-                  </Button>
-                  <span className="text-muted-foreground text-xs">
-                    {uploadCount > 0
-                      ? `已上传 ${uploadCount} 个文件，绝对路径已追加到描述末尾（可编辑）`
-                      : "可多选；上传后把文件的绝对路径追加到描述，供 worker 用 Read/Bash 打开"}
-                  </span>
-                </div>
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={uploading}
+                >
+                  {uploading ? <Loader2Icon className="animate-spin" /> : <PaperclipIcon />}
+                  上传文件
+                </Button>
+                <span className="text-muted-foreground text-xs">
+                  {uploadCount > 0
+                    ? `已上传 ${uploadCount} 个文件，绝对路径已追加到描述末尾（可编辑）`
+                    : "可多选；上传后把文件的绝对路径追加到描述，供 worker 用 Read/Bash 打开"}
+                </span>
               </div>
-              <div className="grid gap-2">
-                <Label htmlFor="goal">目标</Label>
-                <Textarea
-                  id="goal"
-                  className="min-h-32"
-                  placeholder="要达成什么，例如：拿下后台管理权限、获取服务器权限"
-                  value={goal}
-                  onChange={(e) => setGoal(e.target.value)}
-                />
-              </div>
-              <div className="grid gap-2">
-                <Label htmlFor="llm-profile">LLM 配置</Label>
-                <Select value={llmProfile} onValueChange={setLlmProfile}>
-                  <SelectTrigger id="llm-profile">
-                    <SelectValue />
-                  </SelectTrigger>
-                  <SelectContent>
-                    <SelectItem value={ACTIVE_PROFILE}>使用激活配置（默认）</SelectItem>
-                    {profiles.map((p) => (
-                      <SelectItem key={p.id} value={String(p.id)}>
-                        {p.name}
-                        {p.is_default ? "（激活）" : ""} · {p.model}
-                      </SelectItem>
-                    ))}
-                  </SelectContent>
-                </Select>
-                <p className="text-muted-foreground text-xs">
-                  本任务的 planner/worker 使用所选配置运行；对话仍用激活配置。
-                </p>
-              </div>
-
-              {/* 高级参数默认折叠:超时/心跳/首个意图,展开才占空间,常用路径保持清爽。 */}
-              <Collapsible>
-                <CollapsibleTrigger className="group flex w-full items-center gap-2 border-t pt-4 text-sm font-medium">
-                  <ChevronRightIcon className="text-muted-foreground size-4 transition-transform group-data-[state=open]:rotate-90" />
-                  高级设置
-                  <span className="text-muted-foreground ml-auto text-xs font-normal">
-                    超时 · 心跳 · 首个意图
-                  </span>
-                </CollapsibleTrigger>
-                <CollapsibleContent className="grid gap-5 pt-5">
-                  <div className="grid gap-2">
-                    <Label htmlFor="timeout-min">任务超时（分钟，可选）</Label>
-                    <Input
-                      id="timeout-min"
-                      type="number"
-                      min={0}
-                      className="w-40"
-                      placeholder="留空 = 不限时"
-                      value={timeoutMin}
-                      onChange={(e) => setTimeoutMin(e.target.value)}
-                    />
-                    <p className="text-muted-foreground text-xs">
-                      到点后触发优雅收尾（各 agent 写回 + planner 终局判定），任务进入 timeout 终态。
-                    </p>
-                  </div>
-                  <div className="grid gap-2">
-                    <Label htmlFor="heartbeat-min">planner 心跳（分钟）</Label>
-                    <Input
-                      id="heartbeat-min"
-                      type="number"
-                      min={10}
-                      className="w-40"
-                      placeholder="默认 10"
-                      value={heartbeatMin}
-                      onChange={(e) => setHeartbeatMin(e.target.value)}
-                    />
-                    <p className="text-muted-foreground text-xs">
-                      距上轮规划结束/任务开始满该时长且期间无触发，自动触发一轮规划（兜底卡死 + 唤醒去监督在跑的 worker）。下限 10 分钟。
-                    </p>
-                  </div>
-                  <div className="grid gap-2">
-                    <label className="flex items-center gap-2 text-sm">
-                      <Checkbox checked={seedFirstIntent} onCheckedChange={(v) => setSeedFirstIntent(!!v)} />
-                      直接下发首个意图（描述+目标）
-                    </label>
-                    <p className="text-muted-foreground text-xs">
-                      开启后创建即把「描述+目标」作为一条意图下发，worker 免等首轮规划直接开跑，跑完再由 planner 接手判定/补充。CTF 等常一个 work 直接解决的场景推荐开启；关闭则走标准的先规划再执行。
-                    </p>
-                  </div>
-                </CollapsibleContent>
-              </Collapsible>
             </div>
-          </div>
+            <div className="grid gap-2">
+              <Label htmlFor="goal">目标</Label>
+              <Textarea
+                id="goal"
+                className="min-h-32"
+                placeholder="要达成什么，例如：拿下后台管理权限、获取服务器权限"
+                value={goal}
+                onChange={(e) => setGoal(e.target.value)}
+              />
+            </div>
+            <div className="grid gap-2">
+              <Label htmlFor="llm-profile">LLM 配置</Label>
+              <Select value={llmProfile} onValueChange={setLlmProfile}>
+                <SelectTrigger id="llm-profile">
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  <SelectItem value={ACTIVE_PROFILE}>使用激活配置（默认）</SelectItem>
+                  {profiles.map((p) => (
+                    <SelectItem key={p.id} value={String(p.id)}>
+                      {p.name}
+                      {p.is_default ? "（激活）" : ""} · {p.model}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+              <p className="text-muted-foreground text-xs">
+                本任务的 planner/worker 使用所选配置运行；对话仍用激活配置。
+              </p>
+            </div>
 
-          <SheetFooter className="flex-row justify-end gap-2 border-t p-4">
-            <SheetClose asChild>
-              <Button variant="outline">取消</Button>
-            </SheetClose>
-            <Button onClick={createTask}>创建</Button>
-          </SheetFooter>
-        </SheetContent>
-      </Sheet>
+            {/* 高级参数默认折叠:超时/心跳/首个意图,展开才占空间,常用路径保持清爽。 */}
+            <Collapsible>
+              <CollapsibleTrigger className="group flex w-full items-center gap-2 border-t pt-4 text-sm font-medium">
+                <ChevronRightIcon className="text-muted-foreground size-4 transition-transform group-data-[state=open]:rotate-90" />
+                高级设置
+                <span className="text-muted-foreground ml-auto text-xs font-normal">超时 · 心跳 · 首个意图</span>
+              </CollapsibleTrigger>
+              <CollapsibleContent className="grid gap-5 pt-5">
+                <div className="grid gap-2">
+                  <Label htmlFor="timeout-min">任务超时（分钟，可选）</Label>
+                  <Input
+                    id="timeout-min"
+                    type="number"
+                    min={0}
+                    className="w-40"
+                    placeholder="留空 = 不限时"
+                    value={timeoutMin}
+                    onChange={(e) => setTimeoutMin(e.target.value)}
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    到点后触发优雅收尾（各 agent 写回 + planner 终局判定），任务进入 timeout 终态。
+                  </p>
+                </div>
+                <div className="grid gap-2">
+                  <Label htmlFor="heartbeat-min">planner 心跳（分钟）</Label>
+                  <Input
+                    id="heartbeat-min"
+                    type="number"
+                    min={10}
+                    className="w-40"
+                    placeholder="默认 10"
+                    value={heartbeatMin}
+                    onChange={(e) => setHeartbeatMin(e.target.value)}
+                  />
+                  <p className="text-muted-foreground text-xs">
+                    距上轮规划结束/任务开始满该时长且期间无触发，自动触发一轮规划（兜底卡死 + 唤醒去监督在跑的
+                    worker）。下限 10 分钟。
+                  </p>
+                </div>
+                <div className="grid gap-2">
+                  <label className="flex items-center gap-2 text-sm">
+                    <Checkbox checked={seedFirstIntent} onCheckedChange={(v) => setSeedFirstIntent(!!v)} />
+                    直接下发首个意图（描述+目标）
+                  </label>
+                  <p className="text-muted-foreground text-xs">
+                    开启后创建即把「描述+目标」作为一条意图下发，worker 免等首轮规划直接开跑，跑完再由 planner
+                    接手判定/补充。CTF 等常一个 work 直接解决的场景推荐开启；关闭则走标准的先规划再执行。
+                  </p>
+                </div>
+              </CollapsibleContent>
+            </Collapsible>
+          </div>
+        </div>
+
+        <SheetFooter className="flex-row justify-end gap-2 border-t p-4">
+          <SheetClose asChild>
+            <Button variant="outline">取消</Button>
+          </SheetClose>
+          <Button onClick={createTask}>创建</Button>
+        </SheetFooter>
+      </SheetContent>
+    </Sheet>
   );
 }

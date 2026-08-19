@@ -312,6 +312,7 @@ func (t *Traffic) record(f *mproxy.Flow) {
 	parts = append(parts, method, id)
 	exDir := filepath.Join(parts...)
 	if err := os.MkdirAll(exDir, 0o755); err != nil {
+		log.Printf("[traffic] 写入失败：创建目录 %s 出错（磁盘满或权限问题，该条流量丢弃）：%v", exDir, err)
 		return
 	}
 
@@ -321,17 +322,25 @@ func (t *Traffic) record(f *mproxy.Flow) {
 
 	reqTxt := fmt.Sprintf("%s %s %s\n%s\n%s", method, f.Request.URL.RequestURI(), f.Request.Proto, headerLines(f.Request.Header), reqBody)
 	respTxt := fmt.Sprintf("HTTP %d\n%s\n%s", f.Response.StatusCode, headerLines(f.Response.Header), respBody)
-	_ = os.WriteFile(filepath.Join(exDir, "request.http"), []byte(reqTxt), 0o644)
-	_ = os.WriteFile(filepath.Join(exDir, "response.http"), []byte(respTxt), 0o644)
+	if err := os.WriteFile(filepath.Join(exDir, "request.http"), []byte(reqTxt), 0o644); err != nil {
+		log.Printf("[traffic] 写入失败：request.http 出错 %s：%v", exDir, err)
+	}
+	if err := os.WriteFile(filepath.Join(exDir, "response.http"), []byte(respTxt), 0o644); err != nil {
+		log.Printf("[traffic] 写入失败：response.http 出错 %s：%v", exDir, err)
+	}
 	meta := fmt.Sprintf(`{"id":%q,"host":%q,"method":%q,"url":%q,"template":%q,"status":%d,"content_type":%q}`,
 		id, host, method, f.Request.URL.String(), tmpl, f.Response.StatusCode, ct)
-	_ = os.WriteFile(filepath.Join(exDir, "meta.json"), []byte(meta), 0o644)
+	if err := os.WriteFile(filepath.Join(exDir, "meta.json"), []byte(meta), 0o644); err != nil {
+		log.Printf("[traffic] 写入失败：meta.json 出错 %s：%v", exDir, err)
+	}
 
 	rel, _ := filepath.Rel(t.dir, exDir)
-	_, _ = t.db.Exec(`INSERT OR REPLACE INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
+	if _, err := t.db.Exec(`INSERT OR REPLACE INTO exchanges(id,ts,host,method,url_template,url,status,content_type,req_len,resp_len,path)
 VALUES(?,?,?,?,?,?,?,?,?,?,?)`,
 		id, now.Unix(), host, method, tmpl, f.Request.URL.String(), f.Response.StatusCode, ct,
-		len(f.Request.Body), len(f.Response.Body), rel)
+		len(f.Request.Body), len(f.Response.Body), rel); err != nil {
+		log.Printf("[traffic] 索引失败：写入 SQLite exchanges 出错（%s %s）：%v", host, f.Request.URL.String(), err)
+	}
 }
 
 // bodyOrBlob returns the body inline if small, else stores it content-addressed
@@ -683,8 +692,12 @@ func (t *Traffic) Get(id string) (req, resp string, err error) {
 	if err = t.db.QueryRow(`SELECT path FROM exchanges WHERE id=?`, id).Scan(&rel); err != nil {
 		return "", "", err
 	}
+	respPath := filepath.Join(t.dir, rel, "response.http")
+	pb, err := os.ReadFile(respPath)
+	if err != nil {
+		return "", "", fmt.Errorf("流量响应文件缺失（%s，可能被删除或磁盘异常）：%w", rel, err)
+	}
 	rb, _ := os.ReadFile(filepath.Join(t.dir, rel, "request.http"))
-	pb, _ := os.ReadFile(filepath.Join(t.dir, rel, "response.http"))
 	return string(rb), string(pb), nil
 }
 
@@ -842,7 +855,7 @@ func (t *Traffic) gcBlobs() error {
 // query returns one page of exchange metadata filtered by host and/or a url
 // substring. Default page size is intentionally small (3) to keep tool results
 // lightweight and capped at 10; page is 0-based (page*limit offset).
-func (t *Traffic) query(host, contains string, page, limit int) ([]ExchangeMeta, error) {
+func (t *Traffic) query(host, contains string, statusMin, page, limit int) ([]ExchangeMeta, error) {
 	if limit <= 0 {
 		limit = 3
 	}
@@ -858,9 +871,13 @@ func (t *Traffic) query(host, contains string, page, limit int) ([]ExchangeMeta,
 		q += ` AND host=?`
 		args = append(args, host)
 	}
+	if statusMin > 0 {
+		q += ` AND status >= ?`
+		args = append(args, statusMin)
+	}
 	if contains != "" {
-		q += ` AND (url LIKE ? OR url_template LIKE ?)`
-		args = append(args, "%"+contains+"%", "%"+contains+"%")
+		q += ` AND (url LIKE ? OR url_template LIKE ? OR content_type LIKE ?)`
+		args = append(args, "%"+contains+"%", "%"+contains+"%", "%"+contains+"%")
 	}
 	q += ` ORDER BY ts DESC LIMIT ? OFFSET ?`
 	args = append(args, limit, page*limit)
@@ -890,14 +907,15 @@ func (t *Traffic) Tools() []actool.CoreTool {
 
 	search := actool.Build(actool.Spec{
 		Name:        "traffic_search",
-		Description: "查询记录代理已抓取的目标流量（必须指定 host，可再按 URL 子串过滤）。仅返回极轻量索引(id/method/url/status/resp_len)，不含任何响应内容。默认只返回 3 条、每页最多 10 条；结果多时用 page 翻页（page=0 起）；要看某条的请求/响应原文用 traffic_get(id)。回看已访问资源、找端点先用它，避免重复 curl 同一 URL。",
+		Description: "查询记录代理已抓取的目标流量（必须指定 host，可再按 URL 子串过滤）。仅返回极轻量索引(id/method/url/status/resp_len)，不含任何响应内容。默认只返回 3 条、每页最多 10 条；结果多时用 page 翻页（page=0 起）；要看某条的请求/响应原文用 traffic_get(id)。回看已访问资源、找端点先用它，避免重复 curl 同一 URL。排障时可用 status_min 过滤错误码（如 500 取所有 5xx，即环境/服务端报错）。",
 		Schema: map[string]any{
 			"type": "object",
 			"properties": map[string]any{
-				"host":     map[string]any{"type": "string", "description": "按主机过滤（必填，如 '107.172.96.177:8082'）"},
-				"contains": map[string]any{"type": "string", "description": "URL 子串过滤（可选，如 'api' / 'login'）"},
-				"limit":    map[string]any{"type": "integer", "description": "每页条数，默认 3，最大 10"},
-				"page":     map[string]any{"type": "integer", "description": "页码，从 0 开始，默认 0（按 ts 倒序分页）"},
+				"host":       map[string]any{"type": "string", "description": "按主机过滤（必填，如 '107.172.96.177:8082'）"},
+				"contains":   map[string]any{"type": "string", "description": "URL 子串过滤（可选，如 'api' / 'login'）"},
+				"status_min": map[string]any{"type": "integer", "description": "按最小 HTTP 状态码过滤（可选，如 500 只看 5xx 报错、400 只看 4xx）"},
+				"limit":      map[string]any{"type": "integer", "description": "每页条数，默认 3，最大 10"},
+				"page":       map[string]any{"type": "integer", "description": "页码，从 0 开始，默认 0（按 ts 倒序分页）"},
 			},
 			"required": []any{"host"},
 		},
@@ -906,6 +924,7 @@ func (t *Traffic) Tools() []actool.CoreTool {
 		Run: func(_ context.Context, in json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
 			var a struct {
 				Host, Contains string
+				StatusMin      int
 				Limit          int
 				Page           int
 			}
@@ -913,7 +932,7 @@ func (t *Traffic) Tools() []actool.CoreTool {
 			if strings.TrimSpace(a.Host) == "" {
 				return actool.Errorf("host 为必填参数：请指定要查询的主机（如 '107.172.96.177:8082'），避免全库扫描。"), nil
 			}
-			rows, err := t.query(a.Host, a.Contains, a.Page, a.Limit)
+			rows, err := t.query(a.Host, a.Contains, a.StatusMin, a.Page, a.Limit)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
