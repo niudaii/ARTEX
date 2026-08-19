@@ -70,7 +70,7 @@ func preview(s string, n int) string {
 // provider 恢复的时间；重试期间若被暂停/终止/取消则立即让位给对应分支处理。
 const (
 	modelErrorRetries      = 2               // model_error 收场后额外重试的次数
-	modelErrorRetryBackoff = 3 * time.Second // 每次重试前的退避
+	modelErrorRetryBackoff = 3 * time.Second // 重试退避基数，按 2^(attempt-1) 指数增长（3s→6s）错开并发重试
 )
 
 // Engine drives the event-driven exploration loop with real LLM agents
@@ -674,9 +674,10 @@ func (e *Engine) workerLoop(ctx context.Context, t *Task, name string) {
 		for attempt := 1; attempt <= modelErrorRetries &&
 			reason == harness.ReasonModelError &&
 			workCtx.Err() == nil && ectx.Err() == nil && !e.IsPaused(t.ID) && !e.isSettling(t.ID); attempt++ {
+			backoff := modelErrorRetryBackoff * time.Duration(1<<(attempt-1))
 			log.Printf("[worker %s] task %s 意图 #%d model_error 收场，%v 后重试 (%d/%d)",
-				name, t.ID, intent.ID, modelErrorRetryBackoff, attempt, modelErrorRetries)
-			if sleepCtx(workCtx, modelErrorRetryBackoff) {
+				name, t.ID, intent.ID, backoff, attempt, modelErrorRetries)
+			if sleepCtx(workCtx, backoff) {
 				break // 退避期间被取消（终止/暂停）→ 交给下方分支处理
 			}
 			reason, wrote, err = worker.Execute(workCtx, name, wTaskID, e.m.assets, t.Store, intent, hooks, emit, e.m.enrich, t.NotifyFinding)
