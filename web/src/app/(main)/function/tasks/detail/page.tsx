@@ -97,7 +97,7 @@ function TaskDetailInner() {
       setPaused(next);
       toast.success(next ? "已暂停探索" : "已恢复探索");
     } catch (e) {
-      toast.error("操作失败：" + (e as Error).message);
+      toast.error(`操作失败：${(e as Error).message}`);
     }
   }
 

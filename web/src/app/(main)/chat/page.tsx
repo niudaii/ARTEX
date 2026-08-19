@@ -1,8 +1,21 @@
 "use client";
 
 import * as React from "react";
+
+import {
+  Bot,
+  ChevronDownIcon,
+  Loader2Icon,
+  MessageSquareIcon,
+  PaperclipIcon,
+  PlusIcon,
+  SendIcon,
+  Square,
+  Trash2Icon,
+  XIcon,
+  ZapIcon,
+} from "lucide-react";
 import { toast } from "sonner";
-import { Bot, ChevronDownIcon, Loader2Icon, PaperclipIcon, PlusIcon, SendIcon, Square, Trash2Icon, XIcon, ZapIcon } from "lucide-react";
 
 import { TodoPopover } from "@/components/todo-popover";
 import { Transcript } from "@/components/transcript";
@@ -22,6 +35,7 @@ import { Button } from "@/components/ui/button";
 import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { Activity, Agent, ChatAttachment, Conversation, LLMProfile } from "@/lib/types";
@@ -36,13 +50,13 @@ function fmtBytes(n: number): string {
 
 // fmtTokens renders a compact token count (1234 → 1.2k, 2_000_000 → 2M).
 function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + "M";
-  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
   return String(n);
 }
 
 // fmtDuration renders an elapsed milliseconds span compactly (90s → 1m30s).
-function fmtDuration(ms: number): string {
+function _fmtDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
   if (s < 60) return `${s}s`;
   const m = Math.floor(s / 60);
@@ -305,7 +319,7 @@ function DraftChat({
       await api.sendConversationMessage(c.id, msg);
       onStarted(c);
     } catch (e) {
-      toast.error("发送失败：" + (e as Error).message);
+      toast.error(`发送失败：${(e as Error).message}`);
       setSending(false);
     }
   }
@@ -323,7 +337,7 @@ function DraftChat({
       const r = await api.chatUpload("session", `conv-${c.id}`, Array.from(files));
       onStarted(c, { input, attachments: r.attachments });
     } catch (e) {
-      toast.error("上传失败：" + (e as Error).message);
+      toast.error(`上传失败：${(e as Error).message}`);
       setUploading(false);
     }
   }
@@ -423,7 +437,7 @@ function ChatView({
       await api.updateConversationProfile(conv.id, id);
       onConvUpdated();
     } catch (e) {
-      toast.error("切换 LLM 失败：" + (e as Error).message);
+      toast.error(`切换 LLM 失败：${(e as Error).message}`);
     }
   }
 
@@ -550,13 +564,13 @@ function ChatView({
       vp.scrollTop = vp.scrollHeight;
       atBottomRef.current = true;
     }
-  }, [conv.id, viewport]);
+  }, [viewport]);
   // new activity → stick to bottom only if the user is already pinned there
   React.useLayoutEffect(() => {
     if (!atBottomRef.current) return;
     const vp = viewport();
     if (vp) vp.scrollTop = vp.scrollHeight;
-  }, [messages, running, viewport]);
+  }, [viewport]);
 
   // Per-conversation token total, live — same accounting as the main-agent
   // console: completed runs' `result` sum + the in-progress run's latest `usage`.
@@ -596,7 +610,7 @@ function ChatView({
       const r = await api.chatUpload("session", `conv-${conv.id}`, Array.from(files));
       setAttachments((prev) => [...prev, ...r.attachments]);
     } catch (e) {
-      toast.error("上传失败：" + (e as Error).message);
+      toast.error(`上传失败：${(e as Error).message}`);
     } finally {
       setUploading(false);
     }
@@ -617,7 +631,7 @@ function ChatView({
       setMessages((prev) => [...prev, ...r.items]);
       cursorRef.current = r.cursor;
     } catch (e) {
-      toast.error("发送失败：" + (e as Error).message);
+      toast.error(`发送失败：${(e as Error).message}`);
       setInput(msg); // restore so the user doesn't lose their text
       setAttachments(atts); // and their attachments
     } finally {
@@ -634,7 +648,7 @@ function ChatView({
     try {
       await api.stopConversation(conv.id);
     } catch (e) {
-      toast.error("停止失败：" + (e as Error).message);
+      toast.error(`停止失败：${(e as Error).message}`);
     } finally {
       setStopping(false);
     }
@@ -747,7 +761,6 @@ function ConversationItem({
     >
       {renaming ? (
         <input
-          autoFocus
           value={renameText}
           onChange={(e) => onRenameText(e.target.value)}
           onBlur={onCommitRename}
@@ -819,10 +832,12 @@ export default function ChatPage() {
   // by ChatView on mount; ids never repeat, so leftover entries are harmless).
   const [pendingByConv, setPendingByConv] = React.useState<
     Record<number, { input?: string; attachments?: ChatAttachment[] }>
- >({});
+  >({});
 
   // Collapse report-archive conversations by default; expandable on click.
   const [showArchive, setShowArchive] = React.useState(false);
+  // Mobile-only: conversation list shown as a left Sheet drawer.
+  const [mobileListOpen, setMobileListOpen] = React.useState(false);
 
   const reloadConvs = React.useCallback(() => {
     api
@@ -885,7 +900,7 @@ export default function ChatPage() {
       if (selectedId === id) setSelectedId(null);
       reloadConvs();
     } catch (e) {
-      toast.error("删除失败：" + (e as Error).message);
+      toast.error(`删除失败：${(e as Error).message}`);
     }
   }
 
@@ -902,77 +917,102 @@ export default function ChatPage() {
       await api.renameConversation(id, title);
       reloadConvs();
     } catch (e) {
-      toast.error("重命名失败：" + (e as Error).message);
+      toast.error(`重命名失败：${(e as Error).message}`);
     }
   }
+
+  // Extracted so the same JSX renders in the desktop sidebar and the mobile Sheet.
+  const conversationList = (
+    <div className="flex h-full flex-col">
+      <div className="border-b p-2">
+        <Button size="sm" className="w-full" onClick={() => setSelectedId(null)}>
+          <PlusIcon /> 新建对话
+        </Button>
+      </div>
+      <ScrollArea type="auto" className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
+        <div className="flex min-w-0 flex-col gap-0.5 p-2">
+          {convs.length === 0 && <p className="text-muted-foreground px-2 py-6 text-center text-xs">暂无对话</p>}
+          {regularConvs.map((c) => (
+            <ConversationItem
+              key={c.id}
+              conv={c}
+              agent={agents.find((a) => a.key === c.agent_key)}
+              active={selectedId === c.id}
+              renaming={renamingId === c.id}
+              renameText={renameText}
+              onSelect={() => {
+                setSelectedId(c.id);
+                setMobileListOpen(false);
+              }}
+              onStartRename={() => startRename(c)}
+              onRenameText={setRenameText}
+              onCommitRename={commitRename}
+              onDelete={() => del(c.id)}
+            />
+          ))}
+          {archiveConvs.length > 0 && (
+            <>
+              <button
+                type="button"
+                onClick={() => setShowArchive((v) => !v)}
+                className="text-muted-foreground hover:text-foreground mt-1 flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium"
+              >
+                <ChevronDownIcon className={cn("size-3 transition-transform", !showArchiveSection && "-rotate-90")} />
+                报告归档
+                <Badge variant="secondary" className="px-1 py-0 text-[10px]">
+                  {archiveConvs.length}
+                </Badge>
+              </button>
+              {showArchiveSection &&
+                archiveConvs.map((c) => (
+                  <ConversationItem
+                    key={c.id}
+                    conv={c}
+                    agent={agents.find((a) => a.key === c.agent_key)}
+                    active={selectedId === c.id}
+                    renaming={renamingId === c.id}
+                    renameText={renameText}
+                    onSelect={() => {
+                      setSelectedId(c.id);
+                      setMobileListOpen(false);
+                    }}
+                    onStartRename={() => startRename(c)}
+                    onRenameText={setRenameText}
+                    onCommitRename={commitRename}
+                    onDelete={() => del(c.id)}
+                  />
+                ))}
+            </>
+          )}
+        </div>
+      </ScrollArea>
+    </div>
+  );
 
   return (
     <div
       data-content-padding="false"
       className="flex h-[calc(100svh-3rem)] flex-col overflow-hidden p-4 md:h-[calc(100svh-4rem)] md:p-6"
     >
-      <div className="grid min-h-0 flex-1 grid-cols-[18rem_1fr] grid-rows-[minmax(0,1fr)] gap-4">
-        {/* left: conversation list */}
-        <div className="bg-card flex flex-col overflow-hidden rounded-lg border">
-          <div className="border-b p-2">
-            <Button size="sm" className="w-full" onClick={() => setSelectedId(null)}>
-              <PlusIcon /> 新建对话
-            </Button>
-          </div>
-          <ScrollArea type="auto" className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
-            <div className="flex min-w-0 flex-col gap-0.5 p-2">
-              {convs.length === 0 && <p className="text-muted-foreground px-2 py-6 text-center text-xs">暂无对话</p>}
-              {regularConvs.map((c) => (
-                <ConversationItem
-                  key={c.id}
-                  conv={c}
-                  agent={agents.find((a) => a.key === c.agent_key)}
-                  active={selectedId === c.id}
-                  renaming={renamingId === c.id}
-                  renameText={renameText}
-                  onSelect={() => setSelectedId(c.id)}
-                  onStartRename={() => startRename(c)}
-                  onRenameText={setRenameText}
-                  onCommitRename={commitRename}
-                  onDelete={() => del(c.id)}
-                />
-              ))}
-              {archiveConvs.length > 0 && (
-                <>
-                  <button
-                    type="button"
-                    onClick={() => setShowArchive((v) => !v)}
-                    className="text-muted-foreground hover:text-foreground mt-1 flex items-center gap-1 rounded-md px-2 py-1 text-xs font-medium"
-                  >
-                    <ChevronDownIcon
-                      className={cn("size-3 transition-transform", !showArchiveSection && "-rotate-90")}
-                    />
-                    报告归档
-                    <Badge variant="secondary" className="px-1 py-0 text-[10px]">
-                      {archiveConvs.length}
-                    </Badge>
-                  </button>
-                  {showArchiveSection &&
-                    archiveConvs.map((c) => (
-                      <ConversationItem
-                        key={c.id}
-                        conv={c}
-                        agent={agents.find((a) => a.key === c.agent_key)}
-                        active={selectedId === c.id}
-                        renaming={renamingId === c.id}
-                        renameText={renameText}
-                        onSelect={() => setSelectedId(c.id)}
-                        onStartRename={() => startRename(c)}
-                        onRenameText={setRenameText}
-                        onCommitRename={commitRename}
-                        onDelete={() => del(c.id)}
-                      />
-                    ))}
-                </>
-              )}
-            </div>
-          </ScrollArea>
+      <div className="grid min-h-0 flex-1 grid-cols-1 grid-rows-[minmax(0,1fr)] gap-4 lg:grid-cols-[18rem_1fr]">
+        {/* left: conversation list (desktop only; mobile uses Sheet below) */}
+        <div className="hidden flex-col overflow-hidden rounded-lg border bg-card lg:flex">{conversationList}</div>
+
+        {/* Mobile: conversation list toggle + drawer */}
+        <div className="flex items-center gap-2 lg:hidden">
+          <Button variant="outline" size="sm" className="w-full" onClick={() => setMobileListOpen(true)}>
+            <MessageSquareIcon /> 对话列表
+          </Button>
         </div>
+        <Sheet open={mobileListOpen} onOpenChange={setMobileListOpen}>
+          <SheetContent side="left" className="w-[18rem] max-w-[85vw] gap-0 p-0">
+            <SheetHeader className="sr-only">
+              <SheetTitle>对话列表</SheetTitle>
+              <SheetDescription>选择或新建对话</SheetDescription>
+            </SheetHeader>
+            {conversationList}
+          </SheetContent>
+        </Sheet>
 
         {/* right: chat view */}
         <div className="bg-card flex min-w-0 flex-col overflow-hidden rounded-lg border">

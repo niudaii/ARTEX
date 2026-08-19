@@ -6,8 +6,8 @@ import { usePathname } from "next/navigation";
 
 import { Separator } from "@/components/ui/separator";
 import { SidebarTrigger } from "@/components/ui/sidebar";
-import { api } from "@/lib/api";
 import { useCurrentUser } from "@/hooks/use-current-user";
+import { api } from "@/lib/api";
 import { cn } from "@/lib/utils";
 
 import { AccountSwitcher } from "./sidebar/account-switcher";
@@ -62,9 +62,13 @@ export function MainContent({ children }: { children: ReactNode }) {
           </div>
           <div className="flex items-center gap-2">
             {version && (
-              <span className="text-muted-foreground text-xs font-medium tabular-nums">版本·v{version}</span>
+              <span className="hidden text-muted-foreground text-xs font-medium tabular-nums lg:inline">
+                版本·v{version}
+              </span>
             )}
-            <LayoutControls />
+            <div className="hidden lg:block">
+              <LayoutControls />
+            </div>
             <ThemeSwitcher />
             <AccountSwitcher users={[currentUser]} />
           </div>

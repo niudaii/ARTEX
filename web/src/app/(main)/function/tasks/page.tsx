@@ -119,9 +119,8 @@ function fmtDuration(sec: number): string {
 function taskDuration(task: Task, nowSec: number): number {
   // 定时任务:从 scheduled_start_unix(开始时间)算,而非 created_unix(创建时间);
   // 非定时任务保持从 created_unix 起。
-  const start = task.scheduled_start_unix && task.scheduled_start_unix > 0
-    ? task.scheduled_start_unix
-    : task.created_unix ?? 0;
+  const start =
+    task.scheduled_start_unix && task.scheduled_start_unix > 0 ? task.scheduled_start_unix : (task.created_unix ?? 0);
   if (!start) return 0;
   let end: number;
   if (task.status === "running") {
@@ -277,35 +276,37 @@ export default function TasksPage() {
             {emptyHint}
           </div>
         ) : (
-          <Table className="**:data-[slot='table-cell']:px-4 **:data-[slot='table-head']:px-4">
-            <TableHeader className="[&_tr]:border-t">
-              <TableRow>
-                <TableHead className="font-mono">ID</TableHead>
-                <TableHead>描述</TableHead>
-                <TableHead>目标</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead>模型</TableHead>
-                <TableHead>创建时间</TableHead>
-                <TableHead>运行时长</TableHead>
-                <TableHead>Token</TableHead>
-                <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">
-                  操作
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {tasks.map((task) => (
-                <TaskRow
-                  key={task.id}
-                  task={task}
-                  // running 任务才吃 nowSec;其余行传 0 —— props 不变,memo 就能拦下每秒 tick
-                  // 带来的整表重渲染,只让在跑的那几行走时长。
-                  nowSec={task.status === "running" ? nowSec : 0}
-                  onDelete={deleteTask}
-                />
-              ))}
-            </TableBody>
-          </Table>
+          <div className="overflow-x-auto">
+            <Table className="**:data-[slot='table-cell']:px-4 **:data-[slot='table-head']:px-4">
+              <TableHeader className="[&_tr]:border-t">
+                <TableRow>
+                  <TableHead className="font-mono">ID</TableHead>
+                  <TableHead>描述</TableHead>
+                  <TableHead>目标</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>模型</TableHead>
+                  <TableHead>创建时间</TableHead>
+                  <TableHead>运行时长</TableHead>
+                  <TableHead>Token</TableHead>
+                  <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">
+                    操作
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {tasks.map((task) => (
+                  <TaskRow
+                    key={task.id}
+                    task={task}
+                    // running 任务才吃 nowSec;其余行传 0 —— props 不变,memo 就能拦下每秒 tick
+                    // 带来的整表重渲染,只让在跑的那几行走时长。
+                    nowSec={task.status === "running" ? nowSec : 0}
+                    onDelete={deleteTask}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         )}
         <TablePagination
           page={page}
