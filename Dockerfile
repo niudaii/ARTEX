@@ -17,6 +17,7 @@ ARG TARGETARCH
 RUN apt-get update && apt-get install -y --no-install-recommends \
       ca-certificates ripgrep curl wget vim git jq unzip \
       dnsutils iputils-ping netcat-openbsd inetutils-telnet whois nmap \
+      file xxd bsdmainutils procps tesseract-ocr \
     && curl -fsSL https://deb.nodesource.com/setup_20.x | bash - \
     && apt-get install -y --no-install-recommends nodejs \
     && rm -rf /var/lib/apt/lists/*
@@ -25,6 +26,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # @playwright/cli：提供 playwright-cli，装完顺带 --help 验证可执行。
 # 再装 playwright（提供浏览器管理），装完用 --with-deps 预置 chromium 及其系统依赖，
 # 这样容器内 MCP/CLI 首次启动即可用，不再联网下载浏览器。
+# 浏览器二进制走 npmmirror 镜像下载（默认 cdn.playwright.dev → Google Cloud，国内极慢/被墙）。
+ENV PLAYWRIGHT_DOWNLOAD_HOST=https://cdn.npmmirror.com/binaries/playwright
 RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@latest \
     && playwright-cli --help \
     && playwright install --with-deps chromium \
@@ -32,10 +35,12 @@ RUN npm install -g @playwright/mcp@latest @playwright/cli@latest playwright@late
 # 预装安全测试常用 Python 包（避免 agent 运行时遇 ModuleNotFoundError）。
 # 清单源自 worker trace 错误分析：impacket/msgpack/Crypto/bcrypt/boto3/capstone/h2/hpack/PIL/ds_store 等。
 RUN pip install --no-cache-dir \
-      requests beautifulsoup4 lxml pyyaml cryptography \
+      requests urllib3 beautifulsoup4 lxml pyyaml cryptography \
       pycryptodome paramiko pyjwt dnspython \
       impacket msgpack bcrypt boto3 capstone \
-      h2 hpack Pillow ds_store tabulate
+      h2 hpack Pillow ds_store tabulate \
+      numpy scipy websocket-client websockets python-socketio \
+      django minio opencv-python-headless pytesseract ddddocr
 WORKDIR /app
 # 预编译好的对应架构二进制（dist/amd64/artex 或 dist/arm64/artex）
 COPY dist/${TARGETARCH}/artex /app/artex

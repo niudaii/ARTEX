@@ -7,7 +7,6 @@ import {
   PlusIcon,
   Trash2Icon,
   ArrowRightIcon,
-  StarIcon,
   SearchIcon,
   XIcon,
   ChevronRightIcon,
@@ -319,7 +318,6 @@ const TaskRow = React.memo(function TaskRow({
           <span className="truncate" title={task.description}>
             {task.description}
           </span>
-          {task.active && <StarIcon className="size-4 shrink-0 fill-amber-400 text-amber-400" />}
         </div>
       </TableCell>
       <TableCell className="text-muted-foreground max-w-xs truncate">{task.goal}</TableCell>

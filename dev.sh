@@ -17,6 +17,7 @@ collect_pids() {
   done
   pgrep -f 'go run ./cmd/artex' 2>/dev/null || true
   pgrep -f 'exe/artex' 2>/dev/null || true
+  pgrep -x artex 2>/dev/null || true
 }
 
 pids=$(collect_pids | sort -u | tr '\n' ' ')
@@ -32,7 +33,18 @@ if [ -n "${pids// /}" ]; then
 fi
 
 # 退出时结束本进程组内的所有子进程（后端 + 前端）。
-cleanup() { kill 0 2>/dev/null || true; }
+# kill 0 后等待 1s，再按端口/进程名兜底强杀残留（go run 编译的 artex 子进程
+# 卡在 graceful shutdown 时会脱离进程组，kill 0 杀不到）。
+cleanup() {
+  kill 0 2>/dev/null || true
+  sleep 1
+  pids=$(collect_pids | sort -u | tr '
+' ' ')
+  if [ -n "${pids// /}" ]; then
+    echo "[dev] 退出时强杀残留进程: $pids"
+    kill -9 $pids 2>/dev/null || true
+  fi
+}
 trap cleanup EXIT INT TERM
 
 # 后端（普通 go run，不内嵌前端）；并发 work agent 数在「系统设置」里配置。
