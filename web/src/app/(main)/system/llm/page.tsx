@@ -275,7 +275,8 @@ function NewProfileDialog({ onCreated }: { onCreated: (id: string) => void }) {
               <div className="grid gap-0.5">
                 <Label className="text-sm">思考模式 · Extended Thinking</Label>
                 <p className="text-muted-foreground text-xs">
-                  不发送=不带思考字段（兼容 MiniMax 等不支持该字段的模型）；显式关闭=发 disabled（默认开思考的模型才需要）；开启=先推理再作答。
+                  不发送=不带思考字段（兼容 MiniMax 等不支持该字段的模型）；显式关闭=发
+                  disabled（默认开思考的模型才需要）；开启=先推理再作答。
                 </p>
               </div>
               <Select value={thinkMode} onValueChange={(v) => setThinkMode(v as ThinkMode)}>
@@ -384,13 +385,7 @@ export default function LLMPage() {
     setLoadingModels(true);
     setModels([]);
     try {
-      const r = await api.fetchLLMModels(
-        format,
-        baseUrl,
-        apiKey,
-        proxy,
-        selectedId ? Number(selectedId) : undefined,
-      );
+      const r = await api.fetchLLMModels(format, baseUrl, apiKey, proxy, selectedId ? Number(selectedId) : undefined);
       if (r.ok && r.models && r.models.length > 0) {
         setModels(r.models);
         setModelsOpen(true);
@@ -657,7 +652,8 @@ export default function LLMPage() {
                     <div className="grid gap-0.5">
                       <Label className="text-sm">思考模式 · Extended Thinking</Label>
                       <p className="text-muted-foreground text-xs">
-                        不发送=不带思考字段（兼容 MiniMax 等不支持该字段的模型）；显式关闭=发 disabled（默认开思考的模型才需要）；开启=先推理再作答。
+                        不发送=不带思考字段（兼容 MiniMax 等不支持该字段的模型）；显式关闭=发
+                        disabled（默认开思考的模型才需要）；开启=先推理再作答。
                       </p>
                     </div>
                     <Select value={thinkMode} onValueChange={(v) => setThinkMode(v as ThinkMode)}>

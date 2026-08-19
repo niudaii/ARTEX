@@ -2,8 +2,11 @@ package agent
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
+
+	"github.com/Autumn-27/artex/db"
 )
 
 // TestNilStoreDomainToolsDoNotPanic is the regression test for the process-wide
@@ -36,5 +39,34 @@ func TestNilStoreGraphToolMessage(t *testing.T) {
 	}
 	if !res.IsError || !strings.Contains(res.Flatten(), "需要任务上下文") {
 		t.Errorf("node_detail on nil store = %q (IsError=%v), want 需要任务上下文 error", res.Flatten(), res.IsError)
+	}
+}
+
+// TestNodeDetailCrossTaskFallback verifies the task-less path: a ToolSet with no
+// ExplorationStore but a server-level PG handle (the buildDomainReg shape)
+// resolves node_detail by the node's globally unique id — the 需要任务上下文
+// error only remains when neither store nor DB handle is wired (covered above).
+func TestNodeDetailCrossTaskFallback(t *testing.T) {
+	d := testDB(t)
+	defer d.Close()
+
+	expID, err := d.CreateExploration("node_detail fallback", "goal")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expID)
+	nodeID, err := d.Exploration(expID).AddNode(db.KindFact, map[string]any{"summary": "cross-task fact", "detail": "global read"}, 5, "confirmed", "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	ts := NewToolSet(nil, "")
+	ts.SetExplorationDB(d)
+	res, err := ts.nodeDetail().Call(context.Background(), []byte(fmt.Sprintf(`{"id": %d}`, nodeID)), nil)
+	if err != nil {
+		t.Fatalf("nodeDetail Call error: %v", err)
+	}
+	if res.IsError || !strings.Contains(res.Flatten(), "cross-task fact") {
+		t.Errorf("node_detail via expDB = %q (IsError=%v), want the node payload", res.Flatten(), res.IsError)
 	}
 }

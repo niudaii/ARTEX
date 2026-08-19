@@ -91,3 +91,46 @@ func TestExplorationFlow(t *testing.T) {
 		t.Fatalf("stats: %+v", st)
 	}
 }
+
+// TestGetExplorationNodeGlobal verifies the DB-level by-id read that backs
+// node_detail's cross-task fallback: a node resolves by its globally unique id
+// regardless of which exploration owns it, and unknown ids yield (nil, nil).
+func TestGetExplorationNodeGlobal(t *testing.T) {
+	d, err := Open(testDSN(t))
+	if err != nil {
+		t.Skipf("postgres unavailable (%v) — skipping", err)
+	}
+	defer d.Close()
+
+	expA, err := d.CreateExploration("global-read A", "goal A")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expA)
+	expB, err := d.CreateExploration("global-read B", "goal B")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer d.Exec(`DELETE FROM explorations WHERE id=$1`, expB)
+
+	nodeID, err := d.Exploration(expB).AddNode(KindFact, map[string]any{"summary": "cross-task fact"}, 5, "confirmed", "test", nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Bare DB handle (no exploration binding) resolves the node across tasks.
+	n, err := d.GetExplorationNode(nodeID)
+	if err != nil || n == nil || n.ID != nodeID {
+		t.Fatalf("GetExplorationNode(%d) = %+v, %v; want the node", nodeID, n, err)
+	}
+
+	// Scoped to the wrong exploration, the same id stays invisible...
+	if n2, _ := d.Exploration(expA).GetNode(nodeID); n2 != nil {
+		t.Fatalf("GetNode(%d) on exploration %d = %+v, want nil", nodeID, expA, n2)
+	}
+
+	// ...and unknown ids degrade to (nil, nil).
+	if n3, err := d.GetExplorationNode(1 << 62); err != nil || n3 != nil {
+		t.Fatalf("GetExplorationNode(unknown) = %+v, %v; want nil, nil", n3, err)
+	}
+}

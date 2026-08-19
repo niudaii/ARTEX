@@ -1,38 +1,27 @@
 "use client";
 
 import * as React from "react";
+
 import {
-  GlobeIcon,
-  NetworkIcon,
-  LayoutTemplateIcon,
-  LinkIcon,
-  KeyRoundIcon,
   ChevronLeftIcon,
   ChevronRightIcon,
+  GlobeIcon,
+  KeyRoundIcon,
+  LayoutTemplateIcon,
+  LinkIcon,
   type LucideIcon,
+  NetworkIcon,
 } from "lucide-react";
-import { cn } from "@/lib/utils";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card } from "@/components/ui/card";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Tabs, TabsContent } from "@/components/ui/tabs";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import { api } from "@/lib/api";
 import type { Asset } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 const PAGE_SIZES = [25, 50, 100, 200];
 
@@ -49,7 +38,12 @@ const METHOD_COLOR: Record<string, string> = {
 function MethodBadge({ method }: { method: string }) {
   const m = method.toUpperCase();
   return (
-    <span className={cn("inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none", METHOD_COLOR[m] ?? "bg-muted text-muted-foreground")}>
+    <span
+      className={cn(
+        "inline-block rounded px-1.5 py-0.5 font-mono text-[10px] font-semibold leading-none",
+        METHOD_COLOR[m] ?? "bg-muted text-muted-foreground",
+      )}
+    >
       {m || "—"}
     </span>
   );
@@ -76,14 +70,22 @@ function Chips({ items, mono }: { items: string[]; mono?: boolean }) {
   return (
     <div className="flex flex-wrap gap-1">
       {clean.map((s, i) => (
-        <Badge key={i} variant="outline" className={cn("text-[10px]", mono && "font-mono")}>{s}</Badge>
+        <Badge key={i} variant="outline" className={cn("text-[10px]", mono && "font-mono")}>
+          {s}
+        </Badge>
       ))}
     </div>
   );
 }
 
 function AssetCard({
-  cols, total, page, size, onSize, onPage, children,
+  cols,
+  total,
+  page,
+  size,
+  onSize,
+  onPage,
+  children,
 }: {
   cols: string[];
   total: number;
@@ -103,11 +105,15 @@ function AssetCard({
         <Table>
           <TableHeader className="sticky top-0 z-10 bg-card">
             <TableRow>
-              {cols.map((c) => <TableHead key={c}>{c}</TableHead>)}
+              {cols.map((c) => (
+                <TableHead key={c}>{c}</TableHead>
+              ))}
             </TableRow>
           </TableHeader>
           <TableBody>
-            {rows.length > 0 ? rows : (
+            {rows.length > 0 ? (
+              rows
+            ) : (
               <TableRow>
                 <TableCell colSpan={cols.length} className="py-12 text-center text-sm text-muted-foreground">
                   暂无数据
@@ -120,19 +126,41 @@ function AssetCard({
       {total > 0 && (
         <div className="flex shrink-0 items-center gap-2 border-t px-3 py-1.5 text-xs text-muted-foreground">
           <Select value={String(size)} onValueChange={(v) => onSize(Number(v))}>
-            <SelectTrigger size="sm" className="h-7 w-24"><SelectValue /></SelectTrigger>
+            <SelectTrigger size="sm" className="h-7 w-24">
+              <SelectValue />
+            </SelectTrigger>
             <SelectContent>
-              {PAGE_SIZES.map((n) => <SelectItem key={n} value={String(n)}>{n} / 页</SelectItem>)}
+              {PAGE_SIZES.map((n) => (
+                <SelectItem key={n} value={String(n)}>
+                  {n} / 页
+                </SelectItem>
+              ))}
             </SelectContent>
           </Select>
-          <span className="tabular-nums">{start}–{end} / {total}</span>
+          <span className="tabular-nums">
+            {start}–{end} / {total}
+          </span>
           {pageCount > 1 && (
             <div className="flex items-center gap-2">
-              <Button variant="outline" size="icon" className="size-7" disabled={page <= 0} onClick={() => onPage((p) => Math.max(0, p - 1))}>
+              <Button
+                variant="outline"
+                size="icon"
+                className="size-7"
+                disabled={page <= 0}
+                onClick={() => onPage((p) => Math.max(0, p - 1))}
+              >
                 <ChevronLeftIcon />
               </Button>
-              <span className="tabular-nums">{page + 1} / {pageCount}</span>
-              <Button variant="outline" size="icon" className="size-7" disabled={page + 1 >= pageCount} onClick={() => onPage((p) => Math.min(pageCount - 1, p + 1))}>
+              <span className="tabular-nums">
+                {page + 1} / {pageCount}
+              </span>
+              <Button
+                variant="outline"
+                size="icon"
+                className="size-7"
+                disabled={page + 1 >= pageCount}
+                onClick={() => onPage((p) => Math.min(pageCount - 1, p + 1))}
+              >
                 <ChevronRightIcon />
               </Button>
             </div>
@@ -145,18 +173,18 @@ function AssetCard({
 
 const TABS: { key: string; label: string; icon: LucideIcon }[] = [
   { key: "root_domain", label: "根域名", icon: GlobeIcon },
-  { key: "ip",          label: "IP",     icon: NetworkIcon },
-  { key: "subdomain",   label: "子域名", icon: GlobeIcon },
-  { key: "service",     label: "服务",   icon: LayoutTemplateIcon },
-  { key: "endpoint",    label: "接口",   icon: LinkIcon },
+  { key: "ip", label: "IP", icon: NetworkIcon },
+  { key: "subdomain", label: "子域名", icon: GlobeIcon },
+  { key: "service", label: "服务", icon: LayoutTemplateIcon },
+  { key: "endpoint", label: "接口", icon: LinkIcon },
 ];
 
 export function AssetsTab({ taskId }: { taskId: string }) {
-  const [assets, setAssets]   = React.useState<Asset[]>([]);
-  const [loaded, setLoaded]   = React.useState(false);
-  const [tab, setTab]         = React.useState("root_domain");
-  const [page, setPage]       = React.useState(0);
-  const [size, setSize]       = React.useState(50);
+  const [assets, setAssets] = React.useState<Asset[]>([]);
+  const [loaded, setLoaded] = React.useState(false);
+  const [tab, setTab] = React.useState("root_domain");
+  const [page, setPage] = React.useState(0);
+  const [size, setSize] = React.useState(50);
 
   React.useEffect(() => setPage(0), [tab, size]);
 
@@ -164,9 +192,7 @@ export function AssetsTab({ taskId }: { taskId: string }) {
     let alive = true;
     const load = async () => {
       try {
-        const results = await Promise.all(
-          TABS.map((t) => api.taskAssets(taskId, t.key)),
-        );
+        const results = await Promise.all(TABS.map((t) => api.taskAssets(taskId, t.key)));
         if (!alive) return;
         setAssets(results.flat());
         setLoaded(true);
@@ -176,7 +202,10 @@ export function AssetsTab({ taskId }: { taskId: string }) {
     };
     load();
     const timer = setInterval(load, 10_000);
-    return () => { alive = false; clearInterval(timer); };
+    return () => {
+      alive = false;
+      clearInterval(timer);
+    };
   }, [taskId]);
 
   const byType = React.useMemo(() => {
@@ -189,10 +218,10 @@ export function AssetsTab({ taskId }: { taskId: string }) {
 
   const counts: Record<string, number> = {
     root_domain: byType.root_domain.length,
-    ip:          byType.ip.length,
-    subdomain:   byType.subdomain.length,
-    service:     byType.service.length,
-    endpoint:    byType.endpoint.length,
+    ip: byType.ip.length,
+    subdomain: byType.subdomain.length,
+    service: byType.service.length,
+    endpoint: byType.endpoint.length,
   };
 
   const totalAll = assets.length;
@@ -236,9 +265,15 @@ export function AssetsTab({ taskId }: { taskId: string }) {
 
       {/* right content */}
       <div className="min-w-0 flex-1 flex flex-col gap-4">
-
         <TabsContent value="root_domain" className="mt-0 flex min-h-0 flex-1 flex-col">
-          <AssetCard cols={["域名", "ICP 备案"]} total={cur.length} page={page} size={size} onSize={setSize} onPage={setPage}>
+          <AssetCard
+            cols={["域名", "ICP 备案"]}
+            total={cur.length}
+            page={page}
+            size={size}
+            onSize={setSize}
+            onPage={setPage}
+          >
             {slice.map((a) => (
               <TableRow key={a.id}>
                 <TableCell className="font-mono text-xs font-medium">{a.domain}</TableCell>
@@ -249,17 +284,24 @@ export function AssetsTab({ taskId }: { taskId: string }) {
         </TabsContent>
 
         <TabsContent value="ip" className="mt-0 flex min-h-0 flex-1 flex-col">
-          <AssetCard cols={["IP", "C段", "绑定域名", "开放端口"]} total={cur.length} page={page} size={size} onSize={setSize} onPage={setPage}>
+          <AssetCard
+            cols={["IP", "C段", "绑定域名", "开放端口"]}
+            total={cur.length}
+            page={page}
+            size={size}
+            onSize={setSize}
+            onPage={setPage}
+          >
             {slice.map((a) => (
               <TableRow key={a.id}>
                 <TableCell className="font-mono text-xs font-medium">{a.ip}</TableCell>
                 <TableCell className="font-mono text-xs">{a.c_segment || "—"}</TableCell>
-                <TableCell><Chips items={a.bound_domains ?? []} mono /></TableCell>
+                <TableCell>
+                  <Chips items={a.bound_domains ?? []} mono />
+                </TableCell>
                 <TableCell>
                   <Chips
-                    items={(a.open_ports ?? []).map((p) =>
-                      p.service ? `${p.port}/${p.service}` : String(p.port),
-                    )}
+                    items={(a.open_ports ?? []).map((p) => (p.service ? `${p.port}/${p.service}` : String(p.port)))}
                     mono
                   />
                 </TableCell>
@@ -269,13 +311,22 @@ export function AssetsTab({ taskId }: { taskId: string }) {
         </TabsContent>
 
         <TabsContent value="subdomain" className="mt-0 flex min-h-0 flex-1 flex-col">
-          <AssetCard cols={["域名", "根域名", "解析类型", "解析值"]} total={cur.length} page={page} size={size} onSize={setSize} onPage={setPage}>
+          <AssetCard
+            cols={["域名", "根域名", "解析类型", "解析值"]}
+            total={cur.length}
+            page={page}
+            size={size}
+            onSize={setSize}
+            onPage={setPage}
+          >
             {slice.map((a) => (
               <TableRow key={a.id}>
                 <TableCell className="font-mono text-xs font-medium">{a.domain}</TableCell>
                 <TableCell className="font-mono text-xs">{a.root_domain || "—"}</TableCell>
                 <TableCell className="text-xs">{a.record_type || "—"}</TableCell>
-                <TableCell className="max-w-xs truncate font-mono text-xs">{(Array.isArray(a.record_value) ? a.record_value.join(", ") : a.record_value) || "—"}</TableCell>
+                <TableCell className="max-w-xs truncate font-mono text-xs">
+                  {(Array.isArray(a.record_value) ? a.record_value.join(", ") : a.record_value) || "—"}
+                </TableCell>
               </TableRow>
             ))}
           </AssetCard>
@@ -293,21 +344,27 @@ export function AssetsTab({ taskId }: { taskId: string }) {
             {slice.map((a) => {
               const isHttp = a.service_type === "http";
               const addr = isHttp
-                ? (a.url || "")
-                : (a.service_name || [a.ip || a.domain, a.port].filter(Boolean).join(":"));
+                ? a.url || ""
+                : a.service_name || [a.ip || a.domain, a.port].filter(Boolean).join(":");
               return (
                 <TableRow key={a.id}>
-                  <TableCell className="max-w-xs truncate font-mono text-xs" title={addr}>{addr || "—"}</TableCell>
+                  <TableCell className="max-w-xs truncate font-mono text-xs" title={addr}>
+                    {addr || "—"}
+                  </TableCell>
                   <TableCell>
                     {a.status_code != null ? (
                       <span className={cn("font-mono text-xs font-semibold tabular-nums", statusTone(a.status_code))}>
                         {a.status_code}
                       </span>
-                    ) : "—"}
+                    ) : (
+                      "—"
+                    )}
                   </TableCell>
                   <TableCell className="max-w-[12rem] truncate text-xs">{a.page_title || "—"}</TableCell>
                   <TableCell className="text-xs tabular-nums">{fmtBytes(a.content_length)}</TableCell>
-                  <TableCell><Chips items={a.technologies ?? []} /></TableCell>
+                  <TableCell>
+                    <Chips items={a.technologies ?? []} />
+                  </TableCell>
                   <TableCell>
                     {(a.auth ?? []).length === 0 ? (
                       <span className="text-xs text-muted-foreground">—</span>
@@ -330,11 +387,22 @@ export function AssetsTab({ taskId }: { taskId: string }) {
         </TabsContent>
 
         <TabsContent value="endpoint" className="mt-0 flex min-h-0 flex-1 flex-col">
-          <AssetCard cols={["方法", "完整地址", "参数"]} total={cur.length} page={page} size={size} onSize={setSize} onPage={setPage}>
+          <AssetCard
+            cols={["方法", "完整地址", "参数"]}
+            total={cur.length}
+            page={page}
+            size={size}
+            onSize={setSize}
+            onPage={setPage}
+          >
             {slice.map((a) => (
               <TableRow key={a.id}>
-                <TableCell className="w-16"><MethodBadge method={a.method || ""} /></TableCell>
-                <TableCell className="max-w-sm truncate font-mono text-xs" title={a.url}>{a.url || "—"}</TableCell>
+                <TableCell className="w-16">
+                  <MethodBadge method={a.method || ""} />
+                </TableCell>
+                <TableCell className="max-w-sm truncate font-mono text-xs" title={a.url}>
+                  {a.url || "—"}
+                </TableCell>
                 <TableCell>
                   <Chips
                     items={(a.params ?? []).map((p) => {
@@ -348,7 +416,6 @@ export function AssetsTab({ taskId }: { taskId: string }) {
             ))}
           </AssetCard>
         </TabsContent>
-
       </div>
     </Tabs>
   );

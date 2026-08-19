@@ -1,37 +1,18 @@
 "use client";
 
 import * as React from "react";
-import {
-  TerminalIcon,
-  SearchIcon,
-  ChevronLeftIcon,
-  ChevronRightIcon,
-  Loader2Icon,
-  XIcon,
-} from "lucide-react";
 
-import { Card } from "@/components/ui/card";
-import { Input } from "@/components/ui/input";
+import { ChevronLeftIcon, ChevronRightIcon, Loader2Icon, SearchIcon, TerminalIcon, XIcon } from "lucide-react";
+
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { cn } from "@/lib/utils";
+import { Card } from "@/components/ui/card";
+import { Input } from "@/components/ui/input";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import type { CommandRecord } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 function fmtTime(ts: string) {
   return new Date(ts).toLocaleString("zh-CN", {
@@ -50,7 +31,9 @@ function toolInput(raw: string): string {
     const obj = JSON.parse(raw);
     if (obj && typeof obj.command === "string") return obj.command;
     return JSON.stringify(obj, null, 2);
-  } catch { /* not JSON */ }
+  } catch {
+    /* not JSON */
+  }
   return raw;
 }
 
@@ -100,9 +83,13 @@ export default function CommandsPage() {
         setCommands(r.commands ?? []);
         setTotal(r.total ?? 0);
       })
-      .catch(() => {})
+      .catch(() => {
+        /* ignore */
+      })
       .finally(() => alive && setLoading(false));
-    return () => { alive = false; };
+    return () => {
+      alive = false;
+    };
   }, [page, size, queryQ, taskFilter]);
 
   const totalPages = Math.max(1, Math.ceil(total / size));
@@ -210,18 +197,13 @@ export default function CommandsPage() {
                   commands.map((cmd) => (
                     <TableRow
                       key={cmd.id}
-                      className={cn(
-                        "cursor-pointer",
-                        selected?.id === cmd.id && "bg-accent hover:bg-accent",
-                      )}
+                      className={cn("cursor-pointer", selected?.id === cmd.id && "bg-accent hover:bg-accent")}
                       onClick={() => setSelected(cmd)}
                     >
                       <TableCell className="text-xs text-muted-foreground tabular-nums">
                         {fmtTime(cmd.created_at)}
                       </TableCell>
-                      <TableCell className="text-xs font-mono text-muted-foreground">
-                        #{cmd.exploration_id}
-                      </TableCell>
+                      <TableCell className="text-xs font-mono text-muted-foreground">#{cmd.exploration_id}</TableCell>
                       <TableCell>
                         <Badge variant="outline" className="text-xs font-mono">
                           {cmd.worker || "-"}
@@ -239,9 +221,13 @@ export default function CommandsPage() {
                       </TableCell>
                       <TableCell>
                         {cmd.is_error ? (
-                          <Badge variant="destructive" className="text-xs">失败</Badge>
+                          <Badge variant="destructive" className="text-xs">
+                            失败
+                          </Badge>
                         ) : (
-                          <Badge variant="secondary" className="text-xs text-emerald-600">成功</Badge>
+                          <Badge variant="secondary" className="text-xs text-emerald-600">
+                            成功
+                          </Badge>
                         )}
                       </TableCell>
                     </TableRow>
@@ -266,29 +252,24 @@ export default function CommandsPage() {
               <Badge variant="secondary" className="text-xs font-mono">
                 {selected.tool || "-"}
               </Badge>
-              <span className="text-xs text-muted-foreground">
-                {fmtTime(selected.created_at)}
-              </span>
+              <span className="text-xs text-muted-foreground">{fmtTime(selected.created_at)}</span>
               {selected.is_error ? (
-                <Badge variant="destructive" className="text-xs">失败</Badge>
+                <Badge variant="destructive" className="text-xs">
+                  失败
+                </Badge>
               ) : (
-                <Badge variant="secondary" className="text-xs text-emerald-600">成功</Badge>
+                <Badge variant="secondary" className="text-xs text-emerald-600">
+                  成功
+                </Badge>
               )}
-              <Button
-                variant="ghost"
-                size="icon"
-                className="ml-auto size-7 shrink-0"
-                onClick={() => setSelected(null)}
-              >
+              <Button variant="ghost" size="icon" className="ml-auto size-7 shrink-0" onClick={() => setSelected(null)}>
                 <XIcon />
               </Button>
             </div>
             {/* Input / Output split */}
             <div className="grid min-h-0 flex-1 grid-cols-2 divide-x">
               <div className="flex min-h-0 min-w-0 flex-col">
-                <div className="border-b px-3 py-1 text-[11px] font-medium text-muted-foreground">
-                  输入 Input
-                </div>
+                <div className="border-b px-3 py-1 text-[11px] font-medium text-muted-foreground">输入 Input</div>
                 <div className="min-h-0 flex-1 overflow-auto">
                   <pre className="p-3 font-mono text-xs break-all whitespace-pre-wrap">
                     {toolInput(selected.command)}
@@ -296,14 +277,14 @@ export default function CommandsPage() {
                 </div>
               </div>
               <div className="flex min-h-0 min-w-0 flex-col">
-                <div className="border-b px-3 py-1 text-[11px] font-medium text-muted-foreground">
-                  输出 Output
-                </div>
+                <div className="border-b px-3 py-1 text-[11px] font-medium text-muted-foreground">输出 Output</div>
                 <div className="min-h-0 flex-1 overflow-auto">
-                  <pre className={cn(
-                    "p-3 font-mono text-xs break-all whitespace-pre-wrap",
-                    selected.is_error && "text-red-600 dark:text-red-400",
-                  )}>
+                  <pre
+                    className={cn(
+                      "p-3 font-mono text-xs break-all whitespace-pre-wrap",
+                      selected.is_error && "text-red-600 dark:text-red-400",
+                    )}
+                  >
                     {selected.output || "（空）"}
                   </pre>
                 </div>

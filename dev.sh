@@ -9,16 +9,27 @@ cd "$(dirname "$0")"
 # 本地开发时加载 .env 里的环境变量（POPO 凭据等）
 set -a; [ -f .env ] && source .env; set +a
 
-# 启动前清理上次残留进程（Ctrl-C 后 artex 可能还在 graceful shutdown 没退完）
-for port in 8787 8788 5173; do
-  pids=$(lsof -ti :"$port" 2>/dev/null || true)
-  if [ -n "$pids" ]; then
-    echo "[dev] 端口 $port 被占用，清理残留: $(echo $pids | tr '\n' ' ')"
-    kill $pids 2>/dev/null || true
-    sleep 0.3
-    kill -9 $pids 2>/dev/null || true
+# 启动前清理上次残留进程：先按端口找（8787/8788/5173），再按进程名兜底
+# （go run 父进程、已释放端口但 graceful shutdown 没退完的 artex 子进程）。
+collect_pids() {
+  for port in 8787 8788 5173; do
+    lsof -ti :"$port" 2>/dev/null || true
+  done
+  pgrep -f 'go run ./cmd/artex' 2>/dev/null || true
+  pgrep -f 'exe/artex' 2>/dev/null || true
+}
+
+pids=$(collect_pids | sort -u | tr '\n' ' ')
+if [ -n "${pids// /}" ]; then
+  echo "[dev] 清理上次残留进程: $pids"
+  kill $pids 2>/dev/null || true
+  sleep 0.5
+  still=$(collect_pids | sort -u | tr '\n' ' ')
+  if [ -n "${still// /}" ]; then
+    echo "[dev] 强杀未退出进程: $still"
+    kill -9 $still 2>/dev/null || true
   fi
-done
+fi
 
 # 退出时结束本进程组内的所有子进程（后端 + 前端）。
 cleanup() { kill 0 2>/dev/null || true; }

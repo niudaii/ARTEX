@@ -182,7 +182,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			return a.TaskTimeoutWrapupMaxTurns, true
 		}
 		wireAgentAugment(m.pg, s.skillDir, s.hostTools) // 可见 skills/MCP + 流量/编排 host 工具装配进 agent 工具集
-		domainReg := buildDomainReg(m.Assets())
+		domainReg := buildDomainReg(m.pg, m.Assets())
 		wireTools(m.pg, domainReg)    // 内置工具表：按 agent 过滤 + 覆盖描述/schema + 注入默认值
 		seedPrompts(m.pg)             // 内置 agent 默认提示词正文播种进 agent_prompts(仅空时)
 		s.seedOrchestrationTools()    // P2 跨任务编排工具 seed 进 tools 表(可按 agent 绑定)
@@ -1424,7 +1424,22 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 500, err.Error())
 			return
 		}
-		writeJSON(w, 200, taskNodeDTOs(in))
+		dtos := taskNodeDTOs(in)
+		// blocked 意图附带最近一次运行出错原因，概览页据此展示"为什么被拦"。
+		var blockedIDs []int64
+		for _, n := range in {
+			if n.State == "blocked" {
+				blockedIDs = append(blockedIDs, n.ID)
+			}
+		}
+		if reasons, rerr := t.Store.LatestNodeErrors(blockedIDs); rerr == nil {
+			for i, n := range in {
+				if r := reasons[n.ID]; r != "" {
+					dtos[i].LastErr = r
+				}
+			}
+		}
+		writeJSON(w, 200, dtos)
 		return
 	}
 	// Paged form: ?before=<id> (or ?page as a marker) → {items, has_more} so the
@@ -1460,15 +1475,26 @@ func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
 	}
 	since := int64(atoiDefault(r.URL.Query().Get("since"), 0))
 	limit := atoiDefault(r.URL.Query().Get("limit"), 300)
+	latest := atoiDefault(r.URL.Query().Get("latest"), 0)
+	exclude := r.URL.Query().Get("exclude")
 	var intentPtr *int64
 	if iv := r.URL.Query().Get("intent"); iv != "" {
 		if n, err := strconv.ParseInt(iv, 10, 64); err == nil {
 			intentPtr = &n
 		}
 	}
-	items, cursor, err := t.Store.ActivityList(intentPtr, since, limit)
+	var (
+		items  []db.Activity
+		cursor int64
+		err    error
+	)
+	if latest > 0 {
+		items, cursor, err = t.Store.ActivityLatest(intentPtr, latest, exclude)
+	} else {
+		items, cursor, err = t.Store.ActivityList(intentPtr, since, limit)
+	}
 	if err != nil {
-		log.Printf("[activity] task=%s since=%d limit=%d intent=%v: %v", t.ID, since, limit, intentPtr, err)
+		log.Printf("[activity] task=%s since=%d limit=%d latest=%d intent=%v: %v", t.ID, since, limit, latest, intentPtr, err)
 		writeErr(w, 500, err.Error())
 		return
 	}

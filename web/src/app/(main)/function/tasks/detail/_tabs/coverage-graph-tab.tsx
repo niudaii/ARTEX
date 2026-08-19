@@ -1,31 +1,17 @@
 "use client";
 
 import * as React from "react";
-import type { Graph as G6Graph } from "@antv/g6";
-import {
-  AppWindow,
-  Building2,
-  Globe,
-  Link2,
-  type LucideIcon,
-  Radio,
-  RefreshCw,
-  Server,
-  Waypoints,
-} from "lucide-react";
 
-import { cn } from "@/lib/utils";
-import { Card, CardContent } from "@/components/ui/card";
+import type { Graph as G6Graph } from "@antv/g6";
+import { AppWindow, Building2, Globe, Link2, type LucideIcon, Radio, RefreshCw, Server, Waypoints } from "lucide-react";
+
 import { Button } from "@/components/ui/button";
+import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { api } from "@/lib/api";
 import type { CoverageAssetRef, CoverageAssetRefs, CoverageGraphEdge, CoverageGraphNode } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 // 每个父节点下、同一类型的子节点默认展示的数量；超出折叠，"展示更多"每次再拉这么多。
 const FOLD_LIMIT = 20;
@@ -322,7 +308,9 @@ function AssetSheet({
           <>
             <SheetHeader className="border-b p-4">
               <div className="flex items-center gap-2.5 pr-8">
-                <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg shadow-sm", meta.iconBg)}>
+                <span
+                  className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg shadow-sm", meta.iconBg)}
+                >
                   <Icon className="size-4 text-white" />
                 </span>
                 <div className="min-w-0">
@@ -492,7 +480,10 @@ function GraphInner({ taskId }: { taskId: string }) {
   // 结构签名：只在可见节点/边集合变化时重建图 + 重跑布局，避免无谓抖动。
   const sig = React.useMemo(
     () =>
-      `${renderNodes.map((n) => `${n.key}:${n.fold ? "f" : n.node.tested ? "t" : "u"}`).sort().join(",")}|${renderEdges.length}`,
+      `${renderNodes
+        .map((n) => `${n.key}:${n.fold ? "f" : n.node.tested ? "t" : "u"}`)
+        .sort()
+        .join(",")}|${renderEdges.length}`,
     [renderNodes, renderEdges],
   );
 
@@ -508,7 +499,11 @@ function GraphInner({ taskId }: { taskId: string }) {
   const applyData = React.useCallback(() => {
     const graph = graphRef.current;
     if (!graph) return;
-    try { graph.stopLayout(); } catch { /* 上一次布局尚未启动 */ }
+    try {
+      graph.stopLayout();
+    } catch {
+      /* 上一次布局尚未启动 */
+    }
     graph.setData(gDataRef.current);
     void graph.render();
   }, []);
@@ -583,12 +578,22 @@ function GraphInner({ taskId }: { taskId: string }) {
       const g = graph;
       graphRef.current = null;
       if (!g) return;
-      try { g.stopLayout(); } catch { /* 布局尚未启动 */ }
+      try {
+        g.stopLayout();
+      } catch {
+        /* 布局尚未启动 */
+      }
       // @antv/g6 v5.1.1: stopLayout 会 resolve 挂起的异步 postLayout promise，
       // 但 destroy 同步重置 context={} → resolve 的微任务读到空 context 上的
       // transform 为 undefined → getTransformInstance 崩溃。
       // 先让 postLayout 微任务排空（macrotask），再 destroy。
-      setTimeout(() => { try { g.destroy(); } catch { /* 已销毁 */ } }, 0);
+      setTimeout(() => {
+        try {
+          g.destroy();
+        } catch {
+          /* 已销毁 */
+        }
+      }, 0);
     };
   }, [applyData]);
 

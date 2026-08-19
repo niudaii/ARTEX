@@ -127,6 +127,8 @@ type TaskNodeDTO struct {
 	State    string `json:"state"`
 	Origin   string `json:"origin"`
 	TS       string `json:"ts"`
+	// LastErr 仅对 blocked 意图填充：最近一次运行出错的信息（为什么被拦/出错）。
+	LastErr string `json:"last_error,omitempty"`
 }
 
 func taskNodeDTO(n *db.Node) TaskNodeDTO {

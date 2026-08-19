@@ -1,32 +1,17 @@
 "use client";
 
 import * as React from "react";
+
 import Link from "next/link";
+
+import { ArrowRightIcon, PlusIcon, SearchIcon, Trash2Icon, XIcon } from "lucide-react";
 import { toast } from "sonner";
-import {
-  PlusIcon,
-  Trash2Icon,
-  ArrowRightIcon,
-  SearchIcon,
-  XIcon,
-} from "lucide-react";
 
 import { StatusBadge } from "@/components/status-badge";
-import { isTerminalTaskStatus } from "@/lib/status";
+import { TablePagination } from "@/components/table-pagination";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
-import { Input } from "@/components/ui/input";
-import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
 import {
   Dialog,
   DialogClose,
@@ -37,16 +22,14 @@ import {
   DialogTitle,
   DialogTrigger,
 } from "@/components/ui/dialog";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { TablePagination } from "@/components/table-pagination";
+import { Input } from "@/components/ui/input";
+import { Label } from "@/components/ui/label";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
+import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type { Task, TaskStatus, LLMProfile } from "@/lib/types";
+import { isTerminalTaskStatus } from "@/lib/status";
+import type { LLMProfile, Task, TaskStatus } from "@/lib/types";
 
 // ACTIVE_PROFILE is the sentinel Select value for "use the global active profile".
 const ACTIVE_PROFILE = "__active__";
@@ -82,7 +65,7 @@ function taskDuration(task: Task, nowSec: number): number {
       ? nowSec
       : task.completed_unix && task.completed_unix > 0
         ? task.completed_unix
-        : task.last_activity_unix ?? 0;
+        : (task.last_activity_unix ?? 0);
   return end > start ? end - start : 0;
 }
 
@@ -126,15 +109,15 @@ export default function TasksPage() {
       if (statusFilter !== "all" && t.status !== statusFilter) return false;
       if (!q) return true;
       return (
-        t.description.toLowerCase().includes(q) ||
-        t.goal.toLowerCase().includes(q) ||
-        t.id.toLowerCase().includes(q)
+        t.description.toLowerCase().includes(q) || t.goal.toLowerCase().includes(q) || t.id.toLowerCase().includes(q)
       );
     });
   }, [tasks, query, statusFilter]);
 
   // reset to page 1 whenever filters change
-  React.useEffect(() => { setPage(1); }, [query, statusFilter]);
+  React.useEffect(() => {
+    setPage(1);
+  }, [query, statusFilter]);
 
   const paginated = React.useMemo(
     () => filtered.slice((page - 1) * pageSize, page * pageSize),
@@ -142,11 +125,14 @@ export default function TasksPage() {
   );
 
   const load = React.useCallback(() => {
-    api.tasks()
+    api
+      .tasks()
       .then((r) => {
         setTasks(r.tasks);
       })
-      .catch(() => {});
+      .catch(() => {
+        /* ignore */
+      });
   }, []);
 
   React.useEffect(() => {
@@ -157,7 +143,10 @@ export default function TasksPage() {
 
   // load LLM profiles once for the create-task profile picker.
   React.useEffect(() => {
-    api.llmProfiles().then(setProfiles).catch(() => setProfiles([]));
+    api
+      .llmProfiles()
+      .then(setProfiles)
+      .catch(() => setProfiles([]));
   }, []);
 
   // tick every second so running tasks' 运行时长 counts up live.
@@ -248,9 +237,7 @@ export default function TasksPage() {
             <DialogContent className="sm:max-w-lg">
               <DialogHeader>
                 <DialogTitle>新建任务</DialogTitle>
-                <DialogDescription>
-                  填写测试对象与目标。
-                </DialogDescription>
+                <DialogDescription>填写测试对象与目标。</DialogDescription>
               </DialogHeader>
               <div className="grid gap-4 py-2">
                 <div className="grid gap-2">
@@ -318,7 +305,8 @@ export default function TasksPage() {
                     onChange={(e) => setHeartbeatMin(e.target.value)}
                   />
                   <p className="text-muted-foreground text-xs">
-                    距上轮规划结束/任务开始满该时长且期间无触发，自动触发一轮规划（兜底卡死 + 唤醒去监督在跑的 worker）。下限 10 分钟。
+                    距上轮规划结束/任务开始满该时长且期间无触发，自动触发一轮规划（兜底卡死 + 唤醒去监督在跑的
+                    worker）。下限 10 分钟。
                   </p>
                 </div>
                 <div className="grid gap-2">
@@ -327,7 +315,8 @@ export default function TasksPage() {
                     直接下发首个意图（描述+目标）
                   </label>
                   <p className="text-muted-foreground text-xs">
-                    开启后创建即把「描述+目标」作为一条意图下发，worker 免等首轮规划直接开跑，跑完再由 planner 接手判定/补充。CTF 等常一个 work 直接解决的场景推荐开启；关闭则走标准的先规划再执行。
+                    开启后创建即把「描述+目标」作为一条意图下发，worker 免等首轮规划直接开跑，跑完再由 planner
+                    接手判定/补充。CTF 等常一个 work 直接解决的场景推荐开启；关闭则走标准的先规划再执行。
                   </p>
                 </div>
               </div>
@@ -361,7 +350,9 @@ export default function TasksPage() {
                 <TableHead className="text-right">创建时间</TableHead>
                 <TableHead className="text-right">运行时长</TableHead>
                 <TableHead className="text-right">Token</TableHead>
-                <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">操作</TableHead>
+                <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">
+                  操作
+                </TableHead>
               </TableRow>
             </TableHeader>
             <TableBody>
@@ -386,9 +377,11 @@ export default function TasksPage() {
                     )}
                   </TableCell>
                   <TableCell className="text-muted-foreground text-center text-xs tabular-nums">
-                    {typeof task.goals_total === "number" && task.goals_total > 0
-                      ? `${task.goals_met}/${task.goals_total}`
-                      : <span className="text-muted-foreground">—</span>}
+                    {typeof task.goals_total === "number" && task.goals_total > 0 ? (
+                      `${task.goals_met}/${task.goals_total}`
+                    ) : (
+                      <span className="text-muted-foreground">—</span>
+                    )}
                   </TableCell>
                   <TableCell className="text-muted-foreground text-right text-xs whitespace-nowrap tabular-nums">
                     {fmtDateTime(task.created_unix)}
@@ -431,12 +424,7 @@ export default function TasksPage() {
                           进入 <ArrowRightIcon />
                         </Link>
                       </Button>
-                      <Button
-                        size="icon"
-                        variant="outline"
-                        onClick={() => deleteTask(task.id)}
-                        aria-label="删除任务"
-                      >
+                      <Button size="icon" variant="outline" onClick={() => deleteTask(task.id)} aria-label="删除任务">
                         <Trash2Icon className="text-destructive" />
                       </Button>
                     </div>

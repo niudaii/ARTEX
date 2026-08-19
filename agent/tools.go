@@ -47,9 +47,14 @@ func compactIntents(ns []*db.Node, parentsOf, yieldsOf map[int64][]int64) []map[
 // ToolSet exposes the PG-backed dual graph (asset + exploration) to an LLM agent.
 // One ToolSet is created per planner/worker run; per-run signals live here.
 type ToolSet struct {
-	as     *db.AssetStore   // asset store (optional; nil = asset tools not available)
-	cs     *db.CompanyStore // company store (optional)
-	ts     *db.ExplorationStore
+	as *db.AssetStore   // asset store (optional; nil = asset tools not available)
+	cs *db.CompanyStore // company store (optional)
+	ts *db.ExplorationStore
+	// expDB is a server-level PG handle for cross-task exploration reads when ts
+	// is nil (task-independent agents: chat page, custom agents, Auto
+	// conversations — see buildDomainReg). Node ids are globally unique, so
+	// by-id reads (node_detail) resolve without a "current" task graph. Read-only.
+	expDB  *db.DB
 	worker string
 	taskID int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
 	// ownerNode is the exploration node that writes attach to: assets this run
@@ -148,7 +153,9 @@ func NewToolSet(ts *db.ExplorationStore, worker string) *ToolSet {
 // registry built with a nil store (buildDomainReg); a graph tool bound to such
 // an agent via the tools table can never work there — no task graph exists by
 // design. Degrading to a tool error (report_finding's precedent) keeps one bad
-// binding from nil-deref'ing and crashing the whole process.
+// binding from nil-deref'ing and crashing the whole process. Exception: pure
+// by-id reads — node_detail falls back to a global PG lookup when expDB is set,
+// since node ids are unique across tasks.
 func errNoTaskGraph(name string) (actool.Result, error) {
 	return actool.Errorf(name + " 需要任务上下文（exploration store 未初始化）"), nil
 }
@@ -156,6 +163,11 @@ func errNoTaskGraph(name string) (actool.Result, error) {
 // SetTaskID sets the PG task id on this ToolSet so that report_finding can
 // dual-write to the standalone findings table (which survives task deletion).
 func (t *ToolSet) SetTaskID(id int64) { t.taskID = id }
+
+// SetExplorationDB wires a server-level PG handle for cross-task exploration
+// node reads (see ToolSet.expDB). Set by buildDomainReg so node_detail works
+// for task-independent agents.
+func (t *ToolSet) SetExplorationDB(d *db.DB) { t.expDB = d }
 
 // Cross-task reuse: exported accessors returning the per-task tool logic bound to
 // THIS ToolSet's store. Host-side orchestration tools build a ToolSet for an
@@ -469,10 +481,10 @@ func (t *ToolSet) listFacts() actool.CoreTool {
 }
 
 func (t *ToolSet) nodeDetail() actool.CoreTool {
-	return readTool("node_detail", "按 id 取某个【探索图节点】的完整内容(事实/发现/意图/目标：摘要 + 详情/证据/PoC)。仅限探索图节点 id(来自 list_facts / list_findings / graph_overview 的 recent_facts 返回的 id)。查【资产】请用 list_assets——资产 id 不是探索节点 id,不要传进来。",
+	return readTool("node_detail", "按 id 取某个【探索图节点】的完整内容(事实/发现/意图/目标：摘要 + 详情/证据/PoC)。仅限探索图节点 id(来自 list_facts / list_findings / graph_overview 的 recent_facts 返回的 id)。查【资产】请用 list_assets——资产 id 不是探索节点 id,不要传进来。节点 id 全局唯一,无任务上下文时也可按 id 跨任务查询。",
 		obj(map[string]any{"id": idp("探索图节点 id(非资产 id)")}, "id"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
-			if t.ts == nil {
+			if t.ts == nil && t.expDB == nil {
 				return errNoTaskGraph("node_detail")
 			}
 			var a struct {
@@ -483,7 +495,19 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 			if id <= 0 {
 				return actool.Errorf("id 必填"), nil
 			}
-			n, err := t.ts.GetNode(id)
+			var (
+				n   *db.Node
+				err error
+			)
+			if t.ts != nil {
+				n, err = t.ts.GetNode(id)
+			}
+			if n == nil && err == nil && t.expDB != nil {
+				// Cross-task fallback: ids are globally unique and PG-backed, so
+				// the node may belong to another task's graph (or this ToolSet has
+				// no task context at all) — resolve it by bare id.
+				n, err = t.expDB.GetExplorationNode(id)
+			}
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}

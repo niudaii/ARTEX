@@ -1,56 +1,59 @@
 "use client";
 
 import * as React from "react";
+
 import { CheckIcon, RefreshCwIcon, ShieldAlertIcon, XIcon } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
-import type { InterceptApprovalRow } from "@/lib/types";
+
+import { ToolInputDetailRow, ToolInputPreview } from "@/components/tool-input-preview";
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import { api } from "@/lib/api";
+import type { InterceptApprovalRow } from "@/lib/types";
 
 function fmtTime(s: string) {
   if (!s) return "—";
   return new Date(s).toLocaleString("zh-CN", {
-    month: "2-digit", day: "2-digit",
-    hour: "2-digit", minute: "2-digit", second: "2-digit",
+    month: "2-digit",
+    day: "2-digit",
+    hour: "2-digit",
+    minute: "2-digit",
+    second: "2-digit",
   });
 }
 
 function AgentChip({ name }: { name: string }) {
   if (!name) return <span className="text-muted-foreground text-xs">—</span>;
-  const color =
-    name === "planner" ? "bg-amber-500" :
-    name === "mainagent" ? "bg-primary" :
-    "bg-sky-600";
+  const color = name === "planner" ? "bg-amber-500" : name === "mainagent" ? "bg-primary" : "bg-sky-600";
   return (
-    <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium text-white ${color}`}>
-      {name}
-    </span>
+    <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium text-white ${color}`}>{name}</span>
   );
 }
 
 function StatusBadge({ status }: { status: string }) {
-  if (status === "pending") return <Badge variant="outline" className="border-amber-400 text-amber-600">待审批</Badge>;
-  if (status === "allowed") return <Badge variant="outline" className="border-emerald-500 text-emerald-600">已允许</Badge>;
-  if (status === "denied")  return <Badge variant="outline" className="border-red-500 text-red-600">已拒绝</Badge>;
-  return <Badge variant="outline" className="text-muted-foreground">已超时</Badge>;
-}
-
-function InputPreview({ input }: { input: Record<string, unknown> }) {
-  const full = JSON.stringify(input, null, 2);
-  const s = JSON.stringify(input);
-  const short = s.length > 100 ? s.slice(0, 100) + "…" : s;
+  if (status === "pending")
+    return (
+      <Badge variant="outline" className="border-amber-400 text-amber-600">
+        待审批
+      </Badge>
+    );
+  if (status === "allowed")
+    return (
+      <Badge variant="outline" className="border-emerald-500 text-emerald-600">
+        已允许
+      </Badge>
+    );
+  if (status === "denied")
+    return (
+      <Badge variant="outline" className="border-red-500 text-red-600">
+        已拒绝
+      </Badge>
+    );
   return (
-    <Tooltip>
-      <TooltipTrigger asChild>
-        <code className="block w-full cursor-default truncate font-mono text-[11px] text-muted-foreground">{short}</code>
-      </TooltipTrigger>
-      <TooltipContent side="top" align="start" className="max-w-sm">
-        <pre className="whitespace-pre-wrap break-all font-mono text-xs">{full}</pre>
-      </TooltipContent>
-    </Tooltip>
+    <Badge variant="outline" className="text-muted-foreground">
+      已超时
+    </Badge>
   );
 }
 
@@ -62,6 +65,16 @@ export function InterceptTab({ taskId }: Props) {
   const [rows, setRows] = React.useState<InterceptApprovalRow[]>([]);
   const [loading, setLoading] = React.useState(true);
   const [deciding, setDeciding] = React.useState<number | null>(null);
+  const [expanded, setExpanded] = React.useState<Set<number>>(new Set());
+
+  function toggleExpand(id: number) {
+    setExpanded((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
+  }
 
   const load = React.useCallback(async () => {
     try {
@@ -86,7 +99,7 @@ export function InterceptTab({ taskId }: Props) {
       await api.interceptDecide(id, decision);
       toast.success(decision === "allowed" ? "已允许执行" : "已拒绝执行");
       setRows((prev) =>
-        prev.map((r) => r.id === id ? { ...r, status: decision, decided_at: new Date().toISOString() } : r),
+        prev.map((r) => (r.id === id ? { ...r, status: decision, decided_at: new Date().toISOString() } : r)),
       );
     } catch (e) {
       toast.error((e as Error).message);
@@ -107,7 +120,6 @@ export function InterceptTab({ taskId }: Props) {
   }
 
   return (
-    <TooltipProvider delayDuration={300}>
     <div className="flex flex-col gap-4">
       {/* header */}
       <div className="flex items-center justify-between">
@@ -115,9 +127,7 @@ export function InterceptTab({ taskId }: Props) {
           <ShieldAlertIcon className="h-4 w-4 text-muted-foreground" />
           拦截审批
           {pending.length > 0 && (
-            <Badge className="rounded-full bg-amber-500 text-white text-[10px] px-1.5">
-              {pending.length} 待审批
-            </Badge>
+            <Badge className="rounded-full bg-amber-500 text-white text-[10px] px-1.5">{pending.length} 待审批</Badge>
           )}
         </div>
         <Button variant="outline" size="sm" onClick={load} disabled={loading}>
@@ -147,26 +157,52 @@ export function InterceptTab({ taskId }: Props) {
             </TableHeader>
             <TableBody>
               {pending.map((row) => (
-                <TableRow key={row.id}>
-                  <TableCell className="text-muted-foreground text-xs">{row.id}</TableCell>
-                  <TableCell><AgentChip name={row.agent_name} /></TableCell>
-                  <TableCell>
-                    <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">{row.tool_name}</code>
-                  </TableCell>
-                  <TableCell className="text-xs text-muted-foreground">{row.rule_name || "—"}</TableCell>
-                  <TableCell className="w-48 max-w-[12rem]"><InputPreview input={row.tool_input} /></TableCell>
-                  <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{fmtTime(row.created_at)}</TableCell>
-                  <TableCell className="text-right">
-                    <div className="flex justify-end gap-1">
-                      <Button size="sm" className="h-7 px-2 text-xs" disabled={deciding === row.id} onClick={() => decide(row.id, "allowed")}>
-                        <CheckIcon className="mr-1 h-3 w-3" />允许
-                      </Button>
-                      <Button size="sm" variant="destructive" className="h-7 px-2 text-xs" disabled={deciding === row.id} onClick={() => decide(row.id, "denied")}>
-                        <XIcon className="mr-1 h-3 w-3" />拒绝
-                      </Button>
-                    </div>
-                  </TableCell>
-                </TableRow>
+                <React.Fragment key={row.id}>
+                  <TableRow>
+                    <TableCell className="text-muted-foreground text-xs">{row.id}</TableCell>
+                    <TableCell>
+                      <AgentChip name={row.agent_name} />
+                    </TableCell>
+                    <TableCell>
+                      <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">{row.tool_name}</code>
+                    </TableCell>
+                    <TableCell className="text-xs text-muted-foreground">{row.rule_name || "—"}</TableCell>
+                    <TableCell className="w-48 max-w-[12rem]">
+                      <ToolInputPreview
+                        input={row.tool_input}
+                        expanded={expanded.has(row.id)}
+                        onToggle={() => toggleExpand(row.id)}
+                      />
+                    </TableCell>
+                    <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                      {fmtTime(row.created_at)}
+                    </TableCell>
+                    <TableCell className="text-right">
+                      <div className="flex justify-end gap-1">
+                        <Button
+                          size="sm"
+                          className="h-7 px-2 text-xs"
+                          disabled={deciding === row.id}
+                          onClick={() => decide(row.id, "allowed")}
+                        >
+                          <CheckIcon className="mr-1 h-3 w-3" />
+                          允许
+                        </Button>
+                        <Button
+                          size="sm"
+                          variant="destructive"
+                          className="h-7 px-2 text-xs"
+                          disabled={deciding === row.id}
+                          onClick={() => decide(row.id, "denied")}
+                        >
+                          <XIcon className="mr-1 h-3 w-3" />
+                          拒绝
+                        </Button>
+                      </div>
+                    </TableCell>
+                  </TableRow>
+                  {expanded.has(row.id) && <ToolInputDetailRow colSpan={7} input={row.tool_input} />}
+                </React.Fragment>
               ))}
             </TableBody>
           </Table>
@@ -175,9 +211,7 @@ export function InterceptTab({ taskId }: Props) {
 
       {/* history table */}
       <div className="rounded-lg border">
-        <div className="border-b px-4 py-2.5 text-xs font-medium text-muted-foreground">
-          全部记录（{rows.length}）
-        </div>
+        <div className="border-b px-4 py-2.5 text-xs font-medium text-muted-foreground">全部记录（{rows.length}）</div>
         <Table>
           <TableHeader>
             <TableRow>
@@ -193,25 +227,39 @@ export function InterceptTab({ taskId }: Props) {
           </TableHeader>
           <TableBody>
             {rows.map((row) => (
-              <TableRow key={row.id} className={row.status === "pending" ? "opacity-40" : ""}>
-                <TableCell className="text-muted-foreground text-xs">{row.id}</TableCell>
-                <TableCell><AgentChip name={row.agent_name} /></TableCell>
-                <TableCell>
-                  <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">{row.tool_name}</code>
-                </TableCell>
-                <TableCell className="text-xs text-muted-foreground">{row.rule_name || "—"}</TableCell>
-                <TableCell className="w-48 max-w-[12rem]"><InputPreview input={row.tool_input} /></TableCell>
-                <TableCell><StatusBadge status={row.status} /></TableCell>
-                <TableCell className="whitespace-nowrap text-xs text-muted-foreground">{fmtTime(row.created_at)}</TableCell>
-                <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
-                  {row.decided_at ? fmtTime(row.decided_at) : "—"}
-                </TableCell>
-              </TableRow>
+              <React.Fragment key={row.id}>
+                <TableRow className={row.status === "pending" ? "opacity-40" : ""}>
+                  <TableCell className="text-muted-foreground text-xs">{row.id}</TableCell>
+                  <TableCell>
+                    <AgentChip name={row.agent_name} />
+                  </TableCell>
+                  <TableCell>
+                    <code className="rounded bg-muted px-1.5 py-0.5 text-xs font-mono">{row.tool_name}</code>
+                  </TableCell>
+                  <TableCell className="text-xs text-muted-foreground">{row.rule_name || "—"}</TableCell>
+                  <TableCell className="w-48 max-w-[12rem]">
+                    <ToolInputPreview
+                      input={row.tool_input}
+                      expanded={expanded.has(row.id)}
+                      onToggle={() => toggleExpand(row.id)}
+                    />
+                  </TableCell>
+                  <TableCell>
+                    <StatusBadge status={row.status} />
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                    {fmtTime(row.created_at)}
+                  </TableCell>
+                  <TableCell className="whitespace-nowrap text-xs text-muted-foreground">
+                    {row.decided_at ? fmtTime(row.decided_at) : "—"}
+                  </TableCell>
+                </TableRow>
+                {expanded.has(row.id) && <ToolInputDetailRow colSpan={8} input={row.tool_input} />}
+              </React.Fragment>
             ))}
           </TableBody>
         </Table>
       </div>
     </div>
-    </TooltipProvider>
   );
 }

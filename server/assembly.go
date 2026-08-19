@@ -329,17 +329,20 @@ func contains(ss []string, v string) bool {
 }
 
 // buildDomainReg builds a name→CoreTool registry from a server-level ToolSet
-// (real AssetStore, nil ExplorationStore, taskID=0). Used by ToolResolve to inject
-// domain tools into agents (Auto, custom) that don't own a per-task ToolSet.
+// (real AssetStore, nil ExplorationStore, taskID=0, server-level PG handle for
+// cross-task node reads). Used by ToolResolve to inject domain tools into agents
+// (Auto, custom) that don't own a per-task ToolSet.
 // nil as → returns nil (no injection, graceful degradation).
 // Exploration-graph tools injected from here have no store to read; their
-// handlers degrade to a tool error (agent.errNoTaskGraph) instead of crashing.
-func buildDomainReg(as *db.AssetStore) map[string]actool.CoreTool {
+// handlers degrade to a tool error (agent.errNoTaskGraph) instead of crashing —
+// except node_detail, which resolves by-id against pg (globally unique node ids).
+func buildDomainReg(pg *db.DB, as *db.AssetStore) map[string]actool.CoreTool {
 	if as == nil {
 		return nil
 	}
 	serverTS := agent.NewToolSet(nil, "")
 	serverTS.SetAssetStore(as, as.Companies())
+	serverTS.SetExplorationDB(pg)
 	reg := make(map[string]actool.CoreTool)
 	for _, t := range serverTS.AllDomainTools() {
 		reg[t.Name()] = t

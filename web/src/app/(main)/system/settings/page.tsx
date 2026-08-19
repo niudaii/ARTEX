@@ -89,7 +89,11 @@ export default function SystemSettingsPage() {
   };
   const detectPython = () => {
     setSaving(true);
-    api.detectPython().then((r) => setPyInterp(r.python_interpreter)).catch(() => undefined).finally(() => setSaving(false));
+    api
+      .detectPython()
+      .then((r) => setPyInterp(r.python_interpreter))
+      .catch(() => undefined)
+      .finally(() => setSaving(false));
   };
 
   React.useEffect(() => {
@@ -231,9 +235,11 @@ export default function SystemSettingsPage() {
           </CardTitle>
           <CardDescription>
             这是网络搜索的<b>总开关 + 来源配置</b>。开启后，才能在<b>每个 Agent 的配置</b>里单独选择是否启用
-            <b>web_search</b>（仅返回标题/链接/摘要，不抓取正文；抓取由 WebFetch 负责）。网络搜索<b>不走</b>记录代理，独立于流量捕获。
+            <b>web_search</b>（仅返回标题/链接/摘要，不抓取正文；抓取由 WebFetch 负责）。网络搜索<b>不走</b>
+            记录代理，独立于流量捕获。
             <br />
-            来源可选 <b>DuckDuckGo（ddgs）</b>（无需 Key）、<b>Brave（免费版）</b>（需填写 Brave API Key）或 <b>Tavily</b>（需填写 Tavily API Key）。总开关关闭时，各 Agent 的网络搜索开关不可用。
+            来源可选 <b>DuckDuckGo（ddgs）</b>（无需 Key）、<b>Brave（免费版）</b>（需填写 Brave API Key）或{" "}
+            <b>Tavily</b>（需填写 Tavily API Key）。总开关关闭时，各 Agent 的网络搜索开关不可用。
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-4">
@@ -339,9 +345,7 @@ export default function SystemSettingsPage() {
                   已选择 Tavily 但尚未配置 Key —— 在保存 Key 之前，搜索工具不会启用。
                 </p>
               )}
-              <p className="text-muted-foreground text-xs">
-                前往 https://tavily.com 注册并获取 API Key。
-              </p>
+              <p className="text-muted-foreground text-xs">前往 https://tavily.com 注册并获取 API Key。</p>
             </div>
           )}
 
@@ -374,7 +378,13 @@ export default function SystemSettingsPage() {
               <p className="text-muted-foreground text-xs">
                 用当前配置（来源 + 代理 + Key）实际搜索一次「test」，验证是否可用。
               </p>
-              <Button type="button" variant="outline" onClick={runTest} disabled={!loaded || testing} className="shrink-0">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={runTest}
+                disabled={!loaded || testing}
+                className="shrink-0"
+              >
                 {testing ? "测试中…" : "测试搜索"}
               </Button>
             </div>
@@ -420,7 +430,10 @@ export default function SystemSettingsPage() {
           </CardTitle>
           <CardDescription>
             任务完成时推送消息中附带的链接 base URL。保存后，推送消息末尾会附带{" "}
-            <code>{"{base}"}/function/tasks/detail?id={"{任务ID}"}</code> 格式的可点击链接。留空则不附带链接。
+            <code>
+              {"{base}"}/function/tasks/detail?id={"{任务ID}"}
+            </code>{" "}
+            格式的可点击链接。留空则不附带链接。
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">
@@ -446,7 +459,8 @@ export default function SystemSettingsPage() {
             工作并发 · Work Agent 数
           </CardTitle>
           <CardDescription>
-            每个任务并发运行的工作 agent 数量（默认 3）。数值越大并发探测越多、消耗也越高。修改后<b>对之后启动的任务生效</b>，正在运行的任务不受影响。
+            每个任务并发运行的工作 agent 数量（默认 3）。数值越大并发探测越多、消耗也越高。修改后
+            <b>对之后启动的任务生效</b>，正在运行的任务不受影响。
           </CardDescription>
         </CardHeader>
         <CardContent className="flex flex-col gap-3">

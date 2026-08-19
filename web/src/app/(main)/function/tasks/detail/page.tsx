@@ -1,43 +1,40 @@
 "use client";
 
 import * as React from "react";
+
 import Link from "next/link";
 import { useSearchParams } from "next/navigation";
+
+import { ArrowLeftIcon, BrainIcon, PauseIcon, PlayIcon } from "lucide-react";
 import { toast } from "sonner";
-import {
-  ArrowLeftIcon,
-  PauseIcon,
-  PlayIcon,
-  BrainIcon,
-} from "lucide-react";
 
-import { SidebarTrigger } from "@/components/ui/sidebar";
-import { Separator } from "@/components/ui/separator";
-import { Button } from "@/components/ui/button";
-import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { StatusBadge } from "@/components/status-badge";
+import { Button } from "@/components/ui/button";
+import { Separator } from "@/components/ui/separator";
+import { SidebarTrigger } from "@/components/ui/sidebar";
+import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { api } from "@/lib/api";
-import type { Task } from "@/lib/types";
 import { isTerminalTaskStatus } from "@/lib/status";
+import type { Task } from "@/lib/types";
 
-import { SessionsTab } from "./_tabs/sessions-tab";
-import { OverviewTab } from "./_tabs/overview-tab";
-import { GraphTab } from "./_tabs/graph-tab";
-import { FindingsTab } from "./_tabs/findings-tab";
-import { ReportTab } from "./_tabs/report-tab";
-import { InterceptTab } from "./_tabs/intercept-tab";
 import { AssetsTab } from "./_tabs/assets-tab";
 import { CoverageGraphTab } from "./_tabs/coverage-graph-tab";
+import { FindingsTab } from "./_tabs/findings-tab";
+import { GraphTab } from "./_tabs/graph-tab";
+import { InterceptTab } from "./_tabs/intercept-tab";
+import { OverviewTab } from "./_tabs/overview-tab";
+import { ReportTab } from "./_tabs/report-tab";
+import { SessionsTab } from "./_tabs/sessions-tab";
 
 const TABS = [
-  { value: "sessions",  label: "会话" },
-  { value: "overview",  label: "总览" },
-  { value: "graph",     label: "探索链路" },
-  { value: "findings",  label: "发现" },
-  { value: "assets",    label: "测试资产" },
-  { value: "coverage",  label: "资产覆盖图" },
+  { value: "sessions", label: "会话" },
+  { value: "overview", label: "总览" },
+  { value: "graph", label: "探索链路" },
+  { value: "findings", label: "发现" },
+  { value: "assets", label: "测试资产" },
+  { value: "coverage", label: "资产覆盖图" },
   { value: "intercept", label: "拦截审批" },
-  { value: "report",    label: "报告" },
+  { value: "report", label: "报告" },
 ];
 
 function TaskDetailInner() {
@@ -52,19 +49,24 @@ function TaskDetailInner() {
   React.useEffect(() => {
     let alive = true;
     const load = () =>
-      api.interceptTask(id)
-        .then((rows) => { if (alive) setInterceptPendingCount(rows.filter((r) => r.status === "pending").length); })
-        .catch(() => {});
+      api
+        .interceptTask(id)
+        .then((rows) => {
+          if (alive) setInterceptPendingCount(rows.filter((r) => r.status === "pending").length);
+        })
+        .catch(() => {
+          /* ignore */
+        });
     load();
     const t = setInterval(load, 5000);
-    return () => { alive = false; clearInterval(t); };
+    return () => {
+      alive = false;
+      clearInterval(t);
+    };
   }, [id]);
 
   const load = React.useCallback(() => {
-    Promise.all([
-      api.tasks(),
-      api.stats(id).catch(() => null),
-    ])
+    Promise.all([api.tasks(), api.stats(id).catch(() => null)])
       .then(([r, s]) => {
         const base = r.tasks.find((t) => t.id === id) ?? null;
         const at = (s as { active_task?: Partial<Task> & { paused?: boolean } } | null)?.active_task;
@@ -79,10 +81,14 @@ function TaskDetailInner() {
         setTask(base);
         setPaused(at?.paused ?? base?.paused ?? false);
       })
-      .catch(() => {})
+      .catch(() => {
+        /* ignore */
+      })
       .finally(() => setLoaded(true));
   }, [id]);
-  React.useEffect(() => { load(); }, [load]);
+  React.useEffect(() => {
+    load();
+  }, [load]);
 
   async function togglePause() {
     const next = !paused;
@@ -110,16 +116,12 @@ function TaskDetailInner() {
     );
   }
 
-  const engineMode = paused ? "paused" : task.engine_mode ?? "idle";
+  const engineMode = paused ? "paused" : (task.engine_mode ?? "idle");
 
   const terminal = isTerminalTaskStatus(task.status);
 
   return (
-    <Tabs
-      value={tab}
-      onValueChange={setTab}
-      className="flex flex-1 flex-col gap-0"
-    >
+    <Tabs value={tab} onValueChange={setTab} className="flex flex-1 flex-col gap-0">
       {/* Top fixed area */}
       <header className="sticky top-0 z-10 flex flex-col gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur lg:px-6">
         <div className="flex items-center gap-2">
@@ -132,9 +134,7 @@ function TaskDetailInner() {
           <h1 className="max-w-md truncate text-sm font-semibold" title={task.description}>
             {task.description}
           </h1>
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">
-            {task.id}
-          </code>
+          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">{task.id}</code>
           <Separator orientation="vertical" className="mx-1 h-4" />
           {/* status pills */}
           <span className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs">
@@ -146,12 +146,7 @@ function TaskDetailInner() {
             <StatusBadge domain="engine" value={engineMode} dot />
           )}
           <div className="ml-auto">
-            <Button
-              size="sm"
-              variant={paused ? "default" : "outline"}
-              onClick={togglePause}
-              disabled={terminal}
-            >
+            <Button size="sm" variant={paused ? "default" : "outline"} onClick={togglePause} disabled={terminal}>
               {paused ? <PlayIcon /> : <PauseIcon />}
               {paused ? "恢复" : "暂停"}
             </Button>

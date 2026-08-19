@@ -1,27 +1,25 @@
 "use client";
 
 import * as React from "react";
+
 import {
   ActivityIcon,
   AlertTriangleIcon,
   BugIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   ClockIcon,
   RefreshCwIcon,
   ShieldCheckIcon,
   TargetIcon,
 } from "lucide-react";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import { Button } from "@/components/ui/button";
-import { Progress } from "@/components/ui/progress";
+
 import { StatusBadge } from "@/components/status-badge";
+import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
-import type { Task, Stats, TaskNode, Finding } from "@/lib/types";
+import type { Finding, Stats, Task, TaskNode } from "@/lib/types";
 
 function StatCard({
   label,
@@ -42,11 +40,24 @@ function StatCard({
         </CardDescription>
         <CardTitle className="text-2xl tabular-nums">{value}</CardTitle>
       </CardHeader>
-      {sub && (
-        <CardContent className="text-xs text-muted-foreground">{sub}</CardContent>
-      )}
+      {sub && <CardContent className="text-xs text-muted-foreground">{sub}</CardContent>}
     </Card>
   );
+}
+
+// intent payload 通常是 JSON 串（{"summary":…, "asset_ids":…}）；展开时美化显示
+// 便于阅读，解析失败则原样输出。
+function prettyPayload(payload?: string): string {
+  const s = (payload ?? "").trim();
+  if (!s) return "（空）";
+  if (s.startsWith("{") || s.startsWith("[")) {
+    try {
+      return JSON.stringify(JSON.parse(s), null, 2);
+    } catch {
+      // fall through — 原样展示
+    }
+  }
+  return s;
 }
 
 export function OverviewTab({ taskId }: { taskId: string }) {
@@ -63,6 +74,18 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   } | null>(null);
   // 正在重跑的意图 id（含 "__all__" 表示批量），用于禁用按钮 + 转圈。
   const [rerunning, setRerunning] = React.useState<Set<string>>(new Set());
+  // 被拦意图默认只列前 20 条；showAllBlocked 展开全部，expandedBlocked 记录
+  // 哪些条目展开了完整 payload。
+  const [showAllBlocked, setShowAllBlocked] = React.useState(false);
+  const [expandedBlocked, setExpandedBlocked] = React.useState<Set<string>>(new Set());
+
+  const toggleBlockedExpand = (id: string) =>
+    setExpandedBlocked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
 
   const markRerun = (key: string, on: boolean) =>
     setRerunning((prev) => {
@@ -77,9 +100,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     markRerun(id, true);
     try {
       await api.rerunIntent(taskId, id);
-      setIntents((prev) =>
-        prev.map((i) => (i.id === id ? { ...i, state: "open" } : i)),
-      );
+      setIntents((prev) => prev.map((i) => (i.id === id ? { ...i, state: "open" } : i)));
     } catch {
       // 失败忽略：下次轮询仍显示 blocked，用户可再点
     } finally {
@@ -92,9 +113,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
     markRerun("__all__", true);
     try {
       await api.rerunBlocked(taskId);
-      setIntents((prev) =>
-        prev.map((i) => (i.state === "blocked" ? { ...i, state: "open" } : i)),
-      );
+      setIntents((prev) => prev.map((i) => (i.state === "blocked" ? { ...i, state: "open" } : i)));
     } catch {
       // ignore
     } finally {
@@ -107,13 +126,12 @@ export function OverviewTab({ taskId }: { taskId: string }) {
 
     const load = async () => {
       try {
-        const [tasksResp, statsResp, intentsResp, findingsResp] =
-          await Promise.all([
-            api.tasks(),
-            api.stats(taskId),
-            api.intents(taskId),
-            api.findings(taskId),
-          ]);
+        const [tasksResp, statsResp, intentsResp, findingsResp] = await Promise.all([
+          api.tasks(),
+          api.stats(taskId),
+          api.intents(taskId),
+          api.findings(taskId),
+        ]);
         if (cancelled) return;
         setTask(tasksResp.tasks.find((t) => t.id === taskId) ?? null);
         setStats(statsResp);
@@ -126,7 +144,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           .then((c) => {
             if (!cancelled) setCoverage(c);
           })
-          .catch(() => {});
+          .catch(() => {
+            /* ignore */
+          });
       } catch {
         // transient errors are ignored; the next poll will retry
       }
@@ -144,9 +164,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   const open = intents.filter((i) => i.state === "open");
   const blocked = intents.filter((i) => i.state === "blocked");
   const taskFindings = findings.filter((f) => f.task_id === taskId);
-  const goalsPct = task?.goals_total
-    ? Math.round(((task.goals_met ?? 0) / task.goals_total) * 100)
-    : 0;
+  const goalsPct = task?.goals_total ? Math.round(((task.goals_met ?? 0) / task.goals_total) * 100) : 0;
 
   return (
     <div className="flex flex-col gap-4">
@@ -202,17 +220,13 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           </div>
           <div>
             <div className="text-xs text-muted-foreground">运行中 Worker</div>
-            <div className="mt-1 text-lg font-semibold tabular-nums">
-              {running.length}
-            </div>
+            <div className="mt-1 text-lg font-semibold tabular-nums">{running.length}</div>
           </div>
           <div>
             <div className="text-xs text-muted-foreground">最近活动</div>
             <div className="mt-1 inline-flex items-center gap-1 text-sm">
               <ClockIcon className="size-3.5" />
-              {task?.last_activity
-                ? new Date(task.last_activity).toLocaleTimeString("zh-CN")
-                : "—"}
+              {task?.last_activity ? new Date(task.last_activity).toLocaleTimeString("zh-CN") : "—"}
             </div>
           </div>
           <div>
@@ -248,9 +262,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 <span className="min-w-0 flex-1 truncate">{i.payload}</span>
               </div>
             ))}
-            {running.length === 0 && (
-              <p className="text-sm text-muted-foreground">暂无进行中意图</p>
-            )}
+            {running.length === 0 && <p className="text-sm text-muted-foreground">暂无进行中意图</p>}
           </CardContent>
         </Card>
 
@@ -262,27 +274,19 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           </CardHeader>
           <CardContent className="grid grid-cols-2 gap-3 text-sm">
             <div>
-              <div className="text-2xl font-semibold tabular-nums text-red-600">
-                {taskFindings.length}
-              </div>
+              <div className="text-2xl font-semibold tabular-nums text-red-600">{taskFindings.length}</div>
               <div className="text-xs text-muted-foreground">确认漏洞</div>
             </div>
             <div>
-              <div className="text-2xl font-semibold tabular-nums text-blue-600">
-                {running.length}
-              </div>
+              <div className="text-2xl font-semibold tabular-nums text-blue-600">{running.length}</div>
               <div className="text-xs text-muted-foreground">执行中</div>
             </div>
             <div>
-              <div className="text-2xl font-semibold tabular-nums">
-                {open.length}
-              </div>
+              <div className="text-2xl font-semibold tabular-nums">{open.length}</div>
               <div className="text-xs text-muted-foreground">frontier 待领</div>
             </div>
             <div>
-              <div className="text-2xl font-semibold tabular-nums text-red-600">
-                {blocked.length}
-              </div>
+              <div className="text-2xl font-semibold tabular-nums text-red-600">{blocked.length}</div>
               <div className="text-xs text-muted-foreground">被拦意图</div>
             </div>
           </CardContent>
@@ -301,9 +305,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
                 <span className="min-w-0 flex-1 truncate">{f.summary}</span>
               </div>
             ))}
-            {taskFindings.length === 0 && (
-              <p className="text-sm text-muted-foreground">暂无发现</p>
-            )}
+            {taskFindings.length === 0 && <p className="text-sm text-muted-foreground">暂无发现</p>}
           </CardContent>
         </Card>
       </div>
@@ -315,45 +317,66 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           <CardHeader className="flex-row items-center justify-between gap-2 space-y-0">
             <CardTitle className="flex items-center gap-2 text-sm">
               <AlertTriangleIcon className="size-4 text-red-500" /> 被拦/出错意图
-              <span className="text-xs font-normal text-muted-foreground">
-                （共 {blocked.length} 条，可重跑）
-              </span>
+              <span className="text-xs font-normal text-muted-foreground">（共 {blocked.length} 条，可重跑）</span>
             </CardTitle>
-            <Button
-              size="sm"
-              variant="outline"
-              disabled={rerunning.has("__all__")}
-              onClick={() => void rerunAll()}
-            >
-              <RefreshCwIcon
-                className={`size-3.5 ${rerunning.has("__all__") ? "animate-spin" : ""}`}
-              />
+            <Button size="sm" variant="outline" disabled={rerunning.has("__all__")} onClick={() => void rerunAll()}>
+              <RefreshCwIcon className={`size-3.5 ${rerunning.has("__all__") ? "animate-spin" : ""}`} />
               全部重跑
             </Button>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
-            {blocked.slice(0, 20).map((i) => (
-              <div key={i.id} className="flex items-center gap-2 text-sm">
-                <StatusBadge domain="intent" value={i.state} />
-                <span className="min-w-0 flex-1 truncate">{i.payload}</span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 shrink-0 px-2 text-xs"
-                  disabled={rerunning.has(i.id)}
-                  onClick={() => void rerunOne(i.id)}
-                >
-                  <RefreshCwIcon
-                    className={`size-3 ${rerunning.has(i.id) ? "animate-spin" : ""}`}
-                  />
-                  重跑
-                </Button>
+            {(showAllBlocked ? blocked : blocked.slice(0, 20)).map((i) => (
+              <div key={i.id} className="text-sm">
+                <div className="flex items-center gap-2">
+                  <StatusBadge domain="intent" value={i.state} />
+                  <button
+                    type="button"
+                    onClick={() => toggleBlockedExpand(i.id)}
+                    title={expandedBlocked.has(i.id) ? "收起" : "展开完整内容"}
+                    className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                  >
+                    {expandedBlocked.has(i.id) ? (
+                      <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{i.payload}</span>
+                  </button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    disabled={rerunning.has(i.id)}
+                    onClick={() => void rerunOne(i.id)}
+                  >
+                    <RefreshCwIcon className={`size-3 ${rerunning.has(i.id) ? "animate-spin" : ""}`} />
+                    重跑
+                  </Button>
+                </div>
+                {expandedBlocked.has(i.id) && (
+                  <div className="mt-1 space-y-1">
+                    {i.last_error && (
+                      <div className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded border border-red-500/30 bg-red-500/5 p-2 text-xs">
+                        <span className="font-medium text-red-600 dark:text-red-400">原因：</span>
+                        {i.last_error}
+                      </div>
+                    )}
+                    <pre className="max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-xs leading-relaxed">
+                      {prettyPayload(i.payload)}
+                    </pre>
+                  </div>
+                )}
               </div>
             ))}
             {blocked.length > 20 && (
-              <p className="text-xs text-muted-foreground">
-                仅显示前 20 条，点「全部重跑」处理剩余 {blocked.length - 20} 条。
-              </p>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="self-start px-2 text-xs text-muted-foreground"
+                onClick={() => setShowAllBlocked((v) => !v)}
+              >
+                {showAllBlocked ? "收起" : `查看全部 ${blocked.length} 条`}
+              </Button>
             )}
           </CardContent>
         </Card>
@@ -361,24 +384,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
 
       {/* Stat cards */}
       <div className="grid grid-cols-2 gap-4 lg:grid-cols-3">
-        <StatCard
-          label="待领意图"
-          value={open.length}
-          icon={ShieldCheckIcon}
-          sub="frontier 开放"
-        />
-        <StatCard
-          label="确认发现"
-          value={taskFindings.length}
-          icon={BugIcon}
-          sub="本任务"
-        />
-        <StatCard
-          label="意图总数"
-          value={intents.length}
-          icon={AlertTriangleIcon}
-          sub="本任务全部意图"
-        />
+        <StatCard label="待领意图" value={open.length} icon={ShieldCheckIcon} sub="frontier 开放" />
+        <StatCard label="确认发现" value={taskFindings.length} icon={BugIcon} sub="本任务" />
+        <StatCard label="意图总数" value={intents.length} icon={AlertTriangleIcon} sub="本任务全部意图" />
       </div>
     </div>
   );

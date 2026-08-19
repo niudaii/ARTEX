@@ -36,7 +36,13 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   // ── tasks ──
   if (path === "/tasks" && m === "GET") return { tasks: D.tasks, active: D.ACTIVE_TASK };
   if (path === "/tasks" && m === "POST")
-    return { ...D.tasks[0], id: "t-new", description: String(b.description ?? "新任务"), goal: String(b.goal ?? ""), status: "created" };
+    return {
+      ...D.tasks[0],
+      id: "t-new",
+      description: String(b.description ?? "新任务"),
+      goal: String(b.goal ?? ""),
+      status: "created",
+    };
   if (seg[0] === "tasks" && seg.length === 2 && m === "DELETE") return { deleted: 1 };
   if (seg[0] === "tasks" && seg[2] === "control") return { id: seg[1], paused: b.action === "pause" };
   if (seg[0] === "tasks" && seg[2] === "chat" && seg[3] === "stop") return { status: "stopped" };
@@ -99,7 +105,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/settings" && m === "PUT") return { ...D.settings, ...b };
   if (path === "/settings/web-search/test") return { ok: true, count: 5, backend: D.settings.web_search_backend };
   if (path === "/settings/python/detect") return { python_interpreter: "/usr/bin/python3" };
-  if (path === "/chat") return { reply: "（demo）我已把该建议注入为一条高优意图，work agent 会尽快执行。", mode: "hint" };
+  if (path === "/chat")
+    return { reply: "（demo）我已把该建议注入为一条高优意图，work agent 会尽快执行。", mode: "hint" };
   if (path === "/gc") return { removed: 0 };
 
   // ── 工具执行历史 ──
@@ -109,18 +116,28 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/llm/records" && m === "GET") return { records: D.llmRecords, total: D.llmRecords.length };
   if (path === "/llm/records" && m === "DELETE") return { deleted: 0 };
   if (path === "/llm/records/tasks") return { tasks: D.llmTasks };
-  if (seg[0] === "llm" && seg[1] === "records" && seg.length === 3 && m === "GET") return D.llmRecordDetail(Number(seg[2]));
+  if (seg[0] === "llm" && seg[1] === "records" && seg.length === 3 && m === "GET")
+    return D.llmRecordDetail(Number(seg[2]));
   if (path === "/llm" && m === "GET") return D.llmConfig;
   if (path === "/llm" && m === "POST") return { ok: true };
   if (path === "/llm/test") return { ok: true, latency_ms: 128, model: String(b.model ?? "claude-opus-4-8") };
   if (path === "/llm/profiles" && m === "GET") return { profiles: D.llmProfiles };
   if (path === "/llm/profiles" && m === "POST") return { id: Number(b.id) || 3 };
   if (path === "/llm/profiles/active") return { ok: true };
-  if (seg[0] === "llm" && seg[1] === "profiles" && seg.length === 3 && m === "DELETE") return { deleted: Number(seg[2]) };
+  if (seg[0] === "llm" && seg[1] === "profiles" && seg.length === 3 && m === "DELETE")
+    return { deleted: Number(seg[2]) };
 
   // ── agents ──
   if (path === "/agents" && m === "GET") return { agents: D.agents };
-  if (path === "/agents" && m === "POST") return { id: "9", key: String(b.key ?? "custom"), name: String(b.name ?? ""), role: "custom", builtin: false, enabled: true };
+  if (path === "/agents" && m === "POST")
+    return {
+      id: "9",
+      key: String(b.key ?? "custom"),
+      name: String(b.name ?? ""),
+      role: "custom",
+      builtin: false,
+      enabled: true,
+    };
   if (seg[0] === "agents" && seg.length === 2 && m === "GET") return D.agentDetail(seg[1]);
   if (seg[0] === "agents" && seg[2] === "triggers" && m === "GET") return { triggers: [] };
   if (seg[0] === "agents" && seg[2] === "prompts") return { versions: D.agentDetail(seg[1]).versions };
@@ -131,7 +148,14 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
 
   // ── conversations ──
   if (path === "/conversations" && m === "GET") return { conversations: D.conversations };
-  if (path === "/conversations" && m === "POST") return { id: 3, agent_key: String(b.agent_key ?? "mainagent"), title: String(b.title ?? "新会话"), created_at: "2026-07-26T04:00:00Z", updated_at: "2026-07-26T04:00:00Z" };
+  if (path === "/conversations" && m === "POST")
+    return {
+      id: 3,
+      agent_key: String(b.agent_key ?? "mainagent"),
+      title: String(b.title ?? "新会话"),
+      created_at: "2026-07-26T04:00:00Z",
+      updated_at: "2026-07-26T04:00:00Z",
+    };
   if (seg[0] === "conversations" && seg[2] === "messages" && seg.length === 3 && m === "GET") {
     const items = D.conversationMessages[Number(seg[1])] ?? [];
     return { items, cursor: items.length ? items[items.length - 1].seq : 0, running: false };
@@ -157,7 +181,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (seg[0] === "mcp" && seg.length === 2 && m === "DELETE") return { deleted: Number(seg[1]) };
 
   // ── scopesentry（demo：未配置）──
-  if (path === "/sync/scopesentry/status") return { exists: false, configured: false, enabled: false, reachable: false, tools: [] };
+  if (path === "/sync/scopesentry/status")
+    return { exists: false, configured: false, enabled: false, reachable: false, tools: [] };
   if (path === "/sync/scopesentry/projects") return { projects: [], tag: {} };
   if (path === "/sync/scopesentry/tasks") return { tasks: [] };
   if (path === "/sync/scopesentry/sync") return { synced: {}, companies: null, warnings: null, errors: null };
@@ -174,7 +199,8 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
 
   // ── intercept ──
   if (path === "/intercept/rules" && m === "GET") return { rules: D.interceptRules };
-  if (seg[0] === "intercept" && seg[1] === "rules" && seg[3] === "toggle") return { ok: true, enabled: b.enabled ?? true };
+  if (seg[0] === "intercept" && seg[1] === "rules" && seg[3] === "toggle")
+    return { ok: true, enabled: b.enabled ?? true };
   if (path === "/intercept/pending" && m === "GET") return { pending: D.interceptPending };
   if (seg[0] === "intercept" && seg[1] === "pending" && seg[3] === "decide") return { ok: true };
   if (seg[0] === "intercept" && seg[1] === "pending" && seg.length === 3 && m === "GET")
@@ -188,5 +214,9 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (["POST", "PUT", "PATCH", "DELETE"].includes(m)) return { ok: true };
 
   // ── 读兜底：集合类给 []，其余 {} ──
-  return /(\/(tasks|profiles|conversations|rules|history|projects|tokens|agents|servers|skills|tools|findings|intents)s?$)|s$/.test(path) ? [] : {};
+  return /(\/(tasks|profiles|conversations|rules|history|projects|tokens|agents|servers|skills|tools|findings|intents)s?$)|s$/.test(
+    path,
+  )
+    ? []
+    : {};
 }

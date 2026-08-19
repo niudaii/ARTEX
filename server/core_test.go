@@ -70,9 +70,13 @@ func TestCoreTaskLifecyclePG(t *testing.T) {
 		t.Fatalf("bad task payload: %v", out)
 	}
 
-	// the exploration owns goal node(s) — goal seeding is async, poll briefly
+	// the exploration owns goal node(s) — goal seeding is async (launchTask
+	// goroutine) and runs a REAL LLM decomposition round first; only when that
+	// yields nothing does the fast fallback write the raw goal. A real round
+	// trip can take tens of seconds (provider timeout is 30s), so poll up to a
+	// minute instead of failing a correct-but-slow decomposition.
 	var goals []*db.Node
-	for i := 0; i < 30; i++ {
+	for i := 0; i < 600; i++ {
 		goals, err = m.pg.Exploration(expID).ListByKind("goal", 10)
 		if err != nil || len(goals) > 0 {
 			break

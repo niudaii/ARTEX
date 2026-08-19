@@ -1,4 +1,0 @@
-interface:
-  display_name: "Java 漏洞检测"
-  short_description: "Java 漏洞 OOB 检测插件集，内置 fastjson @JSONType RCE 探测"
-  default_prompt: "使用 $java-vuln 检测目标接口是否存在 fastjson 漏洞。"

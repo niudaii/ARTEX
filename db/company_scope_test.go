@@ -56,8 +56,17 @@ func TestCompanyScopeAttribution(t *testing.T) {
 		d.Close()
 		t.Fatalf("startMax: %v", err)
 	}
+	var companyID int64
 	t.Cleanup(func() {
 		_, _ = d.Exec(`DELETE FROM assets WHERE id > $1`, startMax)
+		// Also drop the test company: its scope rows survive asset cleanup and
+		// the next run reuses uniq=startMax+1 (MAX(id) falls back once the test
+		// assets are gone), so the leftover scope would auto-attribute the new
+		// run's "pre-scope" asset and fail its unattributed assertion. Scope
+		// cascades from companies; assets.company_id is SET NULL.
+		if companyID > 0 {
+			_, _ = d.Exec(`DELETE FROM companies WHERE id = $1`, companyID)
+		}
 		d.Close()
 	})
 
@@ -72,6 +81,7 @@ func TestCompanyScopeAttribution(t *testing.T) {
 	if err != nil {
 		t.Fatalf("UpsertCompany: %v", err)
 	}
+	companyID = cid
 
 	// a pre-existing asset (inserted BEFORE any scope) — must be back-filled.
 	preID, err := as.UpsertSubdomain(UpsertSubdomainReq{Domain: sub})

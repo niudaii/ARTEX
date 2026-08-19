@@ -1,40 +1,19 @@
 "use client";
 
 import * as React from "react";
+
 import Link from "next/link";
-import {
-  ChevronRightIcon,
-  ShieldAlertIcon,
-  ArrowUpRightIcon,
-} from "lucide-react";
+
+import { ArrowUpRightIcon, ChevronRightIcon, ShieldAlertIcon } from "lucide-react";
 
 import { StatusBadge } from "@/components/status-badge";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
 import { TablePagination } from "@/components/table-pagination";
-import { cn } from "@/lib/utils";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
 import type { Finding, Severity } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 const SEVERITY_ORDER: Record<Severity, number> = { high: 3, medium: 2, low: 1 };
 
@@ -64,7 +43,9 @@ export default function FindingsPage() {
         .then((fs) => {
           if (alive) setFindings(fs);
         })
-        .catch(() => {});
+        .catch(() => {
+          /* ignore */
+        });
     };
     load();
     const t = setInterval(load, 5000);
@@ -74,10 +55,7 @@ export default function FindingsPage() {
     };
   }, []);
 
-  const vulnclasses = React.useMemo(
-    () => Array.from(new Set(findings.map((f) => f.vulnclass))).sort(),
-    [findings],
-  );
+  const vulnclasses = React.useMemo(() => Array.from(new Set(findings.map((f) => f.vulnclass))).sort(), [findings]);
 
   const counts = React.useMemo(() => {
     const c = { high: 0, medium: 0, low: 0 };
@@ -89,8 +67,7 @@ export default function FindingsPage() {
   const rows = React.useMemo(() => {
     let list = findings.slice();
     if (severity !== "all") list = list.filter((f) => f.severity === severity);
-    if (vulnclass !== "all")
-      list = list.filter((f) => f.vulnclass === vulnclass);
+    if (vulnclass !== "all") list = list.filter((f) => f.vulnclass === vulnclass);
     list.sort((a, b) => {
       if (sort === "severity") {
         const d = SEVERITY_ORDER[b.severity] - SEVERITY_ORDER[a.severity];
@@ -102,12 +79,11 @@ export default function FindingsPage() {
   }, [findings, severity, vulnclass, sort]);
 
   // reset to page 1 whenever filters change
-  React.useEffect(() => { setPage(1); }, [severity, vulnclass, sort]);
+  React.useEffect(() => {
+    setPage(1);
+  }, [severity, vulnclass, sort]);
 
-  const paginated = React.useMemo(
-    () => rows.slice((page - 1) * pageSize, page * pageSize),
-    [rows, page, pageSize],
-  );
+  const paginated = React.useMemo(() => rows.slice((page - 1) * pageSize, page * pageSize), [rows, page, pageSize]);
 
   const statCards: { label: string; value: number; tone?: string }[] = [
     { label: "发现总数", value: counts.total },
@@ -129,11 +105,7 @@ export default function FindingsPage() {
             <Card key={s.label} className="gap-1 py-4">
               <CardHeader className="px-4">
                 <CardDescription>{s.label}</CardDescription>
-                <CardTitle
-                  className={cn("text-2xl tabular-nums", s.tone)}
-                >
-                  {s.value}
-                </CardTitle>
+                <CardTitle className={cn("text-2xl tabular-nums", s.tone)}>{s.value}</CardTitle>
               </CardHeader>
             </Card>
           ))}
@@ -154,9 +126,7 @@ export default function FindingsPage() {
                 onClick={() => setSeverity(val)}
                 className={cn(
                   "rounded px-2.5 py-1 text-xs font-medium transition-colors",
-                  severity === val
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-muted",
+                  severity === val ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
                 )}
               >
                 {label}
@@ -178,10 +148,7 @@ export default function FindingsPage() {
             </SelectContent>
           </Select>
 
-          <Select
-            value={sort}
-            onValueChange={(v) => setSort(v as "severity" | "time")}
-          >
+          <Select value={sort} onValueChange={(v) => setSort(v as "severity" | "time")}>
             <SelectTrigger size="sm" className="w-36">
               <SelectValue />
             </SelectTrigger>
@@ -191,9 +158,7 @@ export default function FindingsPage() {
             </SelectContent>
           </Select>
 
-          <span className="ml-auto text-xs text-muted-foreground tabular-nums">
-            共 {rows.length} 条
-          </span>
+          <span className="ml-auto text-xs text-muted-foreground tabular-nums">共 {rows.length} 条</span>
         </div>
 
         <Card className="py-0">
@@ -214,25 +179,17 @@ export default function FindingsPage() {
                   const open = expanded === f.id;
                   return (
                     <React.Fragment key={f.id}>
-                      <TableRow
-                        className="cursor-pointer"
-                        onClick={() => setExpanded(open ? null : f.id)}
-                      >
+                      <TableRow className="cursor-pointer" onClick={() => setExpanded(open ? null : f.id)}>
                         <TableCell>
                           <ChevronRightIcon
-                            className={cn(
-                              "size-4 text-muted-foreground transition-transform",
-                              open && "rotate-90",
-                            )}
+                            className={cn("size-4 text-muted-foreground transition-transform", open && "rotate-90")}
                           />
                         </TableCell>
                         <TableCell>
                           <StatusBadge domain="severity" value={f.severity} dot />
                         </TableCell>
                         <TableCell>
-                          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">
-                            {f.vulnclass}
-                          </code>
+                          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs">{f.vulnclass}</code>
                         </TableCell>
                         <TableCell className="max-w-md">
                           <span className="line-clamp-1">{f.summary}</span>
@@ -252,9 +209,7 @@ export default function FindingsPage() {
                             <span className="text-muted-foreground">—</span>
                           )}
                         </TableCell>
-                        <TableCell className="text-xs text-muted-foreground tabular-nums">
-                          {fmtTime(f.ts)}
-                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground tabular-nums">{fmtTime(f.ts)}</TableCell>
                       </TableRow>
                       {open && (
                         <TableRow className="hover:bg-transparent">
@@ -264,9 +219,7 @@ export default function FindingsPage() {
                                 <ShieldAlertIcon className="size-3.5" />
                                 证据 · {f.id}
                                 {f.param_id && (
-                                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono">
-                                    {f.param_id}
-                                  </code>
+                                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono">{f.param_id}</code>
                                 )}
                               </div>
                               <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap">
@@ -325,10 +278,7 @@ export default function FindingsPage() {
                 })}
                 {rows.length === 0 && (
                   <TableRow>
-                    <TableCell
-                      colSpan={6}
-                      className="py-12 text-center text-sm text-muted-foreground"
-                    >
+                    <TableCell colSpan={6} className="py-12 text-center text-sm text-muted-foreground">
                       没有匹配的发现。
                     </TableCell>
                   </TableRow>

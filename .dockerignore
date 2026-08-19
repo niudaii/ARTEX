@@ -7,3 +7,7 @@ server/webui/dist
 data
 *.db
 transcripts
+# macOS 元数据垃圾（AppleDouble / Finder）
+**/._*
+**/.DS_Store
+**/__MACOSX/

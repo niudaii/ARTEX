@@ -1163,7 +1163,7 @@ func (s *Server) fsUploadSkill(w http.ResponseWriter, r *http.Request) {
 			continue
 		}
 		rel := strings.TrimPrefix(f.Name, prefix)
-		if rel == "" || strings.HasPrefix(rel, "__MACOSX/") || path.Base(rel) == ".DS_Store" {
+		if rel == "" || strings.HasPrefix(rel, "__MACOSX/") || isJunkName(path.Base(rel)) {
 			continue
 		}
 		clean, msg := skillRelPath(rel)
@@ -1296,6 +1296,12 @@ func skillRelPath(file string) (string, string) {
 // walkSkillFiles returns all entries under root relative to root.
 // Directories are included with a trailing "/" so the frontend can distinguish
 // them from files and render empty folders in the tree.
+// isJunkName reports macOS metadata junk (AppleDouble ._* companions,
+// .DS_Store, __MACOSX) that must never be listed or installed as skill content.
+func isJunkName(name string) bool {
+	return name == ".DS_Store" || name == "__MACOSX" || strings.HasPrefix(name, "._")
+}
+
 func walkSkillFiles(root string) ([]string, error) {
 	var entries []string
 	err := filepath.WalkDir(root, func(path string, d os.DirEntry, err error) error {
@@ -1304,6 +1310,12 @@ func walkSkillFiles(root string) ([]string, error) {
 		}
 		rel, relErr := filepath.Rel(root, path)
 		if relErr != nil || rel == "." {
+			return nil
+		}
+		if isJunkName(d.Name()) {
+			if d.IsDir() {
+				return filepath.SkipDir
+			}
 			return nil
 		}
 		if d.IsDir() {

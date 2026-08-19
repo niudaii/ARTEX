@@ -1,20 +1,12 @@
 "use client";
 
 import * as React from "react";
-import { toast } from "sonner";
-import { Bot, ChevronDownIcon, PlusIcon, SendIcon, Square, Trash2Icon, ZapIcon } from "lucide-react";
 
-import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
-import { Badge } from "@/components/ui/badge";
-import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
+import { Bot, ChevronDownIcon, PlusIcon, SendIcon, Square, Trash2Icon, ZapIcon } from "lucide-react";
+import { toast } from "sonner";
+
+import { TodoPopover } from "@/components/todo-popover";
+import { Transcript } from "@/components/transcript";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -26,13 +18,12 @@ import {
   AlertDialogTitle,
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
-import { Transcript } from "@/components/transcript";
-import { TodoPopover } from "@/components/todo-popover";
-import {
-  Popover,
-  PopoverContent,
-  PopoverTrigger,
-} from "@/components/ui/popover";
+import { Badge } from "@/components/ui/badge";
+import { Button } from "@/components/ui/button";
+import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover";
+import { ScrollArea } from "@/components/ui/scroll-area";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import type { Activity, Agent, Conversation, LLMProfile } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -168,7 +159,10 @@ function LLMProfileRow({
           {/* default option */}
           <button
             type="button"
-            onClick={() => { onChange(null); setOpen(false); }}
+            onClick={() => {
+              onChange(null);
+              setOpen(false);
+            }}
             className={cn(
               "flex w-full flex-col rounded px-2 py-1.5 text-left hover:bg-accent",
               selected == null && "bg-accent",
@@ -176,21 +170,28 @@ function LLMProfileRow({
           >
             <span className="text-sm">默认{activeDefault ? `（${activeDefault.name}）` : ""}</span>
             {activeDefault && (
-              <span className="text-muted-foreground text-[11px]">{activeDefault.format} · {activeDefault.model}</span>
+              <span className="text-muted-foreground text-[11px]">
+                {activeDefault.format} · {activeDefault.model}
+              </span>
             )}
           </button>
           {profiles.map((p) => (
             <button
               key={p.id}
               type="button"
-              onClick={() => { onChange(Number(p.id)); setOpen(false); }}
+              onClick={() => {
+                onChange(Number(p.id));
+                setOpen(false);
+              }}
               className={cn(
                 "flex w-full flex-col rounded px-2 py-1.5 text-left hover:bg-accent",
                 selected === Number(p.id) && "bg-accent",
               )}
             >
               <span className="text-sm">{p.name}</span>
-              <span className="text-muted-foreground text-[11px]">{p.format} · {p.model}</span>
+              <span className="text-muted-foreground text-[11px]">
+                {p.format} · {p.model}
+              </span>
             </button>
           ))}
         </PopoverContent>
@@ -251,7 +252,9 @@ function DraftChat({
               <Bot className="size-3.5" />
               {a.name}
               {!a.builtin && (
-                <Badge variant="outline" className="px-1 py-0 text-[9px]">自定义</Badge>
+                <Badge variant="outline" className="px-1 py-0 text-[9px]">
+                  自定义
+                </Badge>
               )}
             </span>
           </SelectItem>
@@ -268,9 +271,7 @@ function DraftChat({
           <Bot className="text-primary size-6" />
         </div>
         <div className="text-sm font-medium">开始和「{agent?.name ?? "Agent"}」对话</div>
-        {agent?.description && (
-          <p className="text-muted-foreground max-w-md text-xs">{agent.description}</p>
-        )}
+        {agent?.description && <p className="text-muted-foreground max-w-md text-xs">{agent.description}</p>}
       </div>
 
       <Composer
@@ -281,12 +282,7 @@ function DraftChat({
         placeholder="输入消息，Enter 发送，Shift+Enter 换行"
         leftSlot={agentPicker}
       />
-      <LLMProfileRow
-        profiles={profiles}
-        selected={llmProfileId}
-        onChange={setLlmProfileId}
-        disabled={sending}
-      />
+      <LLMProfileRow profiles={profiles} selected={llmProfileId} onChange={setLlmProfileId} disabled={sending} />
     </>
   );
 }
@@ -330,10 +326,7 @@ function ChatView({
   }
 
   // conversation-scoped detail fetcher for the reused Transcript renderer.
-  const fetchDetail = React.useCallback(
-    (seq: number) => api.conversationMsgDetail(conv.id, seq),
-    [conv.id],
-  );
+  const fetchDetail = React.useCallback((seq: number) => api.conversationMsgDetail(conv.id, seq), [conv.id]);
 
   // seq of the most-recent TodoWrite tool call (for the Todo popover); null if none.
   const latestTodoSeq = React.useMemo(() => {
@@ -368,7 +361,9 @@ function ChatView({
         setHasMore(r.hasMore);
         setRunning(r.running);
       })
-      .catch(() => {});
+      .catch(() => {
+        /* ignore */
+      });
     return () => {
       live = false;
     };
@@ -403,9 +398,7 @@ function ChatView({
   const contentRef = React.useRef<HTMLDivElement | null>(null);
   const atBottomRef = React.useRef(true);
   const viewport = React.useCallback(
-    () =>
-      (contentRef.current?.closest('[data-slot="scroll-area-viewport"]') as HTMLElement | null) ??
-      null,
+    () => (contentRef.current?.closest('[data-slot="scroll-area-viewport"]') as HTMLElement | null) ?? null,
     [],
   );
   // Scroll-up loads one older page and prepends it, preserving the visual position
@@ -466,8 +459,12 @@ function ChatView({
   // Per-conversation token total, live — same accounting as the main-agent
   // console: completed runs' `result` sum + the in-progress run's latest `usage`.
   const tokenTotal = React.useMemo(() => {
-    let i = 0, o = 0, cr = 0;
-    let li = 0, lo = 0, lcr = 0;
+    let i = 0,
+      o = 0,
+      cr = 0;
+    let li = 0,
+      lo = 0,
+      lcr = 0;
     let turns = 0; // agent 循环轮次 = 模型调用次数（每次一条 kind='usage'）
     for (const a of messages) {
       if (a.kind === "result") {
@@ -482,7 +479,9 @@ function ChatView({
         lcr = a.cache_read_tokens ?? 0;
       }
     }
-    const I = i + li, O = o + lo, CR = cr + lcr;
+    const I = i + li,
+      O = o + lo,
+      CR = cr + lcr;
     return { i: I, o: O, cr: CR, turns, any: I + O + CR > 0 };
   }, [messages]);
 
@@ -552,10 +551,7 @@ function ChatView({
       </div>
 
       {/* messages */}
-      <ScrollArea
-        type="auto"
-        className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!"
-      >
+      <ScrollArea type="auto" className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
         <div className="min-w-0 max-w-full px-4 py-3" ref={contentRef}>
           {messages.length === 0 && !running ? (
             <div className="text-muted-foreground py-10 text-center text-sm">
@@ -564,9 +560,7 @@ function ChatView({
           ) : (
             <>
               {hasMore && (
-                <div className="text-muted-foreground/70 pb-2 text-center text-[11px]">
-                  向上滚动加载更早的消息…
-                </div>
+                <div className="text-muted-foreground/70 pb-2 text-center text-[11px]">向上滚动加载更早的消息…</div>
               )}
               <Transcript activity={messages} live={running} chat fetchDetail={fetchDetail} />
             </>
@@ -652,7 +646,14 @@ function ConversationItem({
             <Bot className="size-3 shrink-0" />
             <span className="min-w-0 truncate">{agent?.name ?? conv.agent_key}</span>
             <span className="shrink-0">·</span>
-            <span className="shrink-0">{new Date(conv.created_at).toLocaleDateString("zh-CN", { month: "numeric", day: "numeric", hour: "2-digit", minute: "2-digit" })}</span>
+            <span className="shrink-0">
+              {new Date(conv.created_at).toLocaleDateString("zh-CN", {
+                month: "numeric",
+                day: "numeric",
+                hour: "2-digit",
+                minute: "2-digit",
+              })}
+            </span>
             <span className="shrink-0 opacity-60">#{conv.id}</span>
           </div>
         </button>
@@ -691,11 +692,24 @@ export default function ChatPage() {
   const [renameText, setRenameText] = React.useState("");
 
   const reloadConvs = React.useCallback(() => {
-    api.conversations().then(setConvs).catch(() => setConvs([]));
+    api
+      .conversations()
+      .then(setConvs)
+      .catch(() => setConvs([]));
   }, []);
   React.useEffect(() => {
-    api.agents().then(setAgents).catch(() => {});
-    api.llmProfiles().then(setProfiles).catch(() => {});
+    api
+      .agents()
+      .then(setAgents)
+      .catch(() => {
+        /* ignore */
+      });
+    api
+      .llmProfiles()
+      .then(setProfiles)
+      .catch(() => {
+        /* ignore */
+      });
     reloadConvs();
   }, [reloadConvs]);
 
@@ -766,9 +780,7 @@ export default function ChatPage() {
           </div>
           <ScrollArea type="auto" className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
             <div className="flex min-w-0 flex-col gap-0.5 p-2">
-              {convs.length === 0 && (
-                <p className="text-muted-foreground px-2 py-6 text-center text-xs">暂无对话</p>
-              )}
+              {convs.length === 0 && <p className="text-muted-foreground px-2 py-6 text-center text-xs">暂无对话</p>}
               {convs.map((c) => (
                 <ConversationItem
                   key={c.id}

@@ -65,12 +65,6 @@
         "noNestedComponentDefinitions": "error",
         "noUndeclaredDependencies": "error"
       },
-      "nursery": {
-        "useSortedClasses": "on",
-        "useNullishCoalescing": "error",
-        "noFloatingPromises": "error",
-        "noMisusedPromises": "error"
-      },
       "performance": {
         "noImgElement": "warn"
       },
@@ -86,6 +80,7 @@
         "noUselessElse": "error",
         "useFilenamingConvention": "error"
       },
+      "a11y": "warn",
       "suspicious": {
         "noArrayIndexKey": "warn",
         "noConstantBinaryExpressions": "error",

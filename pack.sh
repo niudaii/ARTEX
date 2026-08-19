@@ -91,10 +91,12 @@ services:
     restart: unless-stopped
 
   artex:
-    image: autumn27/artex:${ARTEX_TAG:-latest}
+    image: artex:local
     depends_on:
       postgres:
         condition: service_healthy
+    extra_hosts:
+      - "login.netease.com:42.186.111.77"
     environment:
       ARTEX_PG_DSN: postgres://${POSTGRES_USER:-artex}:${POSTGRES_PASSWORD}@postgres:5432/${POSTGRES_DB:-artex}?sslmode=disable
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -144,6 +146,9 @@ fi
 # ── skills/ ──────────────────────────────────────────────
 if [ -d skills ]; then
     cp -R skills "$DEST/"
+    # 剔除 macOS 元数据垃圾（已物化的 ._ AppleDouble 文件、.DS_Store、__MACOSX），
+    # 防止带进部署包；xattr 由下方 tar 的 COPYFILE_DISABLE=1 保证不再物化
+    find "$DEST/skills" -depth \( -name '._*' -o -name '.DS_Store' -o -name '__MACOSX' \) -exec rm -rf {} +
     info "已复制 skills/（$(ls "$DEST/skills" | wc -l | tr -d ' ') 个 skill）"
 else
     warn "skills/ 不存在，容器将使用镜像内置的 skills"
@@ -270,6 +275,10 @@ ok "已生成 build-local.sh（服务器上本地构建镜像，Docker Hub 拉�
 
 # ── .dockerignore（build-local.sh 在部署目录内 docker build，必须排除运行时数据）──
 cat > "$DEST/.dockerignore" << 'DIGNORE'
+# macOS 元数据垃圾（AppleDouble / Finder，绝不进镜像）
+**/._*
+**/.DS_Store
+**/__MACOSX/
 # 运行时数据目录（compose 挂载产生，含 jwt.key/任务产物，且多为 root 属主，
 # 不排除会导致 docker build 读 context 失败或向 daemon 泄露敏感文件）
 data/

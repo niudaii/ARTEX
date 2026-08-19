@@ -1,6 +1,7 @@
 "use client";
 
 import * as React from "react";
+
 import {
   CheckIcon,
   ChevronDown,
@@ -16,19 +17,14 @@ import {
   XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { api } from "@/lib/api";
+
 import { Markdown } from "@/components/markdown";
 import { Button } from "@/components/ui/button";
+import { api } from "@/lib/api";
 import type { Activity } from "@/lib/types";
 
 // ---- per-agent lane color (planner + work#1/#2/#3 …) ---------------------------
-const workerColors = [
-  "bg-sky-600",
-  "bg-violet-600",
-  "bg-teal-600",
-  "bg-pink-600",
-  "bg-orange-600",
-];
+const workerColors = ["bg-sky-600", "bg-violet-600", "bg-teal-600", "bg-pink-600", "bg-orange-600"];
 function workerColor(name: string): string {
   if (name === "planner") return "bg-amber-600"; // the intent generator, distinct
   if (name === "mainagent") return "bg-primary";
@@ -149,9 +145,7 @@ function toolInputText(tool: string, raw: string): string {
       return JSON.parse('"' + m[1] + '"');
     } catch {
       // truncated mid-escape — unescape the common sequences best-effort.
-      return m[1].replace(/\\(["\\/nrt])/g, (_s, c) =>
-        c === "n" ? "\n" : c === "r" ? "\r" : c === "t" ? "\t" : c,
-      );
+      return m[1].replace(/\\(["\\/nrt])/g, (_s, c) => (c === "n" ? "\n" : c === "r" ? "\r" : c === "t" ? "\t" : c));
     }
   }
   return raw;
@@ -160,13 +154,7 @@ function toolInputText(tool: string, raw: string): string {
 // InterceptCard renders an inline intercept_request approval card. The pending_id
 // is extracted from the summary (format: "工具 X 请求审批 (#N)") so buttons are
 // available immediately without waiting for the detail load.
-function InterceptCard({
-  step,
-  getDetail,
-}: {
-  step: Activity;
-  getDetail: (seq: number) => Promise<string>;
-}) {
+function InterceptCard({ step, getDetail }: { step: Activity; getDetail: (seq: number) => Promise<string> }) {
   // extract pending_id from summary: "工具 Bash 请求审批 (#42)"
   const pendingId = React.useMemo(() => {
     const m = /\(#(\d+)\)/.exec(step.summary);
@@ -181,6 +169,7 @@ function InterceptCard({
   const [detail, setDetail] = React.useState<Record<string, unknown> | null>(null);
   const [decided, setDecided] = React.useState<"allowed" | "denied" | "timeout" | null>(null);
   const [deciding, setDeciding] = React.useState(false);
+  const [showFull, setShowFull] = React.useState(false);
 
   // Load persisted detail JSON + check the real current status from the backend
   // so that a page refresh shows the already-decided state instead of re-offering buttons.
@@ -189,22 +178,35 @@ function InterceptCard({
     getDetail(step.seq)
       .then((raw) => {
         if (!live || !raw) return;
-        try { setDetail(JSON.parse(raw)); } catch { /* ignore */ }
+        try {
+          setDetail(JSON.parse(raw));
+        } catch {
+          /* ignore */
+        }
       })
-      .catch(() => {/* ignore */});
-    return () => { live = false; };
+      .catch(() => {
+        /* ignore */
+      });
+    return () => {
+      live = false;
+    };
   }, [step.seq, getDetail]);
 
   React.useEffect(() => {
     if (!pendingId) return;
     let live = true;
-    api.interceptGetOne(pendingId)
+    api
+      .interceptGetOne(pendingId)
       .then((p) => {
         if (!live) return;
         if (p.status !== "pending") setDecided(p.status as "allowed" | "denied" | "timeout");
       })
-      .catch(() => {/* ignore */});
-    return () => { live = false; };
+      .catch(() => {
+        /* ignore */
+      });
+    return () => {
+      live = false;
+    };
   }, [pendingId]);
 
   async function decide(decision: "allowed" | "denied") {
@@ -221,9 +223,8 @@ function InterceptCard({
     }
   }
 
-  const inputStr = detail?.input
-    ? JSON.stringify(detail.input).slice(0, 200)
-    : null;
+  const inputJson = detail?.input ? JSON.stringify(detail.input) : null;
+  const inputStr = inputJson && (inputJson.length > 200 ? `${inputJson.slice(0, 200)}…` : inputJson);
 
   return (
     <div className="my-2 rounded-lg border border-amber-400/50 bg-amber-50/40 dark:bg-amber-950/15 p-3 text-xs">
@@ -236,25 +237,44 @@ function InterceptCard({
               <code className="rounded bg-amber-100 dark:bg-amber-900/50 px-1 font-mono text-amber-800 dark:text-amber-300">
                 {toolName}
               </code>
-              {pendingId && (
-                <span className="text-muted-foreground">#{pendingId}</span>
-              )}
+              {pendingId && <span className="text-muted-foreground">#{pendingId}</span>}
             </div>
             {inputStr && (
-              <p className="font-mono text-muted-foreground truncate">{inputStr}</p>
+              <div className="min-w-0">
+                <button
+                  type="button"
+                  onClick={() => setShowFull((v) => !v)}
+                  title={showFull ? "收起" : "展开完整参数"}
+                  className="flex w-full items-center gap-1 text-left font-mono text-muted-foreground hover:text-foreground"
+                >
+                  {showFull ? (
+                    <ChevronDown className="size-3 shrink-0" />
+                  ) : (
+                    <ChevronRight className="size-3 shrink-0" />
+                  )}
+                  <span className="truncate">{inputStr}</span>
+                </button>
+                {showFull && (
+                  <pre className="mt-1 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px] leading-relaxed">
+                    {JSON.stringify(detail?.input, null, 2)}
+                  </pre>
+                )}
+              </div>
             )}
           </div>
         </div>
 
         {decided ? (
-          <span className={
-            "shrink-0 rounded px-2 py-0.5 text-[11px] font-medium " +
-            (decided === "allowed"
-              ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
-              : decided === "timeout"
-                ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
-                : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400")
-          }>
+          <span
+            className={
+              "shrink-0 rounded px-2 py-0.5 text-[11px] font-medium " +
+              (decided === "allowed"
+                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
+                : decided === "timeout"
+                  ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
+                  : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400")
+            }
+          >
             {decided === "allowed" ? "已允许" : decided === "timeout" ? "已超时" : "已拒绝"}
           </span>
         ) : (
@@ -314,7 +334,7 @@ function ToolBlock({
       ? "text-emerald-600 dark:text-emerald-400"
       : "text-red-600 dark:text-red-400";
   const rawCmd =
-    use && use.summary.startsWith(toolName) ? use.summary.slice(toolName.length).trimStart() : use?.summary ?? "";
+    use && use.summary.startsWith(toolName) ? use.summary.slice(toolName.length).trimStart() : (use?.summary ?? "");
   const cmd = toolInputText(toolName, rawCmd);
   // status only — the full result lives behind the expand (【输出】), not previewed inline
   const statusText = running ? "执行中…" : ok ? "✓" : "✕ 失败";
@@ -472,7 +492,15 @@ function parseUserBody(body: string): { text: string; attachments: MsgAttachment
   return { text: body, attachments: [] };
 }
 
-function UserRow({ step, intent, getDetail }: { step: Activity; intent?: boolean; getDetail: (seq: number) => Promise<string> }) {
+function UserRow({
+  step,
+  intent,
+  getDetail,
+}: {
+  step: Activity;
+  intent?: boolean;
+  getDetail: (seq: number) => Promise<string>;
+}) {
   const Icon = intent ? CrosshairIcon : UserIcon;
   const [ref, inView] = useInView();
   // Optimistic echoes carry their detail inline; persisted rows lazy-load it on scroll.
@@ -582,8 +610,7 @@ function ExecView({
   // default detail fetcher: the task-scoped activity endpoint. The chat page passes
   // its own (conversation-scoped) fetcher instead.
   const getDetail = React.useCallback(
-    (seq: number) =>
-      fetchDetail ? fetchDetail(seq) : api.activityDetail(seq, taskId).then((r) => r.detail ?? ""),
+    (seq: number) => (fetchDetail ? fetchDetail(seq) : api.activityDetail(seq, taskId).then((r) => r.detail ?? "")),
     [fetchDetail, taskId],
   );
   return (

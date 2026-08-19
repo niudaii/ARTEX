@@ -1,42 +1,37 @@
 "use client";
 
 import * as React from "react";
-import { toast } from "sonner";
+
 import {
   ChevronRightIcon,
+  FilePlusIcon,
+  FileTextIcon,
   FolderIcon,
   FolderOpenIcon,
   FolderPlusIcon,
-  FileTextIcon,
-  FilePlusIcon,
   PlusIcon,
   Trash2Icon,
   UploadIcon,
 } from "lucide-react";
+import { toast } from "sonner";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
+import { Checkbox } from "@/components/ui/checkbox";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import { Textarea } from "@/components/ui/textarea";
-import { Checkbox } from "@/components/ui/checkbox";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Badge } from "@/components/ui/badge";
-import {
-  Sheet,
-  SheetContent,
-  SheetFooter,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
-import { cn } from "@/lib/utils";
+import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
-import type { Agent, SkillItem, MCPServer } from "@/lib/types";
+import type { Agent, MCPServer, SkillItem } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 // ── Tree node ──────────────────────────────────────────────────────────────
 interface TreeNode {
   name: string;
-  path: string;   // relative to skill root, dirs WITHOUT trailing slash
+  path: string; // relative to skill root, dirs WITHOUT trailing slash
   type: "file" | "dir";
   children: TreeNode[];
 }
@@ -89,9 +84,7 @@ function buildTree(entries: string[]): TreeNode[] {
 }
 
 // ── State types ───────────────────────────────────────────────────────────
-type Selected =
-  | { skill: string; path: null }
-  | { skill: string; path: string };
+type Selected = { skill: string; path: null } | { skill: string; path: string };
 
 type Creating = {
   skill: string;
@@ -139,19 +132,39 @@ export default function SkillsPage() {
 
   // ── Data ──────────────────────────────────────────────────────────────────
   const load = React.useCallback(() => {
-    api.agents().then(setAgents).catch(() => {});
-    api.mcpServers().then(setMcpOptions).catch(() => {});
-    api.skills().then((ss) => {
-      setSkills(ss);
-      ss.forEach((s) =>
-        api.skillVisibility(s.name)
-          .then((ids) => setVisibility((v) => ({ ...v, [s.name]: ids })))
-          .catch(() => {}),
-      );
-    }).catch(() => {});
+    api
+      .agents()
+      .then(setAgents)
+      .catch(() => {
+        /* ignore */
+      });
+    api
+      .mcpServers()
+      .then(setMcpOptions)
+      .catch(() => {
+        /* ignore */
+      });
+    api
+      .skills()
+      .then((ss) => {
+        setSkills(ss);
+        ss.forEach((s) => {
+          api
+            .skillVisibility(s.name)
+            .then((ids) => setVisibility((v) => ({ ...v, [s.name]: ids })))
+            .catch(() => {
+              /* ignore */
+            });
+        });
+      })
+      .catch(() => {
+        /* ignore */
+      });
   }, []);
 
-  React.useEffect(() => { load(); }, [load]);
+  React.useEffect(() => {
+    load();
+  }, [load]);
 
   // ── Upload a .zip skill ───────────────────────────────────────────────────
   async function uploadZip(file: File, overwrite = false) {
@@ -196,10 +209,18 @@ export default function SkillsPage() {
   }, [selected, skills]);
 
   React.useEffect(() => {
-    if (!selected || selected.path === null) { setFileContent(""); setDirty(false); return; }
+    if (!selected || selected.path === null) {
+      setFileContent("");
+      setDirty(false);
+      return;
+    }
     setFileLoading(true);
-    api.readSkillFile(selected.skill, selected.path)
-      .then((c) => { setFileContent(c); setDirty(false); })
+    api
+      .readSkillFile(selected.skill, selected.path)
+      .then((c) => {
+        setFileContent(c);
+        setDirty(false);
+      })
       .catch(() => toast.error("读取文件失败"))
       .finally(() => setFileLoading(false));
   }, [selected]);
@@ -208,7 +229,8 @@ export default function SkillsPage() {
   function toggleExpanded(key: string) {
     setExpanded((prev) => {
       const next = new Set(prev);
-      if (next.has(key)) next.delete(key); else next.add(key);
+      if (next.has(key)) next.delete(key);
+      else next.add(key);
       return next;
     });
   }
@@ -238,12 +260,19 @@ export default function SkillsPage() {
   // Use a ref snapshot so commitCreate reads the latest creating value
   // without depending on potentially stale closure state.
   const creatingRef = React.useRef<Creating>(null);
-  React.useEffect(() => { creatingRef.current = creating; }, [creating]);
+  React.useEffect(() => {
+    creatingRef.current = creating;
+  }, [creating]);
   const newEntryRef = React.useRef("");
-  React.useEffect(() => { newEntryRef.current = newEntryName; }, [newEntryName]);
+  React.useEffect(() => {
+    newEntryRef.current = newEntryName;
+  }, [newEntryName]);
 
   async function commitCreate() {
-    if (cancelRef.current) { cancelRef.current = false; return; }
+    if (cancelRef.current) {
+      cancelRef.current = false;
+      return;
+    }
     const c = creatingRef.current;
     const name = newEntryRef.current.trim();
     setCreating(null);
@@ -305,13 +334,13 @@ export default function SkillsPage() {
       setDirty(false);
     } catch (e) {
       toast.error("保存失败：" + (e as Error).message);
-    } finally { setSaving(false); }
+    } finally {
+      setSaving(false);
+    }
   }
 
   async function toggleSkillMcp(skillName: string, mcpName: string, mcpOn: boolean) {
-    const next = mcpOn
-      ? [...detailMcps, mcpName]
-      : detailMcps.filter((n) => n !== mcpName);
+    const next = mcpOn ? [...detailMcps, mcpName] : detailMcps.filter((n) => n !== mcpName);
     setDetailMcps(next);
     try {
       await api.updateSkillMeta(skillName, { mcps: next });
@@ -337,13 +366,20 @@ export default function SkillsPage() {
   }
 
   async function createNewSkill() {
-    if (!newName.trim()) { toast.error("请填写 name"); return; }
-    if (!newDesc.trim()) { toast.error("description 为必填项"); return; }
+    if (!newName.trim()) {
+      toast.error("请填写 name");
+      return;
+    }
+    if (!newDesc.trim()) {
+      toast.error("description 为必填项");
+      return;
+    }
     setCreatingSkill(true);
     try {
       const name = newName.trim();
       await api.createSkill({
-        name, description: newDesc.trim(),
+        name,
+        description: newDesc.trim(),
         license: newLicense.trim() || undefined,
         compatibility: newCompat.trim() || undefined,
         mcps: newMcps.length ? newMcps : undefined,
@@ -353,27 +389,31 @@ export default function SkillsPage() {
       await Promise.all(newVisibility.map((id) => api.toggleSkillVisibility(id, name, true)));
       toast.success("已创建 Skill");
       setNewOpen(false);
-      setNewName(""); setNewDesc(""); setNewLicense(""); setNewCompat(""); setNewInst("");
-      setNewMcps([]); setNewVisibility([]);
+      setNewName("");
+      setNewDesc("");
+      setNewLicense("");
+      setNewCompat("");
+      setNewInst("");
+      setNewMcps([]);
+      setNewVisibility([]);
       load();
     } catch (e) {
       toast.error("创建失败：" + (e as Error).message);
-    } finally { setCreatingSkill(false); }
+    } finally {
+      setCreatingSkill(false);
+    }
   }
 
   // ── Inline input JSX helper (NOT a React component — avoids remount on re-render) ──
   // Defined as a plain function returning JSX so React never sees a new component type.
   function inlineInputJSX(indent: number) {
     return (
-      <div
-        key="__inline_create__"
-        className="flex items-center gap-1 py-0.5 pr-2"
-        style={{ paddingLeft: indent }}
-      >
-        {creating?.kind === "dir"
-          ? <FolderIcon className="size-3.5 shrink-0 text-amber-500" />
-          : <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
-        }
+      <div key="__inline_create__" className="flex items-center gap-1 py-0.5 pr-2" style={{ paddingLeft: indent }}>
+        {creating?.kind === "dir" ? (
+          <FolderIcon className="size-3.5 shrink-0 text-amber-500" />
+        ) : (
+          <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
+        )}
         <Input
           ref={inlineRef}
           className="h-6 flex-1 px-1 py-0 font-mono text-xs"
@@ -381,10 +421,15 @@ export default function SkillsPage() {
           value={newEntryName}
           onChange={(e) => setNewEntryName(e.target.value)}
           onKeyDown={(e) => {
-            if (e.key === "Enter") { cancelRef.current = false; void commitCreate(); }
+            if (e.key === "Enter") {
+              cancelRef.current = false;
+              void commitCreate();
+            }
             if (e.key === "Escape") cancelCreate();
           }}
-          onBlur={() => { void commitCreate(); }}
+          onBlur={() => {
+            void commitCreate();
+          }}
         />
       </div>
     );
@@ -405,22 +450,47 @@ export default function SkillsPage() {
               onClick={() => toggleExpanded(key)}
             >
               <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", open && "rotate-90")} />
-              {open
-                ? <FolderOpenIcon className="size-3.5 shrink-0 text-amber-500" />
-                : <FolderIcon className="size-3.5 shrink-0 text-amber-500" />
-              }
+              {open ? (
+                <FolderOpenIcon className="size-3.5 shrink-0 text-amber-500" />
+              ) : (
+                <FolderIcon className="size-3.5 shrink-0 text-amber-500" />
+              )}
               <span className="flex-1 truncate">{node.name}</span>
               <span className="ml-auto hidden shrink-0 items-center gap-0.5 group-hover:flex">
-                <Button size="icon" variant="ghost" className="size-5" title="新建文件"
-                  onClick={(e) => { e.stopPropagation(); startCreate(skill, node.path, "file"); }}>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-5"
+                  title="新建文件"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startCreate(skill, node.path, "file");
+                  }}
+                >
                   <FilePlusIcon className="size-3 text-muted-foreground" />
                 </Button>
-                <Button size="icon" variant="ghost" className="size-5" title="新建文件夹"
-                  onClick={(e) => { e.stopPropagation(); startCreate(skill, node.path, "dir"); }}>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-5"
+                  title="新建文件夹"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    startCreate(skill, node.path, "dir");
+                  }}
+                >
                   <FolderPlusIcon className="size-3 text-muted-foreground" />
                 </Button>
-                <Button size="icon" variant="ghost" className="size-5" title="删除文件夹"
-                  onClick={(e) => { e.stopPropagation(); deletePath(skill, node.path); }}>
+                <Button
+                  size="icon"
+                  variant="ghost"
+                  className="size-5"
+                  title="删除文件夹"
+                  onClick={(e) => {
+                    e.stopPropagation();
+                    deletePath(skill, node.path);
+                  }}
+                >
                   <Trash2Icon className="size-3 text-destructive" />
                 </Button>
               </span>
@@ -428,8 +498,7 @@ export default function SkillsPage() {
             {open && (
               <>
                 {renderTree(node.children, skill, depth + 1)}
-                {creating?.skill === skill && creating.inDir === node.path &&
-                  inlineInputJSX(baseIndent + 14)}
+                {creating?.skill === skill && creating.inDir === node.path && inlineInputJSX(baseIndent + 14)}
               </>
             )}
           </div>
@@ -450,9 +519,16 @@ export default function SkillsPage() {
         >
           <FileTextIcon className="size-3.5 shrink-0 text-muted-foreground" />
           <span className="flex-1 truncate font-mono text-xs">{node.name}</span>
-          <Button size="icon" variant="ghost" className="ml-auto hidden size-5 group-hover:flex"
+          <Button
+            size="icon"
+            variant="ghost"
+            className="ml-auto hidden size-5 group-hover:flex"
             title="删除文件"
-            onClick={(e) => { e.stopPropagation(); deletePath(skill, node.path); }}>
+            onClick={(e) => {
+              e.stopPropagation();
+              deletePath(skill, node.path);
+            }}
+          >
             <Trash2Icon className="size-3 text-destructive" />
           </Button>
         </div>
@@ -460,9 +536,7 @@ export default function SkillsPage() {
     });
   }
 
-  const selectedSkill = selected
-    ? skills.find((s) => s.name === selected.skill) ?? null
-    : null;
+  const selectedSkill = selected ? (skills.find((s) => s.name === selected.skill) ?? null) : null;
 
   return (
     <div data-content-padding="false" className="flex flex-1 flex-col overflow-hidden">
@@ -475,7 +549,8 @@ export default function SkillsPage() {
         <div className="flex w-64 shrink-0 flex-col border-r">
           <div className="flex flex-col gap-2 border-b p-2">
             <Button size="sm" variant="outline" className="w-full" onClick={() => setNewOpen(true)}>
-              <PlusIcon className="size-3.5" />新建 Skill
+              <PlusIcon className="size-3.5" />
+              新建 Skill
             </Button>
             <input
               ref={uploadRef}
@@ -515,23 +590,50 @@ export default function SkillsPage() {
                         setSelected({ skill: s.name, path: null });
                       }}
                     >
-                      <ChevronRightIcon className={cn("size-3.5 shrink-0 transition-transform", isOpen && "rotate-90")} />
-                      {isOpen
-                        ? <FolderOpenIcon className="size-3.5 shrink-0 text-blue-500" />
-                        : <FolderIcon className="size-3.5 shrink-0 text-blue-500" />
-                      }
+                      <ChevronRightIcon
+                        className={cn("size-3.5 shrink-0 transition-transform", isOpen && "rotate-90")}
+                      />
+                      {isOpen ? (
+                        <FolderOpenIcon className="size-3.5 shrink-0 text-blue-500" />
+                      ) : (
+                        <FolderIcon className="size-3.5 shrink-0 text-blue-500" />
+                      )}
                       <span className="flex-1 truncate font-semibold">{s.name}</span>
                       <span className="ml-auto hidden shrink-0 items-center gap-0.5 group-hover:flex">
-                        <Button size="icon" variant="ghost" className="size-5" title="新建文件"
-                          onClick={(e) => { e.stopPropagation(); startCreate(s.name, "", "file"); }}>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="size-5"
+                          title="新建文件"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startCreate(s.name, "", "file");
+                          }}
+                        >
                           <FilePlusIcon className="size-3 text-muted-foreground" />
                         </Button>
-                        <Button size="icon" variant="ghost" className="size-5" title="新建文件夹"
-                          onClick={(e) => { e.stopPropagation(); startCreate(s.name, "", "dir"); }}>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="size-5"
+                          title="新建文件夹"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            startCreate(s.name, "", "dir");
+                          }}
+                        >
                           <FolderPlusIcon className="size-3 text-muted-foreground" />
                         </Button>
-                        <Button size="icon" variant="ghost" className="size-5" title="删除 Skill"
-                          onClick={(e) => { e.stopPropagation(); deleteSkill(s.name); }}>
+                        <Button
+                          size="icon"
+                          variant="ghost"
+                          className="size-5"
+                          title="删除 Skill"
+                          onClick={(e) => {
+                            e.stopPropagation();
+                            deleteSkill(s.name);
+                          }}
+                        >
                           <Trash2Icon className="size-3 text-destructive" />
                         </Button>
                       </span>
@@ -541,17 +643,14 @@ export default function SkillsPage() {
                     {isOpen && (
                       <>
                         {renderTree(tree, s.name, 0)}
-                        {creating?.skill === s.name && creating.inDir === "" &&
-                          inlineInputJSX(22)}
+                        {creating?.skill === s.name && creating.inDir === "" && inlineInputJSX(22)}
                       </>
                     )}
                   </div>
                 );
               })}
 
-              {skills.length === 0 && (
-                <p className="p-3 text-xs text-muted-foreground">暂无 Skill，点击「新建」开始</p>
-              )}
+              {skills.length === 0 && <p className="p-3 text-xs text-muted-foreground">暂无 Skill，点击「新建」开始</p>}
             </div>
           </ScrollArea>
         </div>
@@ -573,10 +672,14 @@ export default function SkillsPage() {
                 )}
                 <div className="mt-2 flex flex-wrap gap-2">
                   {selectedSkill.license && (
-                    <Badge variant="outline" className="text-xs font-normal">License: {selectedSkill.license}</Badge>
+                    <Badge variant="outline" className="text-xs font-normal">
+                      License: {selectedSkill.license}
+                    </Badge>
                   )}
                   {selectedSkill.compatibility && (
-                    <Badge variant="secondary" className="text-xs font-normal">{selectedSkill.compatibility}</Badge>
+                    <Badge variant="secondary" className="text-xs font-normal">
+                      {selectedSkill.compatibility}
+                    </Badge>
                   )}
                 </div>
               </div>
@@ -617,9 +720,7 @@ export default function SkillsPage() {
                       {a.name}
                     </label>
                   ))}
-                  {agents.length === 0 && (
-                    <span className="text-xs text-muted-foreground">（暂无 Agent）</span>
-                  )}
+                  {agents.length === 0 && <span className="text-xs text-muted-foreground">（暂无 Agent）</span>}
                 </div>
               </div>
             </div>
@@ -641,7 +742,10 @@ export default function SkillsPage() {
                 <Textarea
                   className="flex-1 resize-none font-mono text-xs"
                   value={fileContent}
-                  onChange={(e) => { setFileContent(e.target.value); setDirty(true); }}
+                  onChange={(e) => {
+                    setFileContent(e.target.value);
+                    setDirty(true);
+                  }}
                 />
               )}
             </div>
@@ -677,34 +781,64 @@ export default function SkillsPage() {
             </TabsList>
 
             {/* 基本信息 */}
-            <TabsContent value="basic" className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4 pt-4 data-[state=inactive]:hidden">
+            <TabsContent
+              value="basic"
+              className="flex min-h-0 flex-1 flex-col gap-4 overflow-y-auto px-4 pb-4 pt-4 data-[state=inactive]:hidden"
+            >
               <div className="grid gap-1.5">
-                <Label htmlFor="sk-name">名称 <span className="text-destructive">*</span></Label>
-                <Input id="sk-name" placeholder="sqli-deepdive" value={newName} onChange={(e) => setNewName(e.target.value)} />
+                <Label htmlFor="sk-name">
+                  名称 <span className="text-destructive">*</span>
+                </Label>
+                <Input
+                  id="sk-name"
+                  placeholder="sqli-deepdive"
+                  value={newName}
+                  onChange={(e) => setNewName(e.target.value)}
+                />
                 <p className="text-muted-foreground text-xs">小写字母 / 数字 / 连字符，1–64 字符</p>
               </div>
               <div className="grid gap-1.5">
-                <Label htmlFor="sk-desc">描述 <span className="text-destructive">*</span></Label>
-                <Textarea id="sk-desc" rows={2} className="resize-none"
+                <Label htmlFor="sk-desc">
+                  描述 <span className="text-destructive">*</span>
+                </Label>
+                <Textarea
+                  id="sk-desc"
+                  rows={2}
+                  className="resize-none"
                   placeholder="这个 skill 做什么、何时使用。"
-                  value={newDesc} onChange={(e) => setNewDesc(e.target.value)} />
+                  value={newDesc}
+                  onChange={(e) => setNewDesc(e.target.value)}
+                />
               </div>
               <div className="grid grid-cols-2 gap-3">
                 <div className="grid gap-1.5">
                   <Label className="text-muted-foreground text-xs">license</Label>
-                  <Input placeholder="MIT / Proprietary" value={newLicense} onChange={(e) => setNewLicense(e.target.value)} />
+                  <Input
+                    placeholder="MIT / Proprietary"
+                    value={newLicense}
+                    onChange={(e) => setNewLicense(e.target.value)}
+                  />
                 </div>
                 <div className="grid gap-1.5">
                   <Label className="text-muted-foreground text-xs">compatibility</Label>
-                  <Input placeholder="需要 sqlmap、python3" value={newCompat} onChange={(e) => setNewCompat(e.target.value)} />
+                  <Input
+                    placeholder="需要 sqlmap、python3"
+                    value={newCompat}
+                    onChange={(e) => setNewCompat(e.target.value)}
+                  />
                 </div>
               </div>
               <div className="flex min-h-0 flex-1 flex-col gap-1.5">
-                <Label htmlFor="sk-inst">正文 <span className="text-muted-foreground text-xs font-normal">（留空自动生成骨架）</span></Label>
-                <Textarea id="sk-inst"
+                <Label htmlFor="sk-inst">
+                  正文 <span className="text-muted-foreground text-xs font-normal">（留空自动生成骨架）</span>
+                </Label>
+                <Textarea
+                  id="sk-inst"
                   className="min-h-40 flex-1 resize-none font-mono text-sm leading-relaxed"
                   placeholder={"## 执行方法\n\n1. 先探测错误\n2. 区分盲注类型\n\n脚本放 scripts/ 目录。"}
-                  value={newInst} onChange={(e) => setNewInst(e.target.value)} />
+                  value={newInst}
+                  onChange={(e) => setNewInst(e.target.value)}
+                />
               </div>
             </TabsContent>
 
@@ -720,7 +854,7 @@ export default function SkillsPage() {
                       <Checkbox
                         checked={newMcps.includes(m.name)}
                         onCheckedChange={(on) =>
-                          setNewMcps((cur) => on ? [...cur, m.name] : cur.filter((n) => n !== m.name))
+                          setNewMcps((cur) => (on ? [...cur, m.name] : cur.filter((n) => n !== m.name)))
                         }
                       />
                       {m.name}
@@ -742,7 +876,7 @@ export default function SkillsPage() {
                       <Checkbox
                         checked={newVisibility.includes(a.id)}
                         onCheckedChange={(on) =>
-                          setNewVisibility((cur) => on ? [...cur, a.id] : cur.filter((id) => id !== a.id))
+                          setNewVisibility((cur) => (on ? [...cur, a.id] : cur.filter((id) => id !== a.id)))
                         }
                       />
                       {a.name}
@@ -754,8 +888,12 @@ export default function SkillsPage() {
           </Tabs>
 
           <SheetFooter className="flex-row justify-end gap-2 border-t px-4 py-3">
-            <Button variant="outline" onClick={() => setNewOpen(false)}>取消</Button>
-            <Button onClick={createNewSkill} disabled={creatingSkill}>{creatingSkill ? "创建中…" : "创建"}</Button>
+            <Button variant="outline" onClick={() => setNewOpen(false)}>
+              取消
+            </Button>
+            <Button onClick={createNewSkill} disabled={creatingSkill}>
+              {creatingSkill ? "创建中…" : "创建"}
+            </Button>
           </SheetFooter>
         </SheetContent>
       </Sheet>

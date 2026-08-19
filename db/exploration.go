@@ -331,6 +331,19 @@ func (s *ExplorationStore) GetNode(id int64) (*Node, error) {
 	return n, err
 }
 
+// GetExplorationNode returns one node by its globally unique id, whatever
+// exploration (task) it belongs to (nil, nil if not found). Exploration node
+// ids come from a single sequence, so a bare id resolves across tasks — this
+// powers by-id reads without a task context (chat/Auto agents injected from
+// buildDomainReg hold no per-task store; see ToolSet.nodeDetail).
+func (d *DB) GetExplorationNode(id int64) (*Node, error) {
+	n, err := scanNode(d.QueryRow(`SELECT `+nodeCols+` FROM exploration_nodes WHERE id=$1`, id))
+	if err == sql.ErrNoRows {
+		return nil, nil
+	}
+	return n, err
+}
+
 // Nodes lists all nodes (for graph viz).
 func (s *ExplorationStore) Nodes(limit int) ([]*Node, error) {
 	if limit <= 0 {
@@ -591,6 +604,8 @@ func (s *ExplorationStore) TokenStatsByWorker() ([]TokenUsage, error) {
 	return out, rows.Err()
 }
 
+const activityCols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens`
+
 // ActivityList returns steps after sinceID (exclusive), optionally filtered by node.
 // Returns items and the new cursor (max id seen).
 func (s *ExplorationStore) ActivityList(nodeID *int64, sinceID int64, limit int) ([]Activity, int64, error) {
@@ -599,12 +614,11 @@ func (s *ExplorationStore) ActivityList(nodeID *int64, sinceID int64, limit int)
 	}
 	var rows *sql.Rows
 	var err error
-	const cols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens`
 	if nodeID != nil {
-		rows, err = s.db.Query(`SELECT `+cols+`
+		rows, err = s.db.Query(`SELECT `+activityCols+`
 FROM activity WHERE exploration_id=$1 AND node_id=$2 AND id>$3 ORDER BY id LIMIT $4`, s.expID, *nodeID, sinceID, limit)
 	} else {
-		rows, err = s.db.Query(`SELECT `+cols+`
+		rows, err = s.db.Query(`SELECT `+activityCols+`
 FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id LIMIT $3`, s.expID, sinceID, limit)
 	}
 	if err != nil {
@@ -625,6 +639,55 @@ FROM activity WHERE exploration_id=$1 AND id>$2 ORDER BY id LIMIT $3`, s.expID, 
 		out = append(out, a)
 	}
 	return out, cursor, rows.Err()
+}
+
+// ActivityLatest returns the most recent steps (up to limit), ordered oldest-first
+// within the returned window. Optionally filtered by node; excludeKind (if non-empty)
+// drops events of that kind before the limit is applied.
+func (s *ExplorationStore) ActivityLatest(nodeID *int64, limit int, excludeKind string) ([]Activity, int64, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	var rows *sql.Rows
+	var err error
+	switch {
+	case nodeID != nil && excludeKind != "":
+		rows, err = s.db.Query(`SELECT `+activityCols+`
+FROM activity WHERE exploration_id=$1 AND node_id=$2 AND kind<>$3 ORDER BY id DESC LIMIT $4`, s.expID, *nodeID, excludeKind, limit)
+	case nodeID != nil:
+		rows, err = s.db.Query(`SELECT `+activityCols+`
+FROM activity WHERE exploration_id=$1 AND node_id=$2 ORDER BY id DESC LIMIT $3`, s.expID, *nodeID, limit)
+	case excludeKind != "":
+		rows, err = s.db.Query(`SELECT `+activityCols+`
+FROM activity WHERE exploration_id=$1 AND kind<>$2 ORDER BY id DESC LIMIT $3`, s.expID, excludeKind, limit)
+	default:
+		rows, err = s.db.Query(`SELECT `+activityCols+`
+FROM activity WHERE exploration_id=$1 ORDER BY id DESC LIMIT $2`, s.expID, limit)
+	}
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []Activity{}
+	var cursor int64
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
+			return nil, 0, err
+		}
+		if a.ID > cursor {
+			cursor = a.ID
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, cursor, nil
 }
 
 // ActivitySessionFilter selects one UI "session" within a task's activity stream.
@@ -782,6 +845,43 @@ AND (summary ILIKE $2 OR detail ILIKE $2) ORDER BY id LIMIT $3`, s.expID, like, 
 	}
 	defer rows.Close()
 	return scanTrace(rows)
+}
+
+// LatestNodeErrors returns the most recent run-error text per node, restricted to
+// the given node ids. An intent goes 'blocked' when its worker run ends in error;
+// captureRun persists that as a kind='result', is_error=true activity ("执行出错: …").
+// Used to surface WHY intents are blocked without loading full traces. The value
+// prefers detail (full error text) and falls back to the summary line.
+func (s *ExplorationStore) LatestNodeErrors(nodeIDs []int64) (map[int64]string, error) {
+	out := make(map[int64]string, len(nodeIDs))
+	if len(nodeIDs) == 0 {
+		return out, nil
+	}
+	ph := make([]string, len(nodeIDs))
+	args := make([]any, len(nodeIDs)+1)
+	args[0] = s.expID
+	for i, id := range nodeIDs {
+		ph[i] = fmt.Sprintf("$%d", i+2)
+		args[i+1] = id
+	}
+	rows, err := s.db.Query(`
+SELECT DISTINCT ON (node_id) node_id, COALESCE(NULLIF(detail, ''), summary, '')
+FROM activity
+WHERE exploration_id=$1 AND kind='result' AND is_error AND node_id IN (`+strings.Join(ph, ",")+`)
+ORDER BY node_id, id DESC`, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var nodeID int64
+		var text string
+		if err := rows.Scan(&nodeID, &text); err != nil {
+			return nil, err
+		}
+		out[nodeID] = text
+	}
+	return out, rows.Err()
 }
 
 // AssetRef is a compact exploration node (intent/fact/finding) that references an
