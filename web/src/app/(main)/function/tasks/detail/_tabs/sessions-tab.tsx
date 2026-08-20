@@ -1,33 +1,37 @@
 "use client";
 
 import * as React from "react";
-
 import {
-  BrainIcon,
-  CircleCheckIcon,
-  CircleSlashIcon,
-  CircleXIcon,
-  ClockIcon,
-  Loader2Icon,
-  PaperclipIcon,
   RadioIcon,
-  RotateCwIcon,
-  SendIcon,
-  ShieldAlertIcon,
-  SquareIcon,
+  BrainIcon,
   UserIcon,
-  WifiOffIcon,
-  XIcon,
+  Loader2Icon,
   ZapOffIcon,
+  SendIcon,
+  SquareIcon,
+  ClockIcon,
+  CircleCheckIcon,
+  CircleXIcon,
+  CircleSlashIcon,
+  ShieldAlertIcon,
+  WifiOffIcon,
+  RotateCwIcon,
+  PaperclipIcon,
+  XIcon,
 } from "lucide-react";
 import { toast } from "sonner";
-
-import { TodoPopover } from "@/components/todo-popover";
+import { cn } from "@/lib/utils";
 import { Transcript } from "@/components/transcript";
+import { TodoPopover } from "@/components/todo-popover";
 import { Button } from "@/components/ui/button";
-import { Input } from "@/components/ui/input";
+import { Textarea } from "@/components/ui/textarea";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
+import {
+  Tooltip,
+  TooltipContent,
+  TooltipProvider,
+  TooltipTrigger,
+} from "@/components/ui/tooltip";
 import { api, sseUrl } from "@/lib/api";
 import { MOCK } from "@/lib/mock/enabled";
 import type {
@@ -39,7 +43,6 @@ import type {
   TaskNode,
   TokenTotal,
 } from "@/lib/types";
-import { cn } from "@/lib/utils";
 
 // fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
 function fmtBytes(n: number): string {
@@ -260,7 +263,9 @@ function SessionItem({
         </span>
       )}
       <span className="min-w-0 flex-1 truncate">{displayTitle}</span>
-      {hasPending && <ShieldAlertIcon className="size-3.5 shrink-0 text-amber-500" />}
+      {hasPending && (
+        <ShieldAlertIcon className="size-3.5 shrink-0 text-amber-500" />
+      )}
       {!active && unread ? (
         <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-blue-500/15 px-1 text-[10px] font-medium tabular-nums text-blue-600 dark:text-blue-400">
           {unread > 99 ? "99+" : unread}
@@ -331,9 +336,12 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   const loadingKeysRef = React.useRef<Set<string>>(new Set());
 
   // ── store helpers ──────────────────────────────────────────────────────────────
-  const patchStore = React.useCallback((key: string, fn: (s: SessionState) => SessionState) => {
-    setStore((prev) => ({ ...prev, [key]: fn(prev[key] ?? emptyState()) }));
-  }, []);
+  const patchStore = React.useCallback(
+    (key: string, fn: (s: SessionState) => SessionState) => {
+      setStore((prev) => ({ ...prev, [key]: fn(prev[key] ?? emptyState()) }));
+    },
+    [],
+  );
 
   // Load a session's LATEST page (before=0) on first open. Keyed + request-token
   // guarded so a switch away can't corrupt the view.
@@ -416,9 +424,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         .then((r) => {
           if (alive) setTaskTokens(r.total);
         })
-        .catch(() => {
-          /* ignore */
-        });
+        .catch(() => {});
     load();
     const t = setInterval(load, 5000);
     return () => {
@@ -430,20 +436,12 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   React.useEffect(() => {
     let alive = true;
     const load = () =>
-      api
-        .interceptTask(taskId)
-        .then((rows) => {
-          if (alive) setPendingIntercepts(rows.filter((r) => r.status === "pending"));
-        })
-        .catch(() => {
-          /* ignore */
-        });
+      api.interceptTask(taskId)
+        .then((rows) => { if (alive) setPendingIntercepts(rows.filter((r) => r.status === "pending")); })
+        .catch(() => {});
     load();
     const t = setInterval(load, 5000);
-    return () => {
-      alive = false;
-      clearInterval(t);
-    };
+    return () => { alive = false; clearInterval(t); };
   }, [taskId]);
 
   // Re-render on a timer so "streaming" liveness recomputes as activity goes stale.
@@ -585,9 +583,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
           setIntents(r.items);
           setIntentsHasMore(r.hasMore);
         })
-        .catch(() => {
-          /* ignore */
-        });
+        .catch(() => {});
     load();
     const t = setInterval(load, 5000);
     return () => {
@@ -611,9 +607,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         });
         setIntentsHasMore(r.hasMore);
       })
-      .catch(() => {
-        /* ignore */
-      })
+      .catch(() => {})
       .finally(() => setLoadingOlderIntents(false));
   }, [taskId, intents, olderIntents, loadingOlderIntents]);
 
@@ -625,7 +619,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     return [...byId.values()].sort((a, b) => Number(b.id) - Number(a.id));
   }, [intents, olderIntents]);
 
-  const workerSessions = React.useMemo(() => allIntents.map(intentToSession), [allIntents]);
+  const workerSessions = React.useMemo(
+    () => allIntents.map(intentToSession),
+    [allIntents],
+  );
 
   // For each worker session (intent), derive the display title from the intent
   // payload summary. Also store the full TaskNode for the hover-JSON tooltip.
@@ -655,7 +652,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     (s: Session): boolean => {
       if (!pendingIntercepts.length) return false;
       if (s.role === "mainagent") return pendingIntercepts.some((r) => r.agent_name === "mainagent");
-      if (s.role === "planner") return pendingIntercepts.some((r) => r.agent_name === "planner");
+      if (s.role === "planner")   return pendingIntercepts.some((r) => r.agent_name === "planner");
       // Worker: extract intent ID from "work#N · #<intentID>"
       return pendingIntercepts.some((r) => {
         const m = r.agent_name.match(/·\s*#(\d+)$/);
@@ -679,7 +676,11 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   const plannerLive = recentLive("plan");
 
   const sessions = React.useMemo(
-    () => [{ ...MAIN_SESSION, live: mainLive }, { ...PLANNER_SESSION, live: plannerLive }, ...workerSessions],
+    () => [
+      { ...MAIN_SESSION, live: mainLive },
+      { ...PLANNER_SESSION, live: plannerLive },
+      ...workerSessions,
+    ],
     [workerSessions, mainLive, plannerLive],
   );
 
@@ -747,14 +748,8 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   // latest usage. Computed over the loaded pages (the running/just-finished run whose
   // totals matter sits on the latest page). (activity is seq-sorted.)
   const tokenTotal = React.useMemo(() => {
-    let i = 0,
-      o = 0,
-      cr = 0,
-      cw = 0; // completed
-    let li = 0,
-      lo = 0,
-      lcr = 0,
-      lcw = 0; // live in-progress
+    let i = 0, o = 0, cr = 0, cw = 0; // completed
+    let li = 0, lo = 0, lcr = 0, lcw = 0; // live in-progress
     for (const a of activity) {
       if (a.kind === "result") {
         i += a.input_tokens ?? 0;
@@ -769,18 +764,14 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         lcw = a.cache_write_tokens ?? 0;
       }
     }
-    const I = i + li,
-      O = o + lo,
-      CR = cr + lcr,
-      CW = cw + lcw;
+    const I = i + li, O = o + lo, CR = cr + lcr, CW = cw + lcw;
     return { i: I, o: O, cr: CR, cw: CW, any: I + O + CR + CW > 0 };
   }, [activity]);
 
   // Run duration = span from this session's first step to its last (for a live
   // session, "now" so it ticks up — the 1.5s setTick above re-renders it).
   const runDuration = React.useMemo(() => {
-    let min = Infinity,
-      max = 0;
+    let min = Infinity, max = 0;
     for (const a of activity) {
       const t = Date.parse(a.ts);
       if (!Number.isFinite(t)) continue;
@@ -795,7 +786,9 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   // ---- transcript auto-scroll (open → bottom; stick to bottom unless scrolled up) ----
   const contentRef = React.useRef<HTMLDivElement | null>(null);
   const viewport = React.useCallback(
-    () => (contentRef.current?.closest('[data-slot="scroll-area-viewport"]') as HTMLElement | null) ?? null,
+    () =>
+      (contentRef.current?.closest('[data-slot="scroll-area-viewport"]') as HTMLElement | null) ??
+      null,
     [],
   );
   React.useEffect(() => {
@@ -873,247 +866,263 @@ export function SessionsTab({ taskId }: { taskId: string }) {
 
   return (
     <TooltipProvider delayDuration={300}>
-      <div className="grid h-[calc(100vh-13rem)] grid-cols-1 gap-4 lg:grid-cols-[18rem_1fr]">
-        {/* Left: session list */}
-        <div className="flex flex-col overflow-hidden rounded-lg border bg-card">
-          <div className="border-b px-3 py-2">
-            <div className="flex items-center justify-between">
-              <div className="text-xs font-medium text-muted-foreground">会话列表</div>
-              {!MOCK && (
-                <span
-                  className={cn(
-                    "inline-flex items-center gap-1 text-[10px]",
-                    sseLive ? "text-emerald-500" : "text-amber-500",
-                  )}
-                  title={sseLive ? "实时连接正常" : "实时连接中断，正在自动重连（历史仍可见）"}
-                >
-                  {sseLive ? (
-                    <>
-                      <span className="size-1 animate-pulse rounded-full bg-emerald-500" />
-                      实时
-                    </>
-                  ) : (
-                    <>
-                      <WifiOffIcon className="size-3" />
-                      重连中
-                    </>
-                  )}
-                </span>
-              )}
-            </div>
-            {taskTokens && (
-              <div
-                className="mt-1 text-[11px] tabular-nums text-muted-foreground"
-                title="整个任务所有 agent 的 token 合计"
-              >
-                任务总计 · input {fmtTokens(taskTokens.input_tokens)} · cache {fmtTokens(taskTokens.cache_read_tokens)}{" "}
-                · output {fmtTokens(taskTokens.output_tokens)}
-              </div>
-            )}
-          </div>
-          <ScrollArea type="auto" className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
-            <div className="flex w-full flex-col gap-3 p-2">
-              {(["mainagent", "planner", "worker"] as const).map((role) => {
-                const items = grouped[role];
-                if (!items.length) return null;
-                const Meta = roleMeta[role];
-                return (
-                  <div key={role} className="flex flex-col gap-0.5">
-                    <div className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-muted-foreground">
-                      <Meta.icon className="size-3.5" />
-                      {Meta.label}
-                    </div>
-                    {items.map((s) => {
-                      const meta = s.role === "worker" ? sessionMeta.get(s.id) : undefined;
-                      return (
-                        <SessionItem
-                          key={s.id}
-                          s={s}
-                          active={s.id === activeId}
-                          displayTitle={meta?.title ?? s.title}
-                          hasPending={hasPendingForSession(s)}
-                          unread={store[keyForSession(s)]?.unread}
-                          onClick={() => setActiveId(s.id)}
-                        />
-                      );
-                    })}
-                    {role === "worker" && intentsHasMore && (
-                      <button
-                        onClick={loadOlderIntents}
-                        disabled={loadingOlderIntents}
-                        className="mt-0.5 flex items-center justify-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent/50"
-                      >
-                        {loadingOlderIntents ? (
-                          <Loader2Icon className="size-3.5 animate-spin" />
-                        ) : (
-                          <RotateCwIcon className="size-3.5" />
-                        )}
-                        加载更早的 Worker
-                      </button>
-                    )}
-                  </div>
-                );
-              })}
-              {mainLoaded && !workerSessions.length && (
-                <div className="px-2 py-1 text-xs text-muted-foreground">暂无运行中的 Worker 会话。</div>
-              )}
-            </div>
-          </ScrollArea>
-        </div>
-
-        {/* Right: transcript */}
-        <div className="flex min-w-0 flex-col overflow-hidden rounded-lg border bg-card">
-          <div className="flex items-center gap-2 border-b px-4 py-2.5">
-            {(() => {
-              const isWorker = active.role === "worker";
-              const meta = isWorker ? sessionMeta.get(active.id) : undefined;
-              // Worker: the intent moved into the transcript as a message, so the
-              // header shows a stable generic label (intent JSON stays on hover).
-              const title = isWorker ? "Worker 执行会话" : active.title;
-              const titleEl = <span className="text-sm font-medium">{title}</span>;
-              return meta?.json ? (
-                <Tooltip>
-                  <TooltipTrigger asChild>{titleEl}</TooltipTrigger>
-                  <TooltipContent side="bottom" align="start" className="max-h-80 max-w-sm overflow-auto p-0">
-                    <pre className="p-2 text-[10px] leading-relaxed">{JSON.stringify(meta.json, null, 2)}</pre>
-                  </TooltipContent>
-                </Tooltip>
-              ) : (
-                titleEl
-              );
-            })()}
-            {active.live && (
-              <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
-                <span className="size-1 animate-pulse rounded-full bg-blue-500" />
-                实时
-              </span>
-            )}
-            {activeState?.hasMore && (
-              <span className="text-[10px] text-muted-foreground" title="向上滚动加载更早历史">
-                ↑ 更早历史
-              </span>
-            )}
-            <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
-              {tokenTotal.any && (
-                <span title="input / cache(read) / output tokens">
-                  input {fmtTokens(tokenTotal.i)} · cache {fmtTokens(tokenTotal.cr)} · output {fmtTokens(tokenTotal.o)}
-                </span>
-              )}
-              {runDuration != null && (
-                <span className="inline-flex items-center gap-1" title="运行时长（首步 → 末步）">
-                  <ClockIcon className="size-3" />
-                  {fmtDuration(runDuration)}
-                </span>
-              )}
-              {isMain && <span>可交互</span>}
-            </div>
-          </div>
-          {/* Force Radix's internal viewport wrapper (display:table, sizes to content)
-            to block so wide/unbreakable steps (long commands, code, URLs) can't blow
-            out the width and defeat the truncation below — the transcript wraps to
-            the panel instead of overflowing horizontally. */}
-          <ScrollArea type="auto" className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
-            <div className="min-w-0 max-w-full p-4" ref={contentRef}>
-              {activeState?.loadingMore && (
-                <div className="flex items-center justify-center gap-2 pb-2 text-xs text-muted-foreground">
-                  <Loader2Icon className="size-3.5 animate-spin" />
-                  加载更早历史…
-                </div>
-              )}
-              {showLoader ? (
-                <div className="flex items-center gap-2 pl-9 text-xs text-muted-foreground">
-                  <Loader2Icon className="size-3.5 animate-spin" />
-                  加载活动流…
-                </div>
-              ) : activeState?.error ? (
-                <div className="flex items-center gap-2 pl-9 text-xs text-red-500">
-                  <CircleXIcon className="size-3.5" />
-                  加载失败：{activeState.error}
-                  <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => loadSession(activeKey)}>
-                    重试
-                  </Button>
-                </div>
-              ) : activity.length ? (
-                <Transcript activity={activity} live={active.live} taskId={taskId} chat={isMain} />
-              ) : (
-                <div className="pl-9 text-xs text-muted-foreground">
-                  {isMain ? "还没有对话。在下方给主 Agent 发消息，引导探索方向或介入流程。" : "暂无活动记录。"}
-                </div>
-              )}
-            </div>
-          </ScrollArea>
-          {isMain ? (
-            <div className="border-t p-3">
-              {attachments.length > 0 && (
-                <div className="mb-2 flex flex-wrap gap-1.5">
-                  {attachments.map((a) => (
-                    <div
-                      key={a.path}
-                      className="flex items-center gap-1.5 rounded-md border bg-muted/50 px-2 py-1 text-xs"
-                      title={a.path}
-                    >
-                      <PaperclipIcon className="size-3 shrink-0 text-primary" />
-                      <span className="max-w-[160px] truncate">{a.name}</span>
-                      <span className="text-muted-foreground">{fmtBytes(a.size)}</span>
-                      <button
-                        type="button"
-                        className="ml-0.5 text-muted-foreground hover:text-foreground"
-                        onClick={() => setAttachments((p) => p.filter((x) => x.path !== a.path))}
-                        title="移除"
-                      >
-                        <XIcon className="size-3" />
-                      </button>
-                    </div>
-                  ))}
-                </div>
-              )}
-              <div className="flex items-center gap-2">
-                <input
-                  ref={fileInputRef}
-                  type="file"
-                  multiple
-                  className="hidden"
-                  onChange={(e) => void pickFiles(e.target.files)}
-                />
-                <Button
-                  size="icon"
-                  variant="ghost"
-                  onClick={() => fileInputRef.current?.click()}
-                  disabled={mainLive || uploading}
-                  title="上传文件"
-                >
-                  {uploading ? <Loader2Icon className="animate-spin" /> : <PaperclipIcon />}
-                </Button>
-                <Input
-                  placeholder="给主 Agent 发消息，引导探索方向…"
-                  value={input}
-                  onChange={(e) => setInput(e.target.value)}
-                  onKeyDown={(e) => {
-                    if (e.key === "Enter" && !mainLive) send();
-                  }}
-                  disabled={mainLive}
-                />
-                {mainLive ? (
-                  <Button size="icon" variant="destructive" onClick={stop} disabled={stopping} title="停止当前执行">
-                    {stopping ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
-                  </Button>
-                ) : (
-                  <Button size="icon" onClick={send} disabled={(!input.trim() && attachments.length === 0) || sending}>
-                    {sending ? <Loader2Icon className="animate-spin" /> : <SendIcon />}
-                  </Button>
+    <div className="grid h-[calc(100vh-13rem)] grid-cols-1 gap-4 lg:grid-cols-[18rem_1fr]">
+      {/* Left: session list */}
+      <div className="flex flex-col overflow-hidden rounded-lg border bg-card">
+        <div className="border-b px-3 py-2">
+          <div className="flex items-center justify-between">
+            <div className="text-xs font-medium text-muted-foreground">会话列表</div>
+            {!MOCK && (
+              <span
+                className={cn(
+                  "inline-flex items-center gap-1 text-[10px]",
+                  sseLive ? "text-emerald-500" : "text-amber-500",
                 )}
-              </div>
-            </div>
-          ) : (
-            <div className="flex items-center border-t px-4 py-2">
-              <TodoPopover
-                seq={latestTodoSeq}
-                fetchDetail={(seq) => api.activityDetail(seq, taskId).then((r) => r.detail ?? "")}
-              />
+                title={sseLive ? "实时连接正常" : "实时连接中断，正在自动重连（历史仍可见）"}
+              >
+                {sseLive ? (
+                  <>
+                    <span className="size-1 animate-pulse rounded-full bg-emerald-500" />
+                    实时
+                  </>
+                ) : (
+                  <>
+                    <WifiOffIcon className="size-3" />
+                    重连中
+                  </>
+                )}
+              </span>
+            )}
+          </div>
+          {taskTokens && (
+            <div
+              className="mt-1 text-[11px] tabular-nums text-muted-foreground"
+              title="整个任务所有 agent 的 token 合计"
+            >
+              任务总计 · input {fmtTokens(taskTokens.input_tokens)} · cache{" "}
+              {fmtTokens(taskTokens.cache_read_tokens)} · output {fmtTokens(taskTokens.output_tokens)}
             </div>
           )}
         </div>
+        <ScrollArea type="auto" className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
+          <div className="flex w-full flex-col gap-3 p-2">
+            {(["mainagent", "planner", "worker"] as const).map((role) => {
+              const items = grouped[role];
+              if (!items.length) return null;
+              const Meta = roleMeta[role];
+              return (
+                <div key={role} className="flex flex-col gap-0.5">
+                  <div className="flex items-center gap-1.5 px-2 py-1 text-xs font-medium text-muted-foreground">
+                    <Meta.icon className="size-3.5" />
+                    {Meta.label}
+                  </div>
+                  {items.map((s) => {
+                    const meta = s.role === "worker" ? sessionMeta.get(s.id) : undefined;
+                    return (
+                      <SessionItem
+                        key={s.id}
+                        s={s}
+                        active={s.id === activeId}
+                        displayTitle={meta?.title ?? s.title}
+                        hasPending={hasPendingForSession(s)}
+                        unread={store[keyForSession(s)]?.unread}
+                        onClick={() => setActiveId(s.id)}
+                      />
+                    );
+                  })}
+                  {role === "worker" && intentsHasMore && (
+                    <button
+                      onClick={loadOlderIntents}
+                      disabled={loadingOlderIntents}
+                      className="mt-0.5 flex items-center justify-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent/50"
+                    >
+                      {loadingOlderIntents ? (
+                        <Loader2Icon className="size-3.5 animate-spin" />
+                      ) : (
+                        <RotateCwIcon className="size-3.5" />
+                      )}
+                      加载更早的 Worker
+                    </button>
+                  )}
+                </div>
+              );
+            })}
+            {mainLoaded && !workerSessions.length && (
+              <div className="px-2 py-1 text-xs text-muted-foreground">
+                暂无运行中的 Worker 会话。
+              </div>
+            )}
+          </div>
+        </ScrollArea>
       </div>
+
+      {/* Right: transcript */}
+      <div className="flex min-w-0 flex-col overflow-hidden rounded-lg border bg-card">
+        <div className="flex items-center gap-2 border-b px-4 py-2.5">
+          {(() => {
+            const isWorker = active.role === "worker";
+            const meta = isWorker ? sessionMeta.get(active.id) : undefined;
+            // Worker: the intent moved into the transcript as a message, so the
+            // header shows a stable generic label (intent JSON stays on hover).
+            const title = isWorker ? "Worker 执行会话" : active.title;
+            const titleEl = <span className="text-sm font-medium">{title}</span>;
+            return meta?.json ? (
+              <Tooltip>
+                <TooltipTrigger asChild>{titleEl}</TooltipTrigger>
+                <TooltipContent side="bottom" align="start" className="max-h-80 max-w-sm overflow-auto p-0">
+                  <pre className="p-2 text-[10px] leading-relaxed">
+                    {JSON.stringify(meta.json, null, 2)}
+                  </pre>
+                </TooltipContent>
+              </Tooltip>
+            ) : titleEl;
+          })()}
+          {active.live && (
+            <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+              <span className="size-1 animate-pulse rounded-full bg-blue-500" />
+              实时
+            </span>
+          )}
+          {activeState?.hasMore && (
+            <span className="text-[10px] text-muted-foreground" title="向上滚动加载更早历史">
+              ↑ 更早历史
+            </span>
+          )}
+          <div className="ml-auto flex items-center gap-3 text-xs text-muted-foreground">
+            {tokenTotal.any && (
+              <span title="input / cache(read) / output tokens">
+                input {fmtTokens(tokenTotal.i)} · cache {fmtTokens(tokenTotal.cr)} · output {fmtTokens(tokenTotal.o)}
+              </span>
+            )}
+            {runDuration != null && (
+              <span
+                className="inline-flex items-center gap-1"
+                title="运行时长（首步 → 末步）"
+              >
+                <ClockIcon className="size-3" />
+                {fmtDuration(runDuration)}
+              </span>
+            )}
+            {isMain && <span>可交互</span>}
+          </div>
+        </div>
+        {/* Force Radix's internal viewport wrapper (display:table, sizes to content)
+            to block so wide/unbreakable steps (long commands, code, URLs) can't blow
+            out the width and defeat the truncation below — the transcript wraps to
+            the panel instead of overflowing horizontally. */}
+        <ScrollArea
+          type="auto"
+          className="min-h-0 min-w-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!"
+        >
+          <div className="min-w-0 max-w-full p-4" ref={contentRef}>
+            {activeState?.loadingMore && (
+              <div className="flex items-center justify-center gap-2 pb-2 text-xs text-muted-foreground">
+                <Loader2Icon className="size-3.5 animate-spin" />
+                加载更早历史…
+              </div>
+            )}
+            {showLoader ? (
+              <div className="flex items-center gap-2 pl-9 text-xs text-muted-foreground">
+                <Loader2Icon className="size-3.5 animate-spin" />
+                加载活动流…
+              </div>
+            ) : activeState?.error ? (
+              <div className="flex items-center gap-2 pl-9 text-xs text-red-500">
+                <CircleXIcon className="size-3.5" />
+                加载失败：{activeState.error}
+                <Button size="sm" variant="ghost" className="h-6 px-2 text-xs" onClick={() => loadSession(activeKey)}>
+                  重试
+                </Button>
+              </div>
+            ) : activity.length ? (
+              <Transcript activity={activity} live={active.live} taskId={taskId} chat={isMain} />
+            ) : (
+              <div className="pl-9 text-xs text-muted-foreground">
+                {isMain
+                  ? "还没有对话。在下方给主 Agent 发消息，引导探索方向或介入流程。"
+                  : "暂无活动记录。"}
+              </div>
+            )}
+          </div>
+        </ScrollArea>
+        {isMain ? (
+          <div className="border-t p-3">
+            {attachments.length > 0 && (
+              <div className="mb-2 flex flex-wrap gap-1.5">
+                {attachments.map((a) => (
+                  <div
+                    key={a.path}
+                    className="flex items-center gap-1.5 rounded-md border bg-muted/50 px-2 py-1 text-xs"
+                    title={a.path}
+                  >
+                    <PaperclipIcon className="size-3 shrink-0 text-primary" />
+                    <span className="max-w-[160px] truncate">{a.name}</span>
+                    <span className="text-muted-foreground">{fmtBytes(a.size)}</span>
+                    <button
+                      type="button"
+                      className="ml-0.5 text-muted-foreground hover:text-foreground"
+                      onClick={() => setAttachments((p) => p.filter((x) => x.path !== a.path))}
+                      title="移除"
+                    >
+                      <XIcon className="size-3" />
+                    </button>
+                  </div>
+                ))}
+              </div>
+            )}
+            <div className="flex items-end gap-2">
+              <input
+                ref={fileInputRef}
+                type="file"
+                multiple
+                className="hidden"
+                onChange={(e) => void pickFiles(e.target.files)}
+              />
+              <Button
+                size="icon"
+                variant="ghost"
+                onClick={() => fileInputRef.current?.click()}
+                disabled={mainLive || uploading}
+                title="上传文件"
+              >
+                {uploading ? <Loader2Icon className="animate-spin" /> : <PaperclipIcon />}
+              </Button>
+              <Textarea
+                className="max-h-40 min-h-9 flex-1 resize-none"
+                rows={1}
+                placeholder="给主 Agent 发消息，Enter 换行，Ctrl+Enter 发送…"
+                value={input}
+                onChange={(e) => setInput(e.target.value)}
+                onKeyDown={(e) => {
+                  // Enter 换行；只有 Ctrl/Cmd+Enter 才发送。
+                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
+                    e.preventDefault();
+                    if (!mainLive) send();
+                  }
+                }}
+                disabled={mainLive}
+              />
+              {mainLive ? (
+                <Button size="icon" variant="destructive" onClick={stop} disabled={stopping} title="停止当前执行">
+                  {stopping ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
+                </Button>
+              ) : (
+                <Button size="icon" onClick={send} disabled={(!input.trim() && attachments.length === 0) || sending}>
+                  {sending ? <Loader2Icon className="animate-spin" /> : <SendIcon />}
+                </Button>
+              )}
+            </div>
+          </div>
+        ) : (
+          <div className="flex items-center border-t px-4 py-2">
+            <TodoPopover
+              seq={latestTodoSeq}
+              fetchDetail={(seq) => api.activityDetail(seq, taskId).then((r) => r.detail ?? "")}
+            />
+          </div>
+        )}
+      </div>
+    </div>
     </TooltipProvider>
   );
 }

@@ -67,14 +67,61 @@ func decode(r *http.Request, v any) error { return json.NewDecoder(r.Body).Decod
 
 // ---------- tasks (delete) ----------
 
+// pgDeleteTask removes a task and, per opt-in flags in the (optional) JSON body,
+// its associated data: assets (task-owned), findings, recorded traffic (by the
+// task's hosts) and the per-task working directory. Empty body → all flags false →
+// only the task + its exploration subgraph are removed (legacy behavior).
 func (s *Server) pgDeleteTask(w http.ResponseWriter, r *http.Request) {
 	id := r.PathValue("id")
+	var opts struct {
+		Assets   bool `json:"assets"`
+		Findings bool `json:"findings"`
+		Traffic  bool `json:"traffic"`
+		Files    bool `json:"files"`
+	}
+	_ = json.NewDecoder(r.Body).Decode(&opts) // optional body; ignore EOF/parse errors
+
+	result := map[string]any{"deleted": id}
+	nid, _ := strconv.ParseInt(id, 10, 64)
+	as := s.m.Assets()
+
 	s.engine.StopTask(id) // stop loops + drain in-flight before removing DB rows
+
+	// Traffic first: it needs the task's hosts, which come from assets that a later
+	// asset-delete would remove. Traffic is host-keyed (no per-task tag), so this
+	// purges ALL recorded traffic for those hosts, not just this task's.
+	if opts.Traffic && nid > 0 && as != nil {
+		if tr := s.m.Traffic(); tr != nil {
+			if hosts, err := as.HostsByTask(nid); err == nil && len(hosts) > 0 {
+				if n, err := tr.DeleteHostsExact(hosts); err == nil {
+					result["traffic_deleted"] = n
+				}
+			}
+		}
+	}
+	if opts.Findings && nid > 0 {
+		if n, err := s.m.pg.DeleteFindingsByTask(nid); err == nil {
+			result["findings_deleted"] = n
+		}
+	}
+	if opts.Assets && nid > 0 && as != nil {
+		if n, err := as.DeleteByTaskID(nid); err == nil {
+			result["assets_deleted"] = n
+		}
+	}
 	if err := s.m.DeleteTask(id); err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	writeJSON(w, 200, map[string]any{"deleted": id})
+
+	// Files last: the per-task working dir <workDir>/tasks/<id> (worker artifacts +
+	// uploads). Confined to the work dir; id is numeric so no traversal risk.
+	if opts.Files && nid > 0 {
+		if err := os.RemoveAll(filepath.Join(s.m.dir, "tasks", id)); err == nil {
+			result["files_deleted"] = true
+		}
+	}
+	writeJSON(w, 200, result)
 }
 
 // ---------- agents ----------
@@ -1575,10 +1622,10 @@ func (s *Server) pgSaveProfile(w http.ResponseWriter, r *http.Request) {
 	}
 	// Editing a profile rebuilds any task pinned to it on its next round.
 	s.invalidateProfileAgents()
-	// If we just edited the active profile, hot-apply so changes take effect now.
-	if act, _ := pg.ActiveProfile(); act != nil && act.ID == id {
-		s.reapplyActiveProfile()
-	}
+	// Hot-apply. Not just when the ACTIVE profile changed: with failover on, any
+	// profile's key/model/priority/pool_exclude edit reshapes the chain, so the
+	// engine's provider has to be rebuilt either way.
+	s.reapplyActiveProfile()
 	writeJSON(w, 200, map[string]any{"id": id})
 }
 
@@ -1593,6 +1640,8 @@ func (s *Server) pgDeleteProfile(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	s.invalidateProfileAgents() // drop cached agents for the removed profile
+	s.llmHealth.Reset(id)      // its breaker state is meaningless now (row is FK-cascaded away)
+	s.reapplyActiveProfile()   // the deleted profile may have been in the failover chain
 	writeJSON(w, 200, map[string]any{"deleted": id})
 }
 
@@ -1619,6 +1668,40 @@ func (s *Server) pgActivateProfile(w http.ResponseWriter, r *http.Request) {
 	s.invalidateProfileAgents() // active change may affect pinned-task fallbacks
 	s.reapplyActiveProfile()    // switch the running engine to the newly activated profile
 	writeJSON(w, 200, map[string]any{"ok": true})
+}
+
+// pgLLMPoolStatus reports the failover ("轮询") switches, the resolved chain order
+// and every profile's circuit-breaker state — what the LLM page renders as the
+// "轮询顺序" strip and the per-card health badges.
+func (s *Server) pgLLMPoolStatus(w http.ResponseWriter, r *http.Request) {
+	if s.pg(w) == nil {
+		return
+	}
+	writeJSON(w, 200, s.llmPoolStatus())
+}
+
+// pgLLMPoolReset clears a tripped profile's circuit breaker so the next call
+// tries it again immediately ("立即恢复"). id=0 clears every profile.
+func (s *Server) pgLLMPoolReset(w http.ResponseWriter, r *http.Request) {
+	pg := s.pg(w)
+	if pg == nil {
+		return
+	}
+	var body struct {
+		ID int64 `json:"id"` // 0 / omitted = all
+	}
+	if err := decode(r, &body); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	if body.ID > 0 {
+		s.llmHealth.Reset(body.ID)
+	} else {
+		for id := range s.llmHealth.Snapshot() {
+			s.llmHealth.Reset(id)
+		}
+	}
+	writeJSON(w, 200, s.llmPoolStatus())
 }
 
 // pgListModels fetches available models from the provider's API endpoint.

@@ -19,6 +19,7 @@ import (
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/artex/llmpool"
 	"github.com/Autumn-27/artex/llmrec"
 	"github.com/Autumn-27/artex/report"
 	"github.com/Autumn-27/norma/llm"
@@ -43,12 +44,22 @@ type Server struct {
 	skillDir string // root directory for skill subdirectories
 	jwtKey   []byte // HS256 signing key loaded from / generated into dataDir/jwt.key
 
+	// concMu serializes concurrency-cap decisions (admission + reconcile) so a
+	// scheduler tick and an HTTP settings change / task creation can't both count
+	// free slots off the same snapshot and over-promote past the limit.
+	concMu sync.Mutex
+
 	cfgMu     sync.Mutex
 	mainAgent *agent.MainAgent // nil when no LLM provider is configured
 	chatAgent *agent.ChatAgent // conversational runner for the chat page; nil w/o LLM
 	llmCfg    agent.Config     // current LLM config (key not exposed)
 	llmOn     bool
 	llmProf   string // active LLM profile name (for llmrec tagging)
+	// llmProv is the fully-decorated global provider (recorder + failover chain)
+	// applyLLM installed. Kept so one-off callers (goal decomposition) reuse the
+	// same instance instead of building a private one that skips the rate limiter,
+	// the recorder and failover.
+	llmProv llm.Provider
 
 	// chatBusy guards the per-task main-agent run: the chat handler launches the
 	// agent on the server's background ctx (not the request ctx) and returns
@@ -61,7 +72,7 @@ type Server struct {
 	// convBusyKey), so a manual stop can abort JUST that session's agent run. Set/
 	// cleared alongside chatBusy under chatMu. Aborting a run does NOT touch the P3
 	// trigger queue — the drain goroutine simply proceeds to the next queued fire.
-	chatCancel map[string]context.CancelFunc
+	chatCancel map[string]context.CancelCauseFunc
 
 	// triggerQ buffers P3 trigger fires PER AGENT. A per-agent "pump" launches runs up
 	// to a concurrency limit derived from the agent's策略: serial → limit 1 (+ optional
@@ -93,6 +104,12 @@ type Server struct {
 	// leaving it unset), just not deduped. Cleared alongside profAgents on profile edits.
 	provCacheMu   sync.Mutex
 	provByProfile map[int64]*provEntry
+
+	// llmHealth is the process-wide circuit-breaker state for LLM failover (轮询).
+	// It deliberately lives OUTSIDE the provider caches: rebuilding the chain
+	// (saving an unrelated profile, flipping a setting) must not erase what we
+	// learned about which backends are out of credit / rate-limited.
+	llmHealth *llmpool.Registry
 }
 
 // profBundle is a planner/worker pair built from one LLM profile.
@@ -124,10 +141,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		log.Fatalf("[auth] JWT key: %v", err)
 	}
 	s := &Server{m: m, engine: NewEngine(m), ctx: ctx, skillDir: skillDir, jwtKey: key, chatBusy: map[string]bool{},
-		chatCancel: map[string]context.CancelFunc{}, triggerQ: map[string][]triggeredRun{},
+		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profAgents: map[int64]*profBundle{}, profChatAgents: map[int64]*agent.ChatAgent{},
-		provByProfile: map[int64]*provEntry{}}
+		provByProfile: map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg)}
 	// per-task LLM: a task pinned to a specific profile runs on that profile's
 	// dedicated planner/worker; unpinned tasks fall back to the global active pair.
 	s.engine.SetAgentResolver(func(t *Task) (*agent.Planner, *agent.Worker) {
@@ -223,7 +240,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 			log.Printf("[engine] task %s 重置 %d 个残留 running 意图为 open", t.ID, n)
 		}
 		if t.Paused {
-			s.engine.Pause(t.ID)
+			s.engine.Pause(t.ID, agent.AbortPausedOnReload)
 		}
 		// 任务级超时:为每个未终态、带 timeout 的任务起 deadline 协调器,独立于 planner/worker
 		// loop——非活跃任务重启后也能在到点后被收尾(deadline 已过则立即走收尾时序)。
@@ -239,7 +256,8 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		// 重启后自动恢复运行:非终态、非定时、非暂停的任务自动启动 engine loop,避免重启前
 		// 在跑的任务变成"已创建"空闲态。paused 任务保持暂停等待用户 resume(control 会 Run+
 		// Resume),定时任务由上方 scheduleOrLaunch 到点再启,终态任务无需恢复。
-		if !isTerminalStatus(t.Status) && t.Status != "scheduled" && !t.Paused {
+		// 排队中的任务不在此启动——留给 reconcileConcurrency 按空位补位。
+		if !isTerminalStatus(t.Status) && t.Status != "scheduled" && !t.Paused && !t.Queued {
 			s.engine.Run(ctx, t)
 		}
 	}
@@ -298,10 +316,15 @@ func (s *Server) saveLLMConfig(cfg agent.Config) {
 		format = "openai"
 	}
 	var id int64
+	// agent.Config carries no failover fields, so carry the stored ones forward —
+	// otherwise this legacy endpoint would silently reset the profile's priority
+	// and pool_exclude to zero values on every save.
+	var priority int
+	var poolExclude bool
 	if profs, _ := s.m.pg.ListProfiles(); profs != nil {
 		for _, p := range profs {
 			if p.Name == "default" {
-				id = p.ID
+				id, priority, poolExclude = p.ID, p.Priority, p.PoolExclude
 				break
 			}
 		}
@@ -310,6 +333,7 @@ func (s *Server) saveLLMConfig(cfg agent.Config) {
 		ID: id, Name: "default", Format: format, Model: cfg.Model, BaseURL: cfg.BaseURL, Proxy: cfg.Proxy,
 		APIKey: cfg.APIKey, RatePerSecond: cfg.RatePerSecond, RatePerMinute: cfg.RatePerMinute,
 		ContextWindowK: cfg.ContextWindowK, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
+		Priority: priority, PoolExclude: poolExclude,
 	})
 	if err == nil {
 		_ = s.m.pg.SetActiveProfile(newID)
@@ -378,6 +402,12 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	profName := s.llmProf
 	s.cfgMu.Unlock()
 	prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, s.m.LLMRecordEnabled)
+	// LLM 轮询(默认关):把激活配置包进故障转移链,当前配置不可用时自动切下一个。
+	// 只影响「走全局激活配置」的这条路径——agent 绑定 / 任务 pin 的走 providerForProfile,
+	// 默认仍然独占该配置(见 poolForBinding)。关闭或无备选时返回原 provider,行为不变。
+	if act, err := s.m.pg.ActiveProfile(); err == nil && act != nil {
+		prov = s.poolForActive(act.ID, prov, cfg)
+	}
 	pl, wk := s.buildPlannerWorker(nil, prov, cfg)
 	s.engine.UseLLM(pl, wk)
 
@@ -398,6 +428,7 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	s.chatAgent.SetWebSearch(s.m.WebSearchOpts())
 	s.chatAgent.SetGuard(s.chatGuard())
 	s.llmCfg = cfg
+	s.llmProv = prov
 	s.llmOn = true
 	s.cfgMu.Unlock()
 
@@ -475,10 +506,14 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 
 // providerForAgent returns the provider+cfg one agent should run on: its bound/pinned
 // profile if that resolves, else the passed global fallback (gProv/gCfg).
+// A bound/pinned profile is EXCLUSIVE by default: it does not fail over, so an
+// agent deliberately put on a specific model never silently runs on another one.
+// Turning on llm_pool_bind_fallback relaxes that — poolForBinding then appends the
+// failover chain behind it.
 func (s *Server) providerForAgent(agentKey string, pinID *int64, gProv llm.Provider, gCfg agent.Config) (llm.Provider, agent.Config) {
 	if eff := s.effectiveProfileForAgent(agentKey, pinID); eff != nil {
 		if prov, cfg, ok := s.providerForProfile(*eff); ok {
-			return prov, cfg
+			return s.poolForBinding(*eff, prov, cfg), cfg
 		}
 	}
 	return gProv, gCfg
@@ -499,7 +534,9 @@ func (s *Server) agentsForProfile(id int64) (*agent.Planner, *agent.Worker) {
 	if !ok {
 		return nil, nil
 	}
-	pl, wk := s.buildPlannerWorker(&id, prov, cfg)
+	// The pin is the fallback for agents without their own binding — same
+	// exclusive-by-default rule, so route it through poolForBinding too.
+	pl, wk := s.buildPlannerWorker(&id, s.poolForBinding(id, prov, cfg), cfg)
 	s.profMu.Lock()
 	if ex := s.profAgents[id]; ex != nil { // lost the race → keep the winner
 		pl, wk = ex.pl, ex.wk
@@ -524,7 +561,7 @@ func (s *Server) chatAgentForProfile(id int64) *agent.ChatAgent {
 		return nil
 	}
 	tx := transcript.NewStore(filepath.Join(s.m.dir, "transcripts"))
-	ca := agent.NewChatAgent(prov, cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
+	ca := agent.NewChatAgent(s.poolForBinding(id, prov, cfg), cfg.Model, s.m.dir, tx, cfg.CompactionWindow())
 	ca.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	ca.SetWebSearch(s.m.WebSearchOpts())
 	ca.SetGuard(s.chatGuard())
@@ -623,6 +660,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/exploration/findings/{id}", s.getFinding)
 	mux.HandleFunc("GET /api/exploration/findings/{id}/lineage", s.findingLineage)
 	mux.HandleFunc("PATCH /api/exploration/findings/{id}", s.patchFinding)
+	mux.HandleFunc("DELETE /api/exploration/findings/{id}", s.deleteFinding)
 	mux.HandleFunc("GET /api/exploration/intents", s.intents)
 	mux.HandleFunc("GET /api/exploration/graph", s.explorationGraph)
 	mux.HandleFunc("GET /api/exploration/activity", s.activity)
@@ -734,6 +772,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/llm/profiles", s.pgSaveProfile)
 	mux.HandleFunc("DELETE /api/llm/profiles/{id}", s.pgDeleteProfile)
 	mux.HandleFunc("POST /api/llm/profiles/active", s.pgActivateProfile)
+	mux.HandleFunc("GET /api/llm/pool", s.pgLLMPoolStatus)
+	mux.HandleFunc("POST /api/llm/pool/reset", s.pgLLMPoolReset)
 	mux.HandleFunc("POST /api/llm/models", s.pgListModels)
 
 	// 拦截规则管理
@@ -863,10 +903,12 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	for i, t := range list {
 		statuses[i] = "created"
 		switch {
-		case isTerminalStatus(t.Status):
+		case isTerminalStatus(t.Status): // 持久化终态优先（done/failed/timeout）
 			statuses[i] = t.Status
 		case t.Status == "scheduled":
 			statuses[i] = "scheduled"
+		case t.Queued: // 因并发上限挂起、等待空位(尚未启动)
+			statuses[i] = "queued"
 		case t.Paused || s.engine.IsPaused(t.ID):
 			statuses[i] = "paused"
 		case s.engine.Ready() && s.engine.Started(t.ID):
@@ -992,7 +1034,8 @@ func (s *Server) setActive(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// resume the engine for the opened task (idempotent — no-op if already running).
-	if t, ok := s.m.Task(req.ID); ok {
+	// 排队中的任务:仅设为活跃可查看,不启动引擎(维持并发上限,由 reconcile 补位)。
+	if t, ok := s.m.Task(req.ID); ok && !t.Queued {
 		s.engine.Run(s.ctx, t)
 	}
 	writeJSON(w, 200, map[string]any{"active": req.ID})
@@ -1019,7 +1062,7 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	}
 	switch req.Action {
 	case "pause":
-		s.engine.Pause(t.ID)
+		s.engine.Pause(t.ID, agent.AbortPausedByUser)
 	case "resume":
 		s.engine.Run(s.ctx, t) // ensure loops are alive, then un-pause + nudge
 		s.engine.Resume(t)
@@ -1733,6 +1776,26 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, 200, findingFromDB(f, s.resolveAssetIDs(f.AssetIDs)))
 }
 
+// deleteFinding removes a finding (findings row + originating exploration node).
+// id is the standalone findings-table id (DTO finding_id).
+func (s *Server) deleteFinding(w http.ResponseWriter, r *http.Request) {
+	id := int64(atoiDefault(r.PathValue("id"), 0))
+	if id <= 0 {
+		writeErr(w, 400, "bad finding id")
+		return
+	}
+	n, err := s.m.pg.DeleteFinding(id)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if n == 0 {
+		writeErr(w, 404, "finding not found")
+		return
+	}
+	writeJSON(w, 200, map[string]any{"deleted": true, "id": id})
+}
+
 func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 	t := s.m.ResolveTask(r.URL.Query().Get("task"))
 	if t == nil {
@@ -2321,17 +2384,27 @@ func (s *Server) getSettings(w http.ResponseWriter, r *http.Request) {
 func (s *Server) settingsPayload() map[string]any {
 	on, backend, braveKey, tavilyKey, proxy := s.m.WebSearch()
 	pyStored, _, _ := s.m.pg.GetSetting(settingPythonInterp)
+	concOn, concLimit := s.m.ConcurrencyLimit()
+	if concLimit == 0 {
+		concLimit = defaultConcurrencyLimit // 关闭时也回显一个合理默认值给 UI
+	}
 	return map[string]any{
-		"traffic_capture":    s.m.TrafficEnabled(),
-		"llm_record":         s.m.LLMRecordEnabled(),
-		"web_search_enabled": on,
-		"web_search_backend": backend,
-		"brave_key_set":      strings.TrimSpace(braveKey) != "",
-		"tavily_key_set":     strings.TrimSpace(tavilyKey) != "",
-		"web_search_proxy":   proxy,                       // 独立出口代理(http/https/socks5)，空=直连
-		"python_interpreter": strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
-		"workers":            s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
-		"task_url":           s.taskURLBase(),             // 任务完成推送消息中的链接 base URL(空=不附带链接)
+		"traffic_capture":          s.m.TrafficEnabled(),
+		"llm_record":               s.m.LLMRecordEnabled(),
+		"web_search_enabled":       on,
+		"web_search_backend":       backend,
+		"brave_key_set":            strings.TrimSpace(braveKey) != "",
+		"tavily_key_set":           strings.TrimSpace(tavilyKey) != "",
+		"web_search_proxy":         proxy,                       // 独立出口代理(http/https/socks5)，空=直连
+		"python_interpreter":       strings.TrimSpace(pyStored), // 用户/自动设的值(空=用运行时检测)
+		"workers":                  s.m.Workers(),               // 并发工作 agent 数(默认3)；对之后启动的任务生效
+		"task_url":                 s.taskURLBase(),             // 任务完成推送消息中的链接 base URL(空=不附带链接)
+		"task_concurrency_enabled": concOn,                      // 任务并发上限开关(默认关)
+		"task_concurrency_limit":   concLimit,                   // 同时运行任务上限(开启后默认5)
+		// LLM 轮询(故障转移)。默认关；开启后走全局激活配置的 agent 在当前配置不可用时
+		// 自动切到下一个配置。bind_fallback 仅在轮询开启时有意义(默认关)。
+		"llm_pool_enabled":       s.m.LLMPoolEnabled(),
+		"llm_pool_bind_fallback": s.m.LLMPoolBindFallback(),
 	}
 }
 
@@ -2365,7 +2438,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		WebSearchProxy   *string `json:"web_search_proxy"`   // 独立出口代理(http/https/socks5)；null=不改，""=清空
 		PythonInterp     *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
 		Workers          *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
-		TaskURL          *string `json:"task_url"`           // 任务完成推送链接 base URL(空串=不附带链接)
+		TaskURL             *string `json:"task_url"`           // 任务完成推送链接 base URL(空串=不附带链接)
+		// 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
+		ConcurrencyEnabled  *bool  `json:"task_concurrency_enabled"`
+		ConcurrencyLimit    *int   `json:"task_concurrency_limit"`
+		// LLM 轮询(故障转移)开关 + 「绑定配置失败也兜底回轮询链」开关。两者都需要
+		// 重建 provider 链才生效，走下面的 changed → applyLLM 路径。
+		LLMPoolEnabled      *bool  `json:"llm_pool_enabled"`
+		LLMPoolBindFallback *bool  `json:"llm_pool_bind_fallback"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())
@@ -2376,6 +2456,26 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 			writeErr(w, 400, err.Error())
 			return
 		}
+	}
+	if req.ConcurrencyEnabled != nil || req.ConcurrencyLimit != nil {
+		// 部分 PUT:未给的字段用当前值兜底,避免只改一个把另一个重置。
+		curOn, curLimit := s.m.ConcurrencyLimit()
+		if curLimit == 0 {
+			curLimit = defaultConcurrencyLimit
+		}
+		on, limit := curOn, curLimit
+		if req.ConcurrencyEnabled != nil {
+			on = *req.ConcurrencyEnabled
+		}
+		if req.ConcurrencyLimit != nil {
+			limit = *req.ConcurrencyLimit
+		}
+		if err := s.m.SetConcurrency(on, limit); err != nil {
+			writeErr(w, 400, err.Error())
+			return
+		}
+		// 立即协调一次:关闭时放行全部排队,调高上限时补位启动,不必等下一个 tick。
+		go s.reconcileConcurrency()
 	}
 	if req.PythonInterp != nil {
 		if err := s.m.pg.SetSetting(settingPythonInterp, strings.TrimSpace(*req.PythonInterp)); err != nil {
@@ -2397,6 +2497,25 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	changed := false
+	if req.LLMPoolEnabled != nil {
+		if err := s.m.SetLLMPoolEnabled(*req.LLMPoolEnabled); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		changed = true // the provider chain itself changes shape → rebuild
+	}
+	if req.LLMPoolBindFallback != nil {
+		if err := s.m.SetLLMPoolBindFallback(*req.LLMPoolBindFallback); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		changed = true
+	}
+	if req.LLMPoolEnabled != nil || req.LLMPoolBindFallback != nil {
+		// Pinned tasks' planner/worker and per-profile chat agents hold providers
+		// built under the OLD switch state — drop them so they pick up the new one.
+		s.invalidateProfileAgents()
+	}
 	if req.TrafficCapture != nil {
 		if err := s.m.SetTrafficEnabled(*req.TrafficCapture); err != nil {
 			writeErr(w, 500, err.Error())
@@ -2514,7 +2633,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		}
 		// Cancellable context so stopChat can abort this turn without affecting
 		// the server's root context (mirrors the conversation stop pattern).
-		ctx, cancel := context.WithCancel(s.ctx)
+		ctx, cancel := context.WithCancelCause(s.ctx)
 		s.chatBusy[t.ID] = true
 		s.chatCancel[t.ID] = cancel
 		s.chatMu.Unlock()
@@ -2526,7 +2645,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		// handler returns immediately and the browser never needs to hold the request.
 		go func() {
 			defer func() {
-				cancel()
+				cancel(agent.AbortChatTurnFinished)
 				s.chatMu.Lock()
 				delete(s.chatBusy, t.ID)
 				delete(s.chatCancel, t.ID)
@@ -2570,7 +2689,7 @@ func (s *Server) stopChat(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"status": "idle"})
 		return
 	}
-	cancel()
+	cancel(agent.AbortChatStoppedByUser)
 	writeJSON(w, 200, map[string]any{"status": "stopping"})
 }
 

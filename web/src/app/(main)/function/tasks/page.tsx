@@ -12,6 +12,7 @@ import {
   PaperclipIcon,
   PlusIcon,
   SearchIcon,
+  SlidersHorizontalIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -33,10 +34,30 @@ import {
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogClose,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+  DialogTrigger,
+} from "@/components/ui/dialog";
 import { Collapsible, CollapsibleContent, CollapsibleTrigger } from "@/components/ui/collapsible";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Switch } from "@/components/ui/switch";
+import { Textarea } from "@/components/ui/textarea";
+import {
+  Table,
+  TableBody,
+  TableCell,
+  TableHead,
+  TableHeader,
+  TableRow,
+} from "@/components/ui/table";
 import {
   Sheet,
   SheetClose,
@@ -47,8 +68,6 @@ import {
   SheetTitle,
   SheetTrigger,
 } from "@/components/ui/sheet";
-import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
-import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
 import { isTerminalTaskStatus } from "@/lib/status";
 import type { ChatAttachment, LLMProfile, Task, TaskStatus } from "@/lib/types";
@@ -119,9 +138,8 @@ function fmtDuration(sec: number): string {
 function taskDuration(task: Task, nowSec: number): number {
   // 定时任务:从 scheduled_start_unix(开始时间)算,而非 created_unix(创建时间);
   // 非定时任务保持从 created_unix 起。
-  const start = task.scheduled_start_unix && task.scheduled_start_unix > 0
-    ? task.scheduled_start_unix
-    : task.created_unix ?? 0;
+  const start =
+    task.scheduled_start_unix && task.scheduled_start_unix > 0 ? task.scheduled_start_unix : (task.created_unix ?? 0);
   if (!start) return 0;
   let end: number;
   if (task.status === "running") {
@@ -145,6 +163,7 @@ function fmtDateTime(unix?: number): string {
 
 const STATUS_OPTIONS: { value: TaskStatus; label: string }[] = [
   { value: "created", label: "已创建" },
+  { value: "queued", label: "排队中" },
   { value: "running", label: "运行中" },
   { value: "paused", label: "已暂停" },
   { value: "done", label: "已完成" },
@@ -211,13 +230,13 @@ export default function TasksPage() {
   }, [hasRunning]);
 
   const deleteTask = React.useCallback(
-    async (id: string) => {
+    async (id: string, opts: DeleteOpts) => {
       try {
-        await api.deleteTask(id);
-        toast.success("任务已删除（全局资产图保留）");
+        await api.deleteTask(id, opts);
+        toast.success("任务已删除");
         load();
       } catch (e) {
-        toast.error(`删除失败：${(e as Error).message}`);
+        toast.error("删除失败：" + (e as Error).message);
       }
     },
     [load],
@@ -268,7 +287,10 @@ export default function TasksPage() {
               ))}
             </SelectContent>
           </Select>
-          <span className="text-muted-foreground text-xs tabular-nums">{total} 条</span>
+          <span className="text-muted-foreground text-xs tabular-nums">
+            {total} 条
+          </span>
+          <ConcurrencySettingsDialog />
           <CreateTaskSheet onCreated={load} />
         </div>
 
@@ -277,35 +299,37 @@ export default function TasksPage() {
             {emptyHint}
           </div>
         ) : (
-          <Table className="**:data-[slot='table-cell']:px-4 **:data-[slot='table-head']:px-4">
-            <TableHeader className="[&_tr]:border-t">
-              <TableRow>
-                <TableHead className="font-mono">ID</TableHead>
-                <TableHead>描述</TableHead>
-                <TableHead>目标</TableHead>
-                <TableHead>状态</TableHead>
-                <TableHead>模型</TableHead>
-                <TableHead>创建时间</TableHead>
-                <TableHead>运行时长</TableHead>
-                <TableHead>Token</TableHead>
-                <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">
-                  操作
-                </TableHead>
-              </TableRow>
-            </TableHeader>
-            <TableBody>
-              {tasks.map((task) => (
-                <TaskRow
-                  key={task.id}
-                  task={task}
-                  // running 任务才吃 nowSec;其余行传 0 —— props 不变,memo 就能拦下每秒 tick
-                  // 带来的整表重渲染,只让在跑的那几行走时长。
-                  nowSec={task.status === "running" ? nowSec : 0}
-                  onDelete={deleteTask}
-                />
-              ))}
-            </TableBody>
-          </Table>
+          <div className="overflow-x-auto">
+            <Table className="**:data-[slot='table-cell']:px-4 **:data-[slot='table-head']:px-4">
+              <TableHeader className="[&_tr]:border-t">
+                <TableRow>
+                  <TableHead className="font-mono">ID</TableHead>
+                  <TableHead>描述</TableHead>
+                  <TableHead>目标</TableHead>
+                  <TableHead>状态</TableHead>
+                  <TableHead>模型</TableHead>
+                  <TableHead>创建时间</TableHead>
+                  <TableHead>运行时长</TableHead>
+                  <TableHead>Token</TableHead>
+                  <TableHead className="sticky right-0 z-10 bg-card text-right shadow-[-1px_0_0_0_hsl(var(--border))]">
+                    操作
+                  </TableHead>
+                </TableRow>
+              </TableHeader>
+              <TableBody>
+                {tasks.map((task) => (
+                  <TaskRow
+                    key={task.id}
+                    task={task}
+                    // running 任务才吃 nowSec;其余行传 0 —— props 不变,memo 就能拦下每秒 tick
+                    // 带来的整表重渲染,只让在跑的那几行走时长。
+                    nowSec={task.status === "running" ? nowSec : 0}
+                    onDelete={deleteTask}
+                  />
+                ))}
+              </TableBody>
+            </Table>
+          </div>
         )}
         <TablePagination
           page={page}
@@ -319,6 +343,19 @@ export default function TasksPage() {
   );
 }
 
+// TaskRow renders one row of the task table. Memoized so the per-second 运行时长 tick and
+// the POLL_MS list refresh only re-render the rows whose data actually moved — a table page
+// is 20 rows × (StatusBadge + Link + a Radix AlertDialog tree), far too heavy to rebuild
+// wholesale on every parent render.
+type DeleteOpts = { assets: boolean; findings: boolean; traffic: boolean; files: boolean };
+
+const DELETE_EXTRAS: { key: keyof DeleteOpts; label: string; hint: string }[] = [
+  { key: "assets", label: "删除关联的资产", hint: "仅本任务独有的资产;与其他任务共享的仅解除关联" },
+  { key: "findings", label: "删除发现的漏洞", hint: "本任务记录的全部漏洞" },
+  { key: "traffic", label: "删除测试的流量", hint: "按本任务涉及的 host 清除录制流量" },
+  { key: "files", label: "删除测试过程中写的文件", hint: "本任务工作目录 tasks/<id>(产物 + 上传)" },
+];
+
 const TaskRow = React.memo(function TaskRow({
   task,
   nowSec,
@@ -326,8 +363,14 @@ const TaskRow = React.memo(function TaskRow({
 }: {
   task: Task;
   nowSec: number;
-  onDelete: (id: string) => void;
+  onDelete: (id: string, opts: DeleteOpts) => void;
 }) {
+  const [delOpts, setDelOpts] = React.useState<DeleteOpts>({
+    assets: false,
+    findings: false,
+    traffic: false,
+    files: false,
+  });
   return (
     <TableRow className="group border-border/60">
       <TableCell>
@@ -416,16 +459,51 @@ const TaskRow = React.memo(function TaskRow({
             <AlertDialogContent>
               <AlertDialogHeader>
                 <AlertDialogTitle>确认删除任务 #{task.id}？</AlertDialogTitle>
-                <AlertDialogDescription>
-                  {task.description
-                    ? `「${task.description.length > 80 ? `${task.description.slice(0, 80)}…` : task.description}」`
-                    : "该任务"}
-                  的执行记录、会话与产物将被删除，此操作不可撤销（全局资产图保留）。
+                <AlertDialogDescription className="break-words">
+                  {task.description ? (
+                    <>
+                      「
+                      <span className="break-all">
+                        {task.description.length > 80
+                          ? task.description.slice(0, 80) + "…"
+                          : task.description}
+                      </span>
+                      」
+                    </>
+                  ) : (
+                    "该任务"
+                  )}
+                  的执行记录、会话与产物将被删除，此操作不可撤销。
                 </AlertDialogDescription>
               </AlertDialogHeader>
+
+              {/* 额外清理项:默认都不选,勾选后连带删除。全局资产图默认保留。 */}
+              <div className="grid gap-2 rounded-md border bg-muted/30 p-3">
+                <span className="text-xs font-medium text-muted-foreground">
+                  同时删除以下关联数据（默认不删）：
+                </span>
+                {DELETE_EXTRAS.map((opt) => (
+                  <label key={opt.key} className="flex items-start gap-2 text-sm">
+                    <Checkbox
+                      className="mt-0.5"
+                      checked={delOpts[opt.key]}
+                      onCheckedChange={(v) =>
+                        setDelOpts((s) => ({ ...s, [opt.key]: v === true }))
+                      }
+                    />
+                    <span className="grid gap-0.5">
+                      <span>{opt.label}</span>
+                      <span className="text-xs text-muted-foreground">{opt.hint}</span>
+                    </span>
+                  </label>
+                ))}
+              </div>
+
               <AlertDialogFooter>
                 <AlertDialogCancel>取消</AlertDialogCancel>
-                <AlertDialogAction onClick={() => onDelete(task.id)}>删除</AlertDialogAction>
+                <AlertDialogAction onClick={() => onDelete(task.id, delOpts)}>
+                  删除
+                </AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
@@ -434,6 +512,99 @@ const TaskRow = React.memo(function TaskRow({
     </TableRow>
   );
 });
+
+// ConcurrencySettingsDialog is the 齿轮 button left of 新建任务: toggle the
+// simultaneous-running-task cap and pick the limit. Default off; default limit 5.
+// Persisted globally via /api/settings — applies to tasks created afterwards.
+function ConcurrencySettingsDialog() {
+  const [open, setOpen] = React.useState(false);
+  const [enabled, setEnabled] = React.useState(false);
+  const [limit, setLimit] = React.useState("5");
+  const [loading, setLoading] = React.useState(false);
+  const [saving, setSaving] = React.useState(false);
+
+  // 每次打开都拉取当前值,避免显示陈旧状态。
+  React.useEffect(() => {
+    if (!open) return;
+    setLoading(true);
+    api
+      .settings()
+      .then((s) => {
+        setEnabled(!!s.task_concurrency_enabled);
+        setLimit(String(s.task_concurrency_limit ?? 5));
+      })
+      .catch(() => {})
+      .finally(() => setLoading(false));
+  }, [open]);
+
+  async function save() {
+    const n = Math.max(1, Math.floor(Number(limit) || 5));
+    setSaving(true);
+    try {
+      await api.setSettings({ task_concurrency_enabled: enabled, task_concurrency_limit: n });
+      toast.success(enabled ? `已开启并发限制：最多同时运行 ${n} 个任务` : "已关闭任务并发限制");
+      setOpen(false);
+    } catch (e) {
+      toast.error("保存失败：" + (e as Error).message);
+    } finally {
+      setSaving(false);
+    }
+  }
+
+  return (
+    <Dialog open={open} onOpenChange={setOpen}>
+      <DialogTrigger asChild>
+        <Button size="sm" variant="outline" className="ml-auto" aria-label="任务并发设置">
+          <SlidersHorizontalIcon /> 并发设置
+        </Button>
+      </DialogTrigger>
+      <DialogContent className="sm:max-w-md">
+        <DialogHeader>
+          <DialogTitle>任务并发限制</DialogTitle>
+          <DialogDescription>
+            限制同时「运行中」的任务数量。关闭时不限制；开启后新建任务若已达上限，会进入「排队中」，有空位时自动开始。
+          </DialogDescription>
+        </DialogHeader>
+
+        <div className="grid gap-5 py-2">
+          <div className="flex items-center justify-between gap-4">
+            <div className="grid gap-1">
+              <Label htmlFor="conc-enabled">开启任务并发限制</Label>
+              <span className="text-muted-foreground text-xs">默认关闭（不限制并发）</span>
+            </div>
+            <Switch id="conc-enabled" checked={enabled} onCheckedChange={setEnabled} disabled={loading} />
+          </div>
+
+          {enabled && (
+            <div className="grid gap-2">
+              <Label htmlFor="conc-limit">并发数量（同时运行的任务上限）</Label>
+              <Input
+                id="conc-limit"
+                type="number"
+                min={1}
+                className="w-32"
+                value={limit}
+                onChange={(e) => setLimit(e.target.value)}
+                disabled={loading}
+              />
+              <span className="text-muted-foreground text-xs">开启后默认 5，最小 1。</span>
+            </div>
+          )}
+        </div>
+
+        <DialogFooter>
+          <DialogClose asChild>
+            <Button variant="outline">取消</Button>
+          </DialogClose>
+          <Button onClick={save} disabled={loading || saving}>
+            {saving ? <Loader2Icon className="animate-spin" /> : null}
+            保存
+          </Button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
+  );
+}
 
 // CreateTaskSheet is the 新建任务 drawer. Its form state lives HERE, not in TasksPage: with
 // 描述/目标 held by the page component every keystroke re-rendered the whole task table
