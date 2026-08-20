@@ -620,6 +620,7 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
   const [heartbeatMin, setHeartbeatMin] = React.useState("10"); // planner 心跳(分钟);默认10,下限10(与后端一致)
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑;默认关闭,走标准先规划再执行
   const [scheduledStartAt, setScheduledStartAt] = React.useState(""); // 定时启动(datetime-local 本地值);空=立即开始
+  const [skipIntercept, setSkipIntercept] = React.useState(false); // true=跳过用户配置的拦截规则(仅审计不拦截)
   // 方式1 文件上传:建任务前把文件暂存到 drafts/<draftId>/uploads/,拿回绝对路径追加进描述。
   const [uploading, setUploading] = React.useState(false);
   const [uploadCount, setUploadCount] = React.useState(0);
@@ -674,7 +675,7 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
         toast.error("执行时间需晚于当前时间，留空则立即开始");
         return;
       }
-      await api.createTask(description.trim(), goal.trim(), pid, timeoutSec, seedFirstIntent, heartbeatSec, scheduled);
+      await api.createTask(description.trim(), goal.trim(), pid, timeoutSec, seedFirstIntent, heartbeatSec, scheduled, skipIntercept);
       toast.success(scheduled ? "任务已创建，到点自动启动" : "任务已创建");
       setDescription("");
       setGoal("");
@@ -780,7 +781,7 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
               <CollapsibleTrigger className="group flex w-full items-center gap-2 border-t pt-4 text-sm font-medium">
                 <ChevronRightIcon className="text-muted-foreground size-4 transition-transform group-data-[state=open]:rotate-90" />
                 高级设置
-                <span className="text-muted-foreground ml-auto text-xs font-normal">定时 · 超时 · 心跳 · 首个意图</span>
+                <span className="text-muted-foreground ml-auto text-xs font-normal">定时 · 超时 · 心跳 · 首个意图 · 拦截</span>
               </CollapsibleTrigger>
               <CollapsibleContent className="grid gap-5 pt-5">
                 <div className="grid gap-2">
@@ -839,6 +840,19 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
                   <p className="text-muted-foreground text-xs">
                     开启后创建即把「描述+目标」作为一条意图下发，worker 免等首轮规划直接开跑，跑完再由 planner
                     接手判定/补充。CTF 等常一个 work 直接解决的场景推荐开启；关闭则走标准的先规划再执行。
+                  </p>
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="skip-intercept" className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      id="skip-intercept"
+                      checked={skipIntercept}
+                      onCheckedChange={(v) => setSkipIntercept(!!v)}
+                    />
+                    忽略拦截规则
+                  </label>
+                  <p className="text-muted-foreground text-xs">
+                    开启后本任务跳过系统拦截页配置的工具调用拦截规则（deny/ask），仅保留审计日志。用于可信目标或需绕过拦截的测试。
                   </p>
                 </div>
               </CollapsibleContent>

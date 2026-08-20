@@ -1240,6 +1240,7 @@ type createTaskReq struct {
 	PlanHeartbeatSeconds int        `json:"plan_heartbeat_seconds"`       // planner 心跳触发间隔(秒);0/省略=默认600(10min);下限=默认=600,低于自动抬到600
 	SeedFirstIntent      *bool      `json:"seed_first_intent,omitempty"`  // 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;省略/null=默认关闭,走标准先规划再执行。显式传 true 才开(CTF 常一 work 解决时可省掉开跑前的 planner 轮)。
 	ScheduledStartAt     *time.Time `json:"scheduled_start_at,omitempty"` // 定时启动时间(RFC3339 带时区偏移;前端按 CST 解析);nil/省略/过去时间=创建后立即开始
+	SkipIntercept        bool       `json:"skip_intercept,omitempty"`     // true=本任务跳过用户配置的拦截规则(guard 以 nil interceptor 创建,仅保留审计日志);默认 false
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -1262,7 +1263,7 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	if req.TimeoutSeconds < 0 {
 		req.TimeoutSeconds = 0
 	}
-	t, err := s.m.CreateTask(req.Description, req.Goal, req.LLMProfileID, req.TimeoutSeconds, req.PlanHeartbeatSeconds, req.ScheduledStartAt)
+	t, err := s.m.CreateTask(req.Description, req.Goal, req.LLMProfileID, req.TimeoutSeconds, req.PlanHeartbeatSeconds, req.ScheduledStartAt, req.SkipIntercept)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -1728,11 +1729,12 @@ func (s *Server) patchFinding(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 	if body.Severity != nil {
-		if !db.ValidSeverity(*body.Severity) {
+		sev := strings.ToLower(strings.TrimSpace(*body.Severity))
+		if !db.ValidSeverity(sev) {
 			writeErr(w, 400, "bad severity: "+*body.Severity)
 			return
 		}
-		n, err := s.m.pg.SetFindingSeverity(id, *body.Severity)
+		n, err := s.m.pg.SetFindingSeverity(id, sev)
 		if err != nil {
 			writeErr(w, 500, err.Error())
 			return
@@ -2438,14 +2440,14 @@ func (s *Server) putSettings(w http.ResponseWriter, r *http.Request) {
 		WebSearchProxy   *string `json:"web_search_proxy"`   // 独立出口代理(http/https/socks5)；null=不改，""=清空
 		PythonInterp     *string `json:"python_interpreter"` // 自定义脚本工具的 python 解释器路径
 		Workers          *int    `json:"workers"`            // 并发工作 agent 数(>0)；对之后启动的任务生效
-		TaskURL             *string `json:"task_url"`           // 任务完成推送链接 base URL(空串=不附带链接)
+		TaskURL          *string `json:"task_url"`           // 任务完成推送链接 base URL(空串=不附带链接)
 		// 任务并发上限:同时「运行中」的任务数上限。关闭=不限;开启后新建任务超限则排队,有空位自动启动。
-		ConcurrencyEnabled  *bool  `json:"task_concurrency_enabled"`
-		ConcurrencyLimit    *int   `json:"task_concurrency_limit"`
+		ConcurrencyEnabled *bool `json:"task_concurrency_enabled"`
+		ConcurrencyLimit   *int  `json:"task_concurrency_limit"`
 		// LLM 轮询(故障转移)开关 + 「绑定配置失败也兜底回轮询链」开关。两者都需要
 		// 重建 provider 链才生效，走下面的 changed → applyLLM 路径。
-		LLMPoolEnabled      *bool  `json:"llm_pool_enabled"`
-		LLMPoolBindFallback *bool  `json:"llm_pool_bind_fallback"`
+		LLMPoolEnabled      *bool `json:"llm_pool_enabled"`
+		LLMPoolBindFallback *bool `json:"llm_pool_bind_fallback"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
 		writeErr(w, 400, err.Error())

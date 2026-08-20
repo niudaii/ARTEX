@@ -504,19 +504,21 @@ func taskRunDuration(t *Task) string {
 }
 
 // findingSummaryLine counts the task's confirmed findings by severity and
-// renders the overview line, e.g. "确认漏洞: 5（高 2 / 中 2 / 低 1）".
+// renders the overview line, e.g. "确认漏洞: 5（严重 1 / 高 2 / 中 1 / 低 1）".
 func findingSummaryLine(t *Task) string {
 	if t.Store == nil {
 		return "确认漏洞: 0"
 	}
 	findings, _ := t.Store.ListByKind(db.KindFinding, 1000)
-	var high, medium, low, other int
+	var critical, high, medium, low, other int
 	for _, n := range findings {
 		var p struct {
 			Severity string `json:"severity"`
 		}
 		_ = json.Unmarshal(n.Payload, &p)
 		switch strings.ToLower(strings.TrimSpace(p.Severity)) {
+		case "critical":
+			critical++
 		case "high":
 			high++
 		case "medium":
@@ -527,7 +529,7 @@ func findingSummaryLine(t *Task) string {
 			other++
 		}
 	}
-	parts := fmt.Sprintf("高 %d / 中 %d / 低 %d", high, medium, low)
+	parts := fmt.Sprintf("严重 %d / 高 %d / 中 %d / 低 %d", critical, high, medium, low)
 	if other > 0 {
 		parts += fmt.Sprintf(" / 其他 %d", other)
 	}

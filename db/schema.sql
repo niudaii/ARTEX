@@ -300,6 +300,10 @@ ALTER TABLE tasks DROP CONSTRAINT IF EXISTS tasks_status_check;
 ALTER TABLE tasks ADD CONSTRAINT tasks_status_check
     CHECK (status IN ('created','running','paused','done','failed','timeout','scheduled'));
 
+-- 忽略拦截规则：true=本任务跳过用户配置的工具调用拦截规则(Interceptor)，guard 以 nil
+-- interceptor 创建(仅保留审计日志，不做 deny/ask 拦截)。用于可信目标或需绕过拦截的测试。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS skip_intercept BOOLEAN NOT NULL DEFAULT false;
+
 -- 任务测试范围（资产覆盖度的分母 + 授权边界）。
 --   自动填(source='auto')：insertAssets 顶层按 worker 显式插入的资产类型加保守范围
 --     （root_domain→root_domain，subdomain/service/endpoint→subdomain(host)，ip→ip）；
@@ -615,6 +619,16 @@ ALTER TABLE findings ADD COLUMN IF NOT EXISTS request TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS response TEXT NOT NULL DEFAULT '';
 ALTER TABLE findings ADD COLUMN IF NOT EXISTS repro_cmd TEXT NOT NULL DEFAULT '';
 CREATE INDEX IF NOT EXISTS idx_findings_status ON findings(status, created_at DESC);
+
+-- Normalize historical severity to lowercase (fixes dirty data like 'Critical'/'CRITICAL').
+-- Idempotent: rows already lowercase are skipped by the WHERE clause.
+UPDATE findings SET severity = LOWER(TRIM(severity))
+    WHERE severity <> LOWER(TRIM(severity));
+UPDATE exploration_nodes
+    SET payload = jsonb_set(payload, '{severity}', to_jsonb(LOWER(TRIM(payload->>'severity'))::text))
+    WHERE kind = 'finding'
+      AND payload ? 'severity'
+      AND (payload->>'severity') <> LOWER(TRIM(payload->>'severity'));
 
 -- =====================================================================
 -- M. 后端日志持久化

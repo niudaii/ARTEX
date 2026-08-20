@@ -833,6 +833,10 @@ func (t *ToolSet) addFinding() actool.CoreTool {
 				AssetIDs                                                                   []json.RawMessage `json:"asset_ids"`
 			}
 			_ = json.Unmarshal(in, &a)
+			a.Severity = strings.ToLower(strings.TrimSpace(a.Severity))
+			if !db.ValidSeverity(a.Severity) {
+				return actool.Errorf(fmt.Sprintf("report_finding 的 severity 必须是 critical|high|medium|low 之一（当前收到 %q），请修正后重新提交", a.Severity)), nil
+			}
 			payload := map[string]any{"vulnclass": a.VulnClass, "name": a.Name, "severity": a.Severity, "summary": a.Summary,
 				"evidence": map[string]any{"by": t.worker, "poc": a.Evidence}}
 			if a.SourceFile != "" {

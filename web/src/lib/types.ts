@@ -27,6 +27,7 @@ export interface Task {
   llm_model?: string; // resolved model name of the bound LLM profile (display-only)
   scheduled_start_at?: string; // RFC3339 定时启动时间;空/缺省=立即开始
   scheduled_start_unix?: number; // 定时启动 unix 秒;0/缺省=立即开始
+  skip_intercept?: boolean; // true=本任务跳过用户配置的拦截规则
 }
 
 // ---- Asset graph (global, shared across tasks) ----

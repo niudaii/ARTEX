@@ -33,7 +33,7 @@ type Task struct {
 	CreatedAt    int64  `json:"created_at"`
 	CompletedAt  int64  `json:"completed_at,omitempty"` // 进入终态的 unix 秒;0=未完成
 	Paused       bool   `json:"paused"`
-	Queued       bool   `json:"queued"` // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
+	Queued       bool   `json:"queued"`                   // 因并发上限被挂起、等待空位自动启动;true=尚未开跑
 	ParentRef    string `json:"parent_ref,omitempty"`     // 父任务 id(编排 spawn 记录)
 	LLMProfileID *int64 `json:"llm_profile_id,omitempty"` // 指定运行本任务 planner/worker 的 LLM 配置;nil=用全局激活配置
 	Status       string `json:"status"`                   // persisted lifecycle status (done/failed/timeout 为终态；空/其它则由运行态推导)
@@ -45,6 +45,7 @@ type Task struct {
 	// ScheduledStartAt 定时启动时刻(unix 秒;0=立即开始)。非 0 且在未来时,任务创建后不立即
 	// 启动,到点由 scheduleOrLaunch 转 created 并 launch;持久化 status='scheduled' 使重启后可重排。
 	ScheduledStartAt int64                  `json:"scheduled_start_at,omitempty"`
+	SkipIntercept    bool                   `json:"skip_intercept,omitempty"` // true=跳过用户配置的拦截规则
 	Store            *pgdb.ExplorationStore `json:"-"`
 	Guard            *guard.Guard           `json:"-"`
 	notify           chan struct{}
@@ -547,6 +548,12 @@ func unixOrZero(t *time.Time) int64 {
 }
 
 func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Interceptor) *Task {
+	var g *guard.Guard
+	if pt.SkipIntercept {
+		g = guard.New() // nil interceptor → 仅审计，不做拦截
+	} else {
+		g = guard.NewWithInterceptor(ic)
+	}
 	return &Task{
 		ID: strconv.FormatInt(pt.ID, 10), ExpID: pt.ExplorationID,
 		Description: pt.Description, Goal: pt.Goal, CreatedAt: pt.CreatedAt.Unix(), Paused: pt.Paused, Queued: pt.Queued,
@@ -555,14 +562,15 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		TimeoutSeconds: pt.TimeoutSeconds, PlanHeartbeatSeconds: pt.PlanHeartbeatSeconds,
 		FirstRunAt: unixOrZero(pt.FirstRunAt), DeadlineAt: unixOrZero(pt.DeadlineAt),
 		ScheduledStartAt: unixOrZero(pt.ScheduledStartAt),
-		Store:            store, Guard: guard.NewWithInterceptor(ic), notify: make(chan struct{}, 1),
+		Store:            store, Guard: g, notify: make(chan struct{}, 1),
+		SkipIntercept: pt.SkipIntercept,
 	}
 }
 
 // CreateTask creates a task + its exploration and makes it active.
 // timeoutSeconds is the task-level wall-clock budget (0 = 不限时).
-func (m *Manager) CreateTask(description, goal string, llmProfileID *int64, timeoutSeconds, planHeartbeatSeconds int, scheduledStartAt *time.Time) (*Task, error) {
-	pt, err := m.pg.CreateTask(description, goal, llmProfileID, timeoutSeconds, planHeartbeatSeconds, scheduledStartAt)
+func (m *Manager) CreateTask(description, goal string, llmProfileID *int64, timeoutSeconds, planHeartbeatSeconds int, scheduledStartAt *time.Time, skipIntercept bool) (*Task, error) {
+	pt, err := m.pg.CreateTask(description, goal, llmProfileID, timeoutSeconds, planHeartbeatSeconds, scheduledStartAt, skipIntercept)
 	if err != nil {
 		return nil, err
 	}

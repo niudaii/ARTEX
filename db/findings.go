@@ -76,6 +76,7 @@ func ValidSeverity(s string) bool {
 // nodeID may be 0 (stored as NULL). name may be "" (frontend falls back to
 // vulnclass). Returns the new finding id.
 func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary, evidence, sourceFile, harm, fix, request, response, reproCmd, worker string, assetIDs []int64) (int64, error) {
+	severity = strings.ToLower(strings.TrimSpace(severity))
 	aidsJSON, _ := json.Marshal(assetIDs)
 	if assetIDs == nil {
 		aidsJSON = []byte("[]")
@@ -167,7 +168,11 @@ func (f FindingFilter) where() (string, []any) {
 		args = append(args, val)
 		conds = append(conds, fmt.Sprintf("f.%s = $%d", col, len(args)))
 	}
-	add("severity", f.Severity)
+	// severity 走大小写不敏感匹配（防御历史脏数据如 "Critical"/"CRITICAL"）
+	if sv := strings.ToLower(strings.TrimSpace(f.Severity)); sv != "" {
+		args = append(args, sv)
+		conds = append(conds, fmt.Sprintf("LOWER(f.severity) = $%d", len(args)))
+	}
 	add("status", f.Status)
 	add("vulnclass", f.VulnClass)
 	// task_id 是 bigint 列,按整数比较(不能走上面的文本 add);空/非法值忽略。
@@ -200,7 +205,7 @@ func (d *DB) ListFindingsPage(f FindingFilter, page, pageSize int) ([]*DBFinding
 	order := "f.created_at DESC"
 	if f.Sort == "severity" {
 		// critical > high > medium > low > 其它, then newest first.
-		order = `CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at DESC`
+		order = `CASE LOWER(f.severity) WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at DESC`
 	}
 	pageArgs := append(append([]any{}, args...), pageSize, (page-1)*pageSize)
 	q := fmt.Sprintf(`
@@ -249,10 +254,10 @@ func (d *DB) FindingStats() (*FindingStats, error) {
 	err := d.QueryRow(`SELECT
 		COUNT(*),
 		COUNT(*) FILTER (WHERE status = 'pending'),
-		COUNT(*) FILTER (WHERE severity = 'critical'),
-		COUNT(*) FILTER (WHERE severity = 'high'),
-		COUNT(*) FILTER (WHERE severity = 'medium'),
-		COUNT(*) FILTER (WHERE severity = 'low')
+		COUNT(*) FILTER (WHERE LOWER(severity) = 'critical'),
+		COUNT(*) FILTER (WHERE LOWER(severity) = 'high'),
+		COUNT(*) FILTER (WHERE LOWER(severity) = 'medium'),
+		COUNT(*) FILTER (WHERE LOWER(severity) = 'low')
 		FROM findings`).Scan(&st.Total, &st.Pending, &st.Critical, &st.High, &st.Medium, &st.Low)
 	if err != nil {
 		return nil, err
@@ -395,7 +400,7 @@ func (d *DB) setFindingCol(id int64, col, jsonKey, val string) (int64, error) {
 // SetFindingSeverity updates one finding's severity (+ node payload sync). Returns
 // rows affected (0 when no finding has that id).
 func (d *DB) SetFindingSeverity(id int64, severity string) (int64, error) {
-	return d.setFindingCol(id, "severity", "severity", severity)
+	return d.setFindingCol(id, "severity", "severity", strings.ToLower(strings.TrimSpace(severity)))
 }
 
 // SetFindingName updates one finding's 漏洞名称 (+ node payload sync). Empty name is
