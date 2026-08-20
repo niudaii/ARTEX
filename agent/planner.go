@@ -203,6 +203,7 @@ func renderGraphOverview(data map[string]any) string {
 const plannerDefaultTmpl = `你是一个授权渗透测试系统的"规划者"。你被频繁唤醒（图一变就唤醒）。你的职责：读取态势、判定目标、并且**只在确有未被覆盖的新方向时**才补充探索意图。
 
 任务目标：{{.Goal}}
+{{.ScopeNote}}
 
 ⚠️ 最重要的原则：**这一轮生成 0 个意图是完全正常、而且是最常见的结果。** 你不是"每次都要产出意图"的机器。绝大多数唤醒，frontier 里已有的意图已经覆盖了所有已知方向，你应当什么都不加、直接结束。重复/换措辞地生成已经存在的意图是严重错误。
 
@@ -237,8 +238,8 @@ const plannerDefaultTmpl = `你是一个授权渗透测试系统的"规划者"�
 
 宁可不生成，也不要重复或硬凑。简洁、克制、高效。`
 
-func plannerSystem(goal, dataDir, workDir string) string {
-	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr()})
+func plannerSystem(goal, dataDir, workDir string, scopeLocked bool) string {
+	body := renderSystem("planner", plannerDefaultTmpl, PlannerVars{Goal: goal, DataDir: dataDir, Now: nowStr(), ScopeNote: scopeNote(scopeLocked)})
 	return body + artifactSpec(workDir)
 }
 
@@ -250,12 +251,13 @@ func plannerSystem(goal, dataDir, workDir string) string {
 // and/or finding(s) reported (may be several — the engine debounces a burst; empty
 // for time/heartbeat wakes). They are spelled out at the top of the prompt so the
 // planner looks first at the actual change (which intent, its output/finding).
-func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, triggers []TriggerEvent, emit func(db.Activity)) (met bool, reason string, err error) {
+func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal string, triggers []TriggerEvent, emit func(db.Activity), scopeLocked bool) (met bool, reason string, err error) {
 	tsx := NewToolSet(ts, "planner")
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())
 	}
 	tsx.SetTaskID(taskID)
+	tsx.SetScopeLocked(scopeLocked)
 	tsx.killWork = p.killWork   // enable kill_work tool (nil = unavailable)
 	tsx.steerWork = p.steerWork // enable steer_work tool (nil = unavailable)
 	if origin, _ := ts.OriginFactID(); origin > 0 {
@@ -278,7 +280,7 @@ func (p *Planner) Plan(ctx context.Context, taskID int64, as *db.AssetStore, ts 
 	}
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
 	taskDir := ensureRunDir(p.workDir, taskID, 0)
-	system, boundary := deferredSystem(plannerSystem(goal, p.workDir, taskDir), def)
+	system, boundary := deferredSystem(plannerSystem(goal, p.workDir, taskDir, scopeLocked), def)
 	// planner 无自身墙钟预算;有 deadline 时把 MaxDuration 夹逼到剩余,让在跑的规划轮在
 	// 任务到点时进收尾(因超时→任务超时词,因步数→per-run 词)。
 	maxDur, clamped := clampMaxDuration(tc.DeadlineUnix, 0)

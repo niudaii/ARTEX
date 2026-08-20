@@ -58,6 +58,8 @@ type ToolSet struct {
 	expDB  *db.DB
 	worker string
 	taskID int64 // PG tasks.id; 0 when unknown (tests / orchestrator cross-task reads)
+	// scopeLocked=true 时 AddAutoScope 跳过、add_task_scope 拒绝(范围锁定初始 Host)。
+	scopeLocked bool
 	// ownerNode is the exploration node that writes attach to: assets this run
 	// touches get anchored to it as lineage/provenance (NOT visibility — the asset
 	// graph is global and shared). Worker = its claimed intent; planner = begin root.
@@ -164,6 +166,9 @@ func errNoTaskGraph(name string) (actool.Result, error) {
 // SetTaskID sets the PG task id on this ToolSet so that report_finding can
 // dual-write to the standalone findings table (which survives task deletion).
 func (t *ToolSet) SetTaskID(id int64) { t.taskID = id }
+
+// SetScopeLocked sets whether this task's scope is locked (no auto/agent scope expansion).
+func (t *ToolSet) SetScopeLocked(locked bool) { t.scopeLocked = locked }
 
 // SetExplorationDB wires a server-level PG handle for cross-task exploration
 // node reads (see ToolSet.expDB). Set by buildDomainReg so node_detail works

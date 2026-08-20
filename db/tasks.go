@@ -31,6 +31,9 @@ type Task struct {
 	ScheduledStartAt *time.Time `json:"scheduled_start_at,omitempty"`
 	// 忽略拦截规则：true=本任务跳过用户配置的拦截规则(guard 以 nil interceptor 创建)。
 	SkipIntercept bool `json:"skip_intercept"`
+	// 范围锁定：true=扫描范围锁定为初始目标 Host，禁止自动/手动扩域。
+	// AddAutoScope 跳过、add_task_scope 拒绝。用于"只测当前 Host"场景。
+	ScopeLocked bool `json:"scope_locked"`
 }
 
 // IsTerminal reports whether a task status is a terminal (finished) state.
@@ -53,7 +56,7 @@ func normalizeHeartbeat(sec int) int {
 	return sec
 }
 
-func (d *DB) CreateTask(description, goal string, llmProfileID *int64, timeoutSeconds, planHeartbeatSeconds int, scheduledStartAt *time.Time, skipIntercept bool) (*Task, error) {
+func (d *DB) CreateTask(description, goal string, llmProfileID *int64, timeoutSeconds, planHeartbeatSeconds int, scheduledStartAt *time.Time, skipIntercept, scopeLocked bool) (*Task, error) {
 	tx, err := d.Begin()
 	if err != nil {
 		return nil, err
@@ -87,20 +90,20 @@ VALUES ($1, 'fact', $2, 0, 'origin', 'system')`, expID, string(originPayload)); 
 	if scheduledStartAt != nil && scheduledStartAt.After(time.Now()) {
 		status = "scheduled"
 	}
-	t := &Task{Description: description, Goal: goal, ExplorationID: expID, LLMProfileID: llmProfileID, TimeoutSeconds: timeoutSeconds, PlanHeartbeatSeconds: planHeartbeatSeconds, ScheduledStartAt: scheduledStartAt, SkipIntercept: skipIntercept, Status: status}
+	t := &Task{Description: description, Goal: goal, ExplorationID: expID, LLMProfileID: llmProfileID, TimeoutSeconds: timeoutSeconds, PlanHeartbeatSeconds: planHeartbeatSeconds, ScheduledStartAt: scheduledStartAt, SkipIntercept: skipIntercept, ScopeLocked: scopeLocked, Status: status}
 	if err := tx.QueryRow(`
-INSERT INTO tasks(description, goal, exploration_id, llm_profile_id, timeout_seconds, plan_heartbeat_seconds, scheduled_start_at, status, skip_intercept) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9)
-RETURNING id, status, paused, created_at`, description, goal, expID, llmProfileID, timeoutSeconds, planHeartbeatSeconds, scheduledStartAt, status, skipIntercept).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
+INSERT INTO tasks(description, goal, exploration_id, llm_profile_id, timeout_seconds, plan_heartbeat_seconds, scheduled_start_at, status, skip_intercept, scope_locked) VALUES ($1,$2,$3,$4,$5,$6,$7,$8,$9,$10)
+RETURNING id, status, paused, created_at`, description, goal, expID, llmProfileID, timeoutSeconds, planHeartbeatSeconds, scheduledStartAt, status, skipIntercept, scopeLocked).Scan(&t.ID, &t.Status, &t.Paused, &t.CreatedAt); err != nil {
 		return nil, err
 	}
 	return t, tx.Commit()
 }
 
-const taskCols = `id, description, goal, exploration_id, status, paused, queued, llm_profile_id, COALESCE(parent_ref,''), created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), first_run_at, deadline_at, scheduled_start_at, COALESCE(skip_intercept,false)`
+const taskCols = `id, description, goal, exploration_id, status, paused, queued, llm_profile_id, COALESCE(parent_ref,''), created_at, completed_at, COALESCE(timeout_seconds,0), COALESCE(plan_heartbeat_seconds,300), first_run_at, deadline_at, scheduled_start_at, COALESCE(skip_intercept,false), COALESCE(scope_locked,false)`
 
 func scanTask(sc interface{ Scan(...any) error }) (*Task, error) {
 	var t Task
-	if err := sc.Scan(&t.ID, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.LLMProfileID, &t.ParentRef, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.FirstRunAt, &t.DeadlineAt, &t.ScheduledStartAt, &t.SkipIntercept); err != nil {
+	if err := sc.Scan(&t.ID, &t.Description, &t.Goal, &t.ExplorationID, &t.Status, &t.Paused, &t.Queued, &t.LLMProfileID, &t.ParentRef, &t.CreatedAt, &t.CompletedAt, &t.TimeoutSeconds, &t.PlanHeartbeatSeconds, &t.FirstRunAt, &t.DeadlineAt, &t.ScheduledStartAt, &t.SkipIntercept, &t.ScopeLocked); err != nil {
 		return nil, err
 	}
 	return &t, nil

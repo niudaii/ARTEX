@@ -154,7 +154,7 @@ function TaskDetailInner() {
         </div>
         <p className="truncate text-xs text-muted-foreground">{task.goal}</p>
         {/* Tabs */}
-        <TabsList variant="default" className="no-scrollbar w-full overflow-x-auto">
+        <TabsList variant="default">
           {TABS.map((t) => (
             <TabsTrigger key={t.value} value={t.value}>
               {t.label}

@@ -1241,6 +1241,7 @@ type createTaskReq struct {
 	SeedFirstIntent      *bool      `json:"seed_first_intent,omitempty"`  // 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;省略/null=默认关闭,走标准先规划再执行。显式传 true 才开(CTF 常一 work 解决时可省掉开跑前的 planner 轮)。
 	ScheduledStartAt     *time.Time `json:"scheduled_start_at,omitempty"` // 定时启动时间(RFC3339 带时区偏移;前端按 CST 解析);nil/省略/过去时间=创建后立即开始
 	SkipIntercept        bool       `json:"skip_intercept,omitempty"`     // true=本任务跳过用户配置的拦截规则(guard 以 nil interceptor 创建,仅保留审计日志);默认 false
+	ScopeLocked         *bool      `json:"scope_locked,omitempty"`       // true=扫描范围锁定为初始目标 Host(禁止自动/手动扩域);省略/null=默认 false
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -1263,7 +1264,8 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	if req.TimeoutSeconds < 0 {
 		req.TimeoutSeconds = 0
 	}
-	t, err := s.m.CreateTask(req.Description, req.Goal, req.LLMProfileID, req.TimeoutSeconds, req.PlanHeartbeatSeconds, req.ScheduledStartAt, req.SkipIntercept)
+	scopeLocked := req.ScopeLocked != nil && *req.ScopeLocked
+	t, err := s.m.CreateTask(req.Description, req.Goal, req.LLMProfileID, req.TimeoutSeconds, req.PlanHeartbeatSeconds, req.ScheduledStartAt, req.SkipIntercept, scopeLocked)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -2663,7 +2665,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			// taskDir = agent 的工作目录(CWD),与 chatUpload 落盘、ensureRunDir 一致。
 			taskDir := filepath.Join(s.m.dir, "tasks", t.ID)
 			agentMsg := composeAgentMessage(req.Message, req.Attachments, taskDir)
-			if _, err := ma.Chat(ctx, maTaskID, s.m.Assets(), t.Store, t.Goal, agentMsg, emit, t.Notify, resume, t.NotifyGoal); err != nil && ctx.Err() == nil {
+			if _, err := ma.Chat(ctx, maTaskID, s.m.Assets(), t.Store, t.Goal, agentMsg, emit, t.Notify, resume, t.NotifyGoal, t.ScopeLocked); err != nil && ctx.Err() == nil {
 				s.engine.emitActivity(t, db.Activity{Worker: "mainagent", Kind: "text", IsError: true, Summary: "（主 Agent 出错：" + err.Error() + "）"})
 			}
 		}()

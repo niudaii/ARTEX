@@ -46,6 +46,7 @@ type Task struct {
 	// 启动,到点由 scheduleOrLaunch 转 created 并 launch;持久化 status='scheduled' 使重启后可重排。
 	ScheduledStartAt int64                  `json:"scheduled_start_at,omitempty"`
 	SkipIntercept    bool                   `json:"skip_intercept,omitempty"` // true=跳过用户配置的拦截规则
+	ScopeLocked      bool                   `json:"scope_locked,omitempty"` // true=扫描范围锁定初始 Host
 	Store            *pgdb.ExplorationStore `json:"-"`
 	Guard            *guard.Guard           `json:"-"`
 	notify           chan struct{}
@@ -564,13 +565,14 @@ func taskFromPG(pt *pgdb.Task, store *pgdb.ExplorationStore, ic *intercept.Inter
 		ScheduledStartAt: unixOrZero(pt.ScheduledStartAt),
 		Store:            store, Guard: g, notify: make(chan struct{}, 1),
 		SkipIntercept: pt.SkipIntercept,
+		ScopeLocked: pt.ScopeLocked,
 	}
 }
 
 // CreateTask creates a task + its exploration and makes it active.
 // timeoutSeconds is the task-level wall-clock budget (0 = 不限时).
-func (m *Manager) CreateTask(description, goal string, llmProfileID *int64, timeoutSeconds, planHeartbeatSeconds int, scheduledStartAt *time.Time, skipIntercept bool) (*Task, error) {
-	pt, err := m.pg.CreateTask(description, goal, llmProfileID, timeoutSeconds, planHeartbeatSeconds, scheduledStartAt, skipIntercept)
+func (m *Manager) CreateTask(description, goal string, llmProfileID *int64, timeoutSeconds, planHeartbeatSeconds int, scheduledStartAt *time.Time, skipIntercept, scopeLocked bool) (*Task, error) {
+	pt, err := m.pg.CreateTask(description, goal, llmProfileID, timeoutSeconds, planHeartbeatSeconds, scheduledStartAt, skipIntercept, scopeLocked)
 	if err != nil {
 		return nil, err
 	}

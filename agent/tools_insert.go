@@ -274,11 +274,14 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				t.anchorOwner(id)
 				// 自动入测试范围(source='auto')：只对 worker 顶层显式插入的这一项，按其
 				// 类型加保守范围；side-effect 派生的资产不经此处，故范围不盲目扩大。taskID=0 时无操作。
+				// scopeLocked 时跳过：范围已锁定为初始 Host，新发现的资产不自动入范围。
 				svcIP := item.ServiceIP
 				if svcIP == "" {
 					svcIP = item.IP
 				}
-				_ = t.as.AddAutoScope(taskID, typ, item.Domain, item.URL, svcIP)
+				if !t.scopeLocked {
+					_ = t.as.AddAutoScope(taskID, typ, item.Domain, item.URL, svcIP)
+				}
 			}
 
 			return jsonResult(map[string]any{
@@ -364,6 +367,9 @@ func (t *ToolSet) addTaskScope() actool.CoreTool {
 			}
 			if t.taskID <= 0 {
 				return actool.Errorf("add_task_scope 需要任务上下文(当前无 task)"), nil
+			}
+			if t.scopeLocked {
+				return actool.Errorf("本任务范围已锁定(scope_locked)，禁止扩大测试范围。"), nil
 			}
 			type scopeEntry struct {
 				Kind  string `json:"kind"`

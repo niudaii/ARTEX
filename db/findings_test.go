@@ -14,7 +14,7 @@ func TestDeleteFinding(t *testing.T) {
 	}
 	defer d.Close()
 
-	tk, err := d.CreateTask("删除漏洞测试", "目标", nil, 0, 0, nil, false)
+	tk, err := d.CreateTask("删除漏洞测试", "目标", nil, 0, 0, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}

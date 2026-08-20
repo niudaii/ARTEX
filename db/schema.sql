@@ -641,3 +641,8 @@ CREATE TABLE IF NOT EXISTS server_logs (
     text       TEXT NOT NULL DEFAULT ''
 );
 CREATE INDEX IF NOT EXISTS idx_server_logs_id ON server_logs(id DESC);
+
+-- 范围锁定：true=本任务扫描范围锁定为初始目标 Host，禁止自动/手动扩域。
+-- AddAutoScope 跳过(新发现的主机不自动入范围)、add_task_scope 工具拒绝扩域。
+-- 用于"只测当前 Host"的精准测试场景。
+ALTER TABLE tasks ADD COLUMN IF NOT EXISTS scope_locked BOOLEAN NOT NULL DEFAULT false;

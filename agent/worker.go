@@ -151,7 +151,8 @@ const workerDefaultTmpl = `你是一个授权渗透测试系统的"执行者"(wo
 - list_assets（查询资产，非探索节点） / asset_neighbors / list_facts(探索事实) / list_findings(漏洞) / node_detail(探索节点 id，非资产 id)：按需查上下文。
 - 【必要时才用，大部分上下文已在会话中】search_all_worker_traces(q) / list_worker_traces / get_worker_trace：跨 work 复用信息——别的 work 见过却没写进 fact 的东西（路径/token/报错等）。search_all_worker_traces 按关键字搜全部 work（排除自身意图，返回带 intent_id）；list_worker_traces 看有哪些 work 跑过；get_worker_trace(intent_id) 看步骤摘要、get_worker_trace(intent_id, step_ids=[…]) 取那几步完整内容（一次≤5个）。仅用于复用他人观察、避免重复劳动，不改变任务边界。
 
-在授权范围内操作。发现 scope 外的新攻击面（如响应/cookie/actuator 中泄露的内网 IP、新子域）时，先用 add_task_scope 把它纳入范围再测，而不是跳过。完成本意图后用一句话总结你做了什么、写回了哪些事实。务实、克制、聚焦这一条意图。`
+在授权范围内操作。发现 scope 外的新攻击面（如响应/cookie/actuator 中泄露的内网 IP、新子域）时，先用 add_task_scope 把它纳入范围再测，而不是跳过。完成本意图后用一句话总结你做了什么、写回了哪些事实。务实、克制、聚焦这一条意图。
+{{.ScopeNote}}`
 
 // workerTrafficBlock is 段 [B]: the traffic-tool note, code-injected only when
 // traffic capture is on (proxyAddr set). Not stored, not editable.
@@ -193,8 +194,8 @@ func ensureRunDir(base string, taskID, intentID int64) string {
 // cmdOutDir is the SDK large-tool-output spill dir under an agent's run dir.
 func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
-func workerSystem(proxyAddr, dataDir, runDir string) string {
-	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr()})
+func workerSystem(proxyAddr, dataDir, runDir string, scopeLocked bool) string {
+	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr(), ScopeNote: scopeNote(scopeLocked)})
 	return body + workerTrafficBlock(proxyAddr) + workerArtifactSpec(runDir)
 }
 
@@ -251,9 +252,10 @@ func renderWorkerGraphOverview(data map[string]any) string {
 // max_turns) and a per-kind breakdown of what was written back (so an intent that
 // explored but persisted nothing isn't mistaken for done, and the engine can log
 // facts/assets/findings separately instead of lumping them under "facts").
-func (w *Worker) Execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string)) (harness.TerminalReason, WriteCounts, error) {
+func (w *Worker) Execute(ctx context.Context, name string, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, intent *db.Node, hooks harness.HookRunner, emit func(db.Activity), enr EnrichTrigger, notifyFinding func(int64, string), scopeLocked bool) (harness.TerminalReason, WriteCounts, error) {
 	tsx := NewToolSet(ts, name)
 	tsx.SetTaskID(taskID)
+	tsx.SetScopeLocked(scopeLocked)
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())
 	}
@@ -274,7 +276,7 @@ func (w *Worker) Execute(ctx context.Context, name string, taskID int64, as *db.
 	// 压缩。本次意图的专属工作目录 <workDir>/tasks/<taskID>/i<intentID>，引擎侧先建好。
 	runDir := ensureRunDir(w.workDir, taskID, intent.ID)
 	overview := renderWorkerGraphOverview(tsx.graphOverviewData())
-	system, boundary := deferredSystem(workerSystem(w.proxyAddr, w.workDir, runDir), def)
+	system, boundary := deferredSystem(workerSystem(w.proxyAddr, w.workDir, runDir, scopeLocked), def)
 	// 任务级 deadline(经 ctx 注入)夹逼本 run 的墙钟预算 + 决定收尾词(见 taskclock.go)。
 	tc := taskClockFrom(ctx)
 	maxDur, clamped := clampMaxDuration(tc.DeadlineUnix, w.runTimeout)

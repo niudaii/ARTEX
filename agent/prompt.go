@@ -15,10 +15,19 @@ var PromptOverride func(agentKey string) (string, bool)
 // Prompt-variable structs — fields mirror each agent's catalog (docs §5a) so a
 // user template referencing a catalog variable renders; referencing anything else
 // fails template execution and falls back to the built-in default.
-type PlannerVars struct{ Goal, Scope, AssetSummary, DataDir, Now string }
-type WorkerVars struct{ ProxyAddr, WorkerName, DataDir, Now string }
-type MainVars struct{ Goal, AssetSummary, FindingsSummary, DataDir, Now string }
+type PlannerVars struct{ Goal, Scope, AssetSummary, DataDir, Now, ScopeNote string }
+type WorkerVars struct{ ProxyAddr, WorkerName, DataDir, Now, ScopeNote string }
+type MainVars struct{ Goal, AssetSummary, FindingsSummary, DataDir, Now, ScopeNote string }
 type GoalsVars struct{ EngagementDescription, DataDir, Now string }
+
+// scopeNote returns the scope-lock restriction text for prompt injection.
+// Empty when scope is not locked (no-op in templates).
+func scopeNote(locked bool) string {
+	if !locked {
+		return ""
+	}
+	return "⚠️ 本任务范围已锁定：仅限测试目标 Host，禁止扩展到其他主机/子域/IP。add_task_scope 工具不可用，新发现的主机不会自动入范围。"
+}
 
 // nowStr is the server-local wall-clock string exposed as the universal {{.Now}}
 // prompt variable. renderSystem runs on every agent turn/round, so this is fresh

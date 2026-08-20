@@ -9,7 +9,7 @@ func TestTaskLifecycleAndDeleteCascade(t *testing.T) {
 	}
 	defer d.Close()
 
-	tk, err := d.CreateTask("迁移测试", "目标X", nil, 0, 0, nil, false)
+	tk, err := d.CreateTask("迁移测试", "目标X", nil, 0, 0, nil, false, false)
 	if err != nil {
 		t.Fatal(err)
 	}

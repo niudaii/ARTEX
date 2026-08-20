@@ -244,6 +244,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 			"plan_heartbeat_seconds": map[string]any{"type": "integer", "description": "可选：planner 心跳触发间隔(秒)。距上轮规划结束/任务开始满该值且期间无触发 → 触发一轮规划(兜底死锁 + 唤醒去监督飞行中的 worker)。留空或 0 = 默认 600(10min)；"},
 			"seed_first_intent":      map[string]any{"type": "boolean", "description": "可选：对于简单任务可开启，创建时直接下发一条种子意图(内容=描述+目标)让 worker 免等首轮 planner 直接开跑测试；默认 false(走标准先规划再执行)。"},
 			"skip_intercept":         map[string]any{"type": "boolean", "description": "可选：跳过用户配置的工具调用拦截规则(本任务不做 deny/ask 拦截,仅保留审计日志)；默认 false。"},
+			"scope_locked":           map[string]any{"type": "boolean", "description": "可选：扫描范围锁定为初始目标 Host(禁止自动/手动扩域)；默认 false。"},
 		}, "description", "goal"),
 		func(_ context.Context, in json.RawMessage) (actool.Result, error) {
 			var a struct {
@@ -252,8 +253,9 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				TimeoutSeconds               int             `json:"timeout_seconds"`
 				PlanHeartbeatSeconds         int             `json:"plan_heartbeat_seconds"`
 				SeedFirstIntent              bool            `json:"seed_first_intent"`
-				SkipIntercept                bool            `json:"skip_intercept"`
-			}
+			SkipIntercept                bool            `json:"skip_intercept"`
+			ScopeLocked                  bool            `json:"scope_locked"`
+		}
 			_ = json.Unmarshal(in, &a)
 			if strings.TrimSpace(a.Description) == "" {
 				a.Description = "未命名任务"
@@ -276,7 +278,7 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 					pin = pt.LLMProfileID
 				}
 			}
-			t, err := s.m.CreateTask(a.Description, a.Goal, pin, a.TimeoutSeconds, a.PlanHeartbeatSeconds, nil, a.SkipIntercept)
+			t, err := s.m.CreateTask(a.Description, a.Goal, pin, a.TimeoutSeconds, a.PlanHeartbeatSeconds, nil, a.SkipIntercept, a.ScopeLocked)
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}

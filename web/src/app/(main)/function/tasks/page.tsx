@@ -617,6 +617,7 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
   const [seedFirstIntent, setSeedFirstIntent] = React.useState(false); // 创建时下发种子意图,worker 免等首轮 planner 直接开跑;默认关闭,走标准先规划再执行
   const [scheduledStartAt, setScheduledStartAt] = React.useState(""); // 定时启动(datetime-local 本地值);空=立即开始
   const [skipIntercept, setSkipIntercept] = React.useState(false); // true=跳过用户配置的拦截规则(仅审计不拦截)
+  const [scopeLocked, setScopeLocked] = React.useState(false); // true=扫描范围锁定为初始 Host(禁止自动/手动扩域)
   // 方式1 文件上传:建任务前把文件暂存到 drafts/<draftId>/uploads/,拿回绝对路径追加进描述。
   const [uploading, setUploading] = React.useState(false);
   const [uploadCount, setUploadCount] = React.useState(0);
@@ -680,6 +681,7 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
         heartbeatSec,
         scheduled,
         skipIntercept,
+        scopeLocked,
       );
       toast.success(scheduled ? "任务已创建，到点自动启动" : "任务已创建");
       setDescription("");
@@ -688,6 +690,7 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
       setTimeoutMin("");
       setHeartbeatMin("10");
       setSeedFirstIntent(false);
+      setScopeLocked(false);
       setScheduledStartAt("");
       setUploadCount(0);
       draftIdRef.current = "";
@@ -860,6 +863,19 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
                   </label>
                   <p className="text-muted-foreground text-xs">
                     开启后本任务跳过系统拦截页配置的工具调用拦截规则（deny/ask），仅保留审计日志。用于可信目标或需绕过拦截的测试。
+                  </p>
+                </div>
+                <div className="grid gap-2">
+                  <label htmlFor="scope-locked" className="flex items-center gap-2 text-sm">
+                    <Checkbox
+                      id="scope-locked"
+                      checked={scopeLocked}
+                      onCheckedChange={(v) => setScopeLocked(!!v)}
+                    />
+                    限定扫描范围当前 Host
+                  </label>
+                  <p className="text-muted-foreground text-xs">
+                    开启后扫描范围锁定为初始目标 Host：新发现的主机不会自动入范围，add_task_scope 工具禁止扩域。适用于只需测试单个目标的精准场景。
                   </p>
                 </div>
               </CollapsibleContent>

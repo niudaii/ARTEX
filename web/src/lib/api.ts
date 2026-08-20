@@ -173,6 +173,7 @@ export const api = {
     planHeartbeatSeconds?: number,
     scheduledStartAt?: string, // RFC3339 带时区偏移(前端按 CST 转);空/省略=立即开始
     skipIntercept?: boolean, // true=跳过用户配置的拦截规则;默认 false
+    scopeLocked?: boolean, // true=扫描范围锁定为初始 Host;默认 false
   ) =>
     post<Task>("/tasks", {
       description,
@@ -183,6 +184,7 @@ export const api = {
       plan_heartbeat_seconds: planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)
       scheduled_start_at: scheduledStartAt ?? null,
       skip_intercept: skipIntercept ?? false,
+      scope_locked: scopeLocked ?? false,
     }),
   // 删除任务;opts 里的四个可选项默认不删:assets 关联资产、findings 发现漏洞、
   // traffic 测试流量(按任务 host 清)、files 测试过程写的文件(tasks/<id> 目录)。
