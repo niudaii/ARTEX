@@ -50,14 +50,7 @@ import { Label } from "@/components/ui/label";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Switch } from "@/components/ui/switch";
 import { Textarea } from "@/components/ui/textarea";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import {
   Sheet,
   SheetClose,
@@ -195,11 +188,17 @@ export default function TasksPage() {
   // POLL_MS but usually comes back unchanged, and setTasks on an identical payload
   // would re-render the whole page for nothing. Bail out when it matches.
   const lastRef = React.useRef<string>("");
+  // loadSeqRef tracks the latest load() call. Without it, a slow in-flight poll
+  // (started before a delete) can resolve AFTER the delete's refresh and overwrite
+  // the fresh list with stale data — making a deleted task reappear in the UI.
+  const loadSeqRef = React.useRef(0);
 
   const load = React.useCallback(() => {
+    const seq = ++loadSeqRef.current;
     api
       .tasks({ page, pageSize, status: statusFilter, query: debouncedQuery })
       .then((r) => {
+        if (seq !== loadSeqRef.current) return; // a newer load() started — ignore stale
         const next = r.tasks.map((t) => (t.id === r.active ? { ...t, active: true } : t));
         const sig = JSON.stringify([next, r.total]);
         if (sig === lastRef.current) return;
@@ -231,12 +230,19 @@ export default function TasksPage() {
 
   const deleteTask = React.useCallback(
     async (id: string, opts: DeleteOpts) => {
+      // Optimistic: remove from local state immediately so the row vanishes
+      // without waiting for the server round-trip. Reset lastRef so the next
+      // load() always applies its result (bypasses the "same as last" guard).
+      setTasks((prev) => prev.filter((t) => t.id !== id));
+      setTotal((n) => Math.max(0, n - 1));
+      lastRef.current = "";
       try {
         await api.deleteTask(id, opts);
         toast.success("任务已删除");
         load();
       } catch (e) {
         toast.error("删除失败：" + (e as Error).message);
+        load(); // re-fetch to restore the row if the delete actually failed
       }
     },
     [load],
@@ -287,9 +293,7 @@ export default function TasksPage() {
               ))}
             </SelectContent>
           </Select>
-          <span className="text-muted-foreground text-xs tabular-nums">
-            {total} 条
-          </span>
+          <span className="text-muted-foreground text-xs tabular-nums">{total} 条</span>
           <ConcurrencySettingsDialog />
           <CreateTaskSheet onCreated={load} />
         </div>
@@ -464,9 +468,7 @@ const TaskRow = React.memo(function TaskRow({
                     <>
                       「
                       <span className="break-all">
-                        {task.description.length > 80
-                          ? task.description.slice(0, 80) + "…"
-                          : task.description}
+                        {task.description.length > 80 ? task.description.slice(0, 80) + "…" : task.description}
                       </span>
                       」
                     </>
@@ -479,17 +481,13 @@ const TaskRow = React.memo(function TaskRow({
 
               {/* 额外清理项:默认都不选,勾选后连带删除。全局资产图默认保留。 */}
               <div className="grid gap-2 rounded-md border bg-muted/30 p-3">
-                <span className="text-xs font-medium text-muted-foreground">
-                  同时删除以下关联数据（默认不删）：
-                </span>
+                <span className="text-xs font-medium text-muted-foreground">同时删除以下关联数据（默认不删）：</span>
                 {DELETE_EXTRAS.map((opt) => (
                   <label key={opt.key} className="flex items-start gap-2 text-sm">
                     <Checkbox
                       className="mt-0.5"
                       checked={delOpts[opt.key]}
-                      onCheckedChange={(v) =>
-                        setDelOpts((s) => ({ ...s, [opt.key]: v === true }))
-                      }
+                      onCheckedChange={(v) => setDelOpts((s) => ({ ...s, [opt.key]: v === true }))}
                     />
                     <span className="grid gap-0.5">
                       <span>{opt.label}</span>
@@ -501,9 +499,7 @@ const TaskRow = React.memo(function TaskRow({
 
               <AlertDialogFooter>
                 <AlertDialogCancel>取消</AlertDialogCancel>
-                <AlertDialogAction onClick={() => onDelete(task.id, delOpts)}>
-                  删除
-                </AlertDialogAction>
+                <AlertDialogAction onClick={() => onDelete(task.id, delOpts)}>删除</AlertDialogAction>
               </AlertDialogFooter>
             </AlertDialogContent>
           </AlertDialog>
@@ -675,7 +671,16 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
         toast.error("执行时间需晚于当前时间，留空则立即开始");
         return;
       }
-      await api.createTask(description.trim(), goal.trim(), pid, timeoutSec, seedFirstIntent, heartbeatSec, scheduled, skipIntercept);
+      await api.createTask(
+        description.trim(),
+        goal.trim(),
+        pid,
+        timeoutSec,
+        seedFirstIntent,
+        heartbeatSec,
+        scheduled,
+        skipIntercept,
+      );
       toast.success(scheduled ? "任务已创建，到点自动启动" : "任务已创建");
       setDescription("");
       setGoal("");
@@ -781,7 +786,9 @@ function CreateTaskSheet({ onCreated }: { onCreated: () => void }) {
               <CollapsibleTrigger className="group flex w-full items-center gap-2 border-t pt-4 text-sm font-medium">
                 <ChevronRightIcon className="text-muted-foreground size-4 transition-transform group-data-[state=open]:rotate-90" />
                 高级设置
-                <span className="text-muted-foreground ml-auto text-xs font-normal">定时 · 超时 · 心跳 · 首个意图 · 拦截</span>
+                <span className="text-muted-foreground ml-auto text-xs font-normal">
+                  定时 · 超时 · 心跳 · 首个意图 · 拦截
+                </span>
               </CollapsibleTrigger>
               <CollapsibleContent className="grid gap-5 pt-5">
                 <div className="grid gap-2">

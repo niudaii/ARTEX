@@ -3,11 +3,11 @@ import packageJson from "../../package.json";
 const currentYear = new Date().getFullYear();
 
 export const APP_CONFIG = {
-  name: "AEX",
+  name: "ATX",
   version: packageJson.version,
-  copyright: `© ${currentYear}, AEX.`,
+  copyright: `© ${currentYear}, ATX.`,
   meta: {
-    title: "AEX — 自主渗透测试控制台",
-    description: "LLM 驱动的自主渗透测试系统控制台",
+    title: "ATX — 自动化渗透平台",
+    description: "自动化渗透平台",
   },
 };
