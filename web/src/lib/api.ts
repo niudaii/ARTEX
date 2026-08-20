@@ -30,6 +30,7 @@ import type {
   InterceptApprovalRow,
   InterceptPending,
   InterceptRule,
+  LLMPoolStatus,
   LLMProfile,
   LLMRecordDetail,
   LLMRecordItem,
@@ -181,7 +182,16 @@ export const api = {
       plan_heartbeat_seconds: planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)
       scheduled_start_at: scheduledStartAt ?? null,
     }),
-  deleteTask: (id: string) => del<{ deleted: number }>(`/tasks/${id}`),
+  // 删除任务;opts 里的四个可选项默认不删:assets 关联资产、findings 发现漏洞、
+  // traffic 测试流量(按任务 host 清)、files 测试过程写的文件(tasks/<id> 目录)。
+  deleteTask: (
+    id: string,
+    opts?: { assets?: boolean; findings?: boolean; traffic?: boolean; files?: boolean },
+  ) =>
+    del<{ deleted: string; assets_deleted?: number; findings_deleted?: number; traffic_deleted?: number; files_deleted?: boolean }>(
+      `/tasks/${id}`,
+      opts,
+    ),
   controlTask: (id: string, action: "pause" | "resume") =>
     post<{ id: string; paused: boolean }>(`/tasks/${id}/control`, { action }),
   // 重跑一条没跑成功的意图(blocked/exhausted/stopped)：置回 open，worker 会重新认领、从头再跑。
@@ -258,12 +268,15 @@ export const api = {
     get<{ count: number; total: number; assets: Asset[] }>(
       `/assets?dsl=${encodeURIComponent(dsl)}${type ? `&type=${encodeURIComponent(type)}` : ""}&limit=${limit}&offset=${offset}`,
     ).then((r) => ({ assets: r?.assets ?? [], total: r?.total ?? r?.count ?? 0 })),
-  assetCounts: () => get<Record<string, number>>("/assets/counts"),
+  assetCounts: (taskId = "") =>
+    get<Record<string, number>>(`/assets/counts${taskId ? `?task_id=${encodeURIComponent(taskId)}` : ""}`),
   deleteAssets: (ids: number[]) =>
     http<{ deleted: number }>("/assets", { method: "DELETE", body: JSON.stringify({ ids }) }),
-  // legacy — kept for task-specific views; hits the same endpoint with task_id filter
-  taskAssets: (taskId: string, type = "") =>
-    get<{ count: number; assets: Asset[] }>(`/assets?task_id=${taskId}&type=${type}`).then((r) => r?.assets ?? []),
+  // task-scoped view of the same endpoint — server-side paginated like `assets`
+  taskAssets: (taskId: string, type = "", limit = 50, offset = 0) =>
+    get<{ count: number; total: number; assets: Asset[] }>(
+      `/assets?task_id=${encodeURIComponent(taskId)}&type=${encodeURIComponent(type)}&limit=${limit}&offset=${offset}`,
+    ).then((r) => ({ assets: r?.assets ?? [], total: r?.total ?? r?.count ?? 0 })),
 
   // ---- companies (企业 + 资产范围；归属唯一来源) ----
   companies: () => get<Company[]>("/companies").then(arr),
@@ -334,6 +347,8 @@ export const api = {
     id: string,
     fields: { name?: string; vulnclass?: string; severity?: Severity; status?: FindingStatus },
   ) => patch<Finding>(`/exploration/findings/${id}`, fields),
+  // 删除漏洞:移除 findings 记录 + 来源探索节点(从发现列表/任务发现 Tab/探索图一并消失)。
+  deleteFinding: (id: string) => del<{ deleted: boolean; id: number }>(`/exploration/findings/${id}`),
   intents: (task?: string) => get<TaskNode[]>(`/exploration/intents${tq(task)}`).then(arr),
   tokenStats: (task?: string) =>
     get<{ workers: TokenUsage[]; total: TokenTotal }>(`/exploration/tokens${tq(task)}`).then((r) => ({
@@ -555,9 +570,15 @@ export const api = {
     rate_per_minute?: number;
     context_window_k?: number;
     reasoning_effort?: string; // ""|"off"|"low"|"medium"|"high"|"max"
+    priority?: number; // 轮询顺位，越大越先用
+    pool_exclude?: boolean; // true=不作为故障转移目标
   }) => post<{ id: number }>("/llm/profiles", p),
   deleteLLMProfile: (id: string) => del<{ deleted: number }>(`/llm/profiles/${id}`),
   activateLLMProfile: (id: string) => post<{ ok: boolean }>("/llm/profiles/active", { id: Number(id) }),
+  // 轮询链的实际顺序 + 各配置的熔断状态。
+  llmPool: () => get<LLMPoolStatus>("/llm/pool"),
+  // 清除熔断，让下一次调用立刻重试该配置；不传 id = 全部清除。
+  resetLLMPool: (id?: string) => post<LLMPoolStatus>("/llm/pool/reset", { id: id ? Number(id) : 0 }),
   fetchLLMModels: (provider: string, base_url: string, api_key: string, proxy = "", profile_id?: number) =>
     post<{ ok: boolean; error?: string; models?: string[] }>("/llm/models", {
       provider,

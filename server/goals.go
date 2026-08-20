@@ -4,12 +4,14 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"sort"
 	"strconv"
 	"strings"
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
+	"github.com/Autumn-27/norma/llm"
 )
 
 type goalSpec struct {
@@ -30,21 +32,116 @@ func (s *Server) launchTask(t *Task, seedText string, seedFirstIntent bool) {
 	if seedFirstIntent {
 		s.seedFirstIntent(t)
 	}
-	go func() {
-		s.engine.emitActivity(t, db.Activity{Worker: "planner", Kind: "round",
-			Summary: "第 0 轮目标拆解"})
-		goals := s.createGoals(s.ctx, t, func(r db.Activity) {
-			s.engine.emitActivity(t, r)
-		})
-		for _, g := range goals {
-			summary := g.Text
-			if g.VulnClass != "" {
-				summary = fmt.Sprintf("[%s] %s", g.VulnClass, g.Text)
-			}
-			s.engine.emitActivity(t, db.Activity{Worker: "planner", Kind: "text", Summary: summary})
+	// 并发上限:满了就挂起排队(不做目标拆解、不启动引擎),由 reconcileConcurrency 补位启动。
+	if s.queueIfAtCapacity(t) {
+		return
+	}
+	go s.startTaskEngine(t)
+}
+
+// startTaskEngine does the actual running work: 第0轮目标拆解 + 启动引擎循环。
+// Shared by fresh launches and by the concurrency reconciler promoting a queued task.
+func (s *Server) startTaskEngine(t *Task) {
+	s.engine.emitActivity(t, db.Activity{Worker: "planner", Kind: "round",
+		Summary: "第 0 轮目标拆解"})
+	goals := s.createGoals(s.ctx, t, func(r db.Activity) {
+		s.engine.emitActivity(t, r)
+	})
+	for _, g := range goals {
+		summary := g.Text
+		if g.VulnClass != "" {
+			summary = fmt.Sprintf("[%s] %s", g.VulnClass, g.Text)
 		}
-		s.engine.Run(s.ctx, t)
-	}()
+		s.engine.emitActivity(t, db.Activity{Worker: "planner", Kind: "text", Summary: summary})
+	}
+	s.engine.Run(s.ctx, t)
+}
+
+// occupiesSlot reports whether a task counts against the concurrency cap: it is
+// live (not terminal), not queued, and not paused. A just-created / decomposing
+// task counts too (it will run momentarily).
+func (s *Server) occupiesSlot(t *Task) bool {
+	if t == nil || t.Queued || isTerminalStatus(t.Status) {
+		return false
+	}
+	return !t.Paused && !s.engine.IsPaused(t.ID)
+}
+
+// runningTaskCount counts tasks occupying a concurrency slot, excluding excludeID
+// (pass the candidate's id when deciding admission so it doesn't count itself).
+func (s *Server) runningTaskCount(excludeID string) int {
+	n := 0
+	for _, t := range s.m.List() {
+		if t.ID == excludeID {
+			continue
+		}
+		if s.occupiesSlot(t) {
+			n++
+		}
+	}
+	return n
+}
+
+// queueIfAtCapacity holds a task in the queued state when the concurrency cap is
+// enabled and already full. Returns true if the task was queued (caller must not
+// start it). No-op (false) when the feature is off or a slot is free.
+func (s *Server) queueIfAtCapacity(t *Task) bool {
+	s.concMu.Lock()
+	defer s.concMu.Unlock()
+	enabled, limit := s.m.ConcurrencyLimit()
+	if !enabled || s.runningTaskCount(t.ID) < limit {
+		return false
+	}
+	if err := s.m.SetTaskQueued(t.ID, true); err != nil {
+		log.Printf("[concurrency] task %s 置排队失败: %v", t.ID, err)
+		return false // 落库失败宁可放它跑,也别静默丢任务
+	}
+	t.Queued = true
+	s.engine.emitActivity(t, db.Activity{Worker: "planner", Kind: "text",
+		Summary: fmt.Sprintf("已排队：达到并发上限 %d，等待空位后自动开始", limit)})
+	log.Printf("[concurrency] task %s 排队(并发上限 %d)", t.ID, limit)
+	return true
+}
+
+// reconcileConcurrency promotes queued tasks into free slots. Runs on every
+// scheduler tick. When the feature is disabled it releases ALL queued tasks;
+// when enabled it starts the oldest-queued tasks up to (limit - running).
+func (s *Server) reconcileConcurrency() {
+	s.concMu.Lock()
+	defer s.concMu.Unlock()
+	var queued []*Task
+	for _, t := range s.m.List() {
+		if t.Queued && !isTerminalStatus(t.Status) {
+			queued = append(queued, t)
+		}
+	}
+	if len(queued) == 0 {
+		return
+	}
+	// 最早排队的先启动。
+	sort.Slice(queued, func(i, j int) bool { return queued[i].CreatedAt < queued[j].CreatedAt })
+
+	enabled, limit := s.m.ConcurrencyLimit()
+	slots := len(queued) // feature off → 全部放行
+	if enabled {
+		if !s.engine.Ready() {
+			return // 引擎未就绪(无 LLM):继续挂起,别空跑
+		}
+		slots = limit - s.runningTaskCount("")
+	}
+	for _, t := range queued {
+		if slots <= 0 {
+			break
+		}
+		if err := s.m.SetTaskQueued(t.ID, false); err != nil {
+			log.Printf("[concurrency] task %s 解除排队失败: %v", t.ID, err)
+			continue
+		}
+		t.Queued = false
+		log.Printf("[concurrency] task %s 出队启动", t.ID)
+		go s.startTaskEngine(t)
+		slots--
+	}
 }
 
 // scheduleOrLaunch either launches a task immediately (no schedule / past due) or
@@ -99,6 +196,10 @@ func (s *Server) reviveTask(t *Task) {
 	if t == nil {
 		return
 	}
+	// 排队中的任务不复活启动——它本就等待并发空位,交给 reconcileConcurrency。
+	if t.Queued {
+		return
+	}
 	// 终态 → 拉回 running(SetTaskStatus 会清 completed_at 并同步内存 handle 的 Status,
 	// 使 planner/worker 循环的终态门放行)。
 	if isTerminalStatus(t.Status) {
@@ -131,7 +232,7 @@ func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity
 	// so FromEnv returned empty and every task silently fell back to the crude rule
 	// splitter (which shredded URLs / made meaningless 2-way splits).
 	var specs []goalSpec
-	if cfg, ok := s.goalsLLMConfig(t); ok {
+	if prov, ok := s.goalsProvider(t); ok {
 		var as *db.AssetStore
 		if s.m != nil {
 			as = s.m.Assets()
@@ -140,7 +241,7 @@ func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity
 		// DecomposeGoals persists each decomposed goal via the set_goals tool straight
 		// into t.Store; it returns the specs it wrote so we can emit activity + spot the
 		// empty (LLM error / no provider) case below. No write-back needed here anymore.
-		for _, g := range agent.DecomposeGoals(ctx, cfg, s.m.dir, t.Goal, t.Description, as, t.Store, taskID, emit) {
+		for _, g := range agent.DecomposeGoals(ctx, prov, s.m.dir, t.Goal, t.Description, as, t.Store, taskID, emit) {
 			if strings.TrimSpace(g.Text) != "" {
 				specs = append(specs, goalSpec{Text: g.Text, VulnClass: g.VulnClass})
 			}
@@ -163,18 +264,22 @@ func (s *Server) createGoals(ctx context.Context, t *Task, emit func(db.Activity
 	return specs
 }
 
-// goalsLLMConfig resolves the LLM config for goal decomposition by the standard
-// precedence: the goals agent's own binding → the task's pinned profile → the global
-// active profile (same source the engine runs on).
-func (s *Server) goalsLLMConfig(t *Task) (agent.Config, bool) {
+// goalsProvider resolves the provider for goal decomposition by the standard
+// precedence: the goals agent's own binding → the task's pinned profile → the
+// global active provider (the very instance the engine runs on, so decomposition
+// shares its rate limiter, gets recorded, and follows LLM failover).
+func (s *Server) goalsProvider(t *Task) (llm.Provider, bool) {
 	var pin *int64
 	if t != nil {
 		pin = t.LLMProfileID
 	}
 	if eff := s.effectiveProfileForAgent("goals", pin); eff != nil {
-		if cfg, ok := s.loadProfileConfig(*eff); ok {
-			return cfg, true
+		if prov, cfg, ok := s.providerForProfile(*eff); ok {
+			return s.poolForBinding(*eff, prov, cfg), true
 		}
 	}
-	return s.loadLLMConfig()
+	s.cfgMu.Lock()
+	prov, on := s.llmProv, s.llmOn
+	s.cfgMu.Unlock()
+	return prov, on && prov != nil
 }

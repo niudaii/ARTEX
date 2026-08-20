@@ -18,6 +18,7 @@ import type {
   InterceptApprovalRow,
   InterceptPending,
   InterceptRule,
+  LLMPoolStatus,
   LLMProfile,
   LLMTask,
   MCPServer,
@@ -2404,31 +2405,8 @@ export const audit: Audit = {
 
 // ── LLM profiles ─────────────────────────────────────────────────────────────
 export const llmProfiles: LLMProfile[] = [
-  {
-    id: "1",
-    name: "Claude Opus 4.8",
-    format: "anthropic",
-    model: "claude-opus-4-8",
-    api_key_hint: "…a3f2",
-    rate_per_second: 0,
-    rate_per_minute: 0,
-    context_window_k: 1000,
-    reasoning_effort: "high",
-    is_default: true,
-  },
-  {
-    id: "2",
-    name: "DeepSeek V4",
-    format: "openai",
-    base_url: "https://api.deepseek.com",
-    model: "deepseek-v4-flash",
-    api_key_hint: "…9c11",
-    rate_per_second: 0,
-    rate_per_minute: 60,
-    context_window_k: 128,
-    reasoning_effort: "",
-    is_default: false,
-  },
+  { id: "1", name: "Claude Opus 4.8", format: "anthropic", model: "claude-opus-4-8", api_key_hint: "…a3f2", rate_per_second: 0, rate_per_minute: 0, context_window_k: 1000, reasoning_effort: "high", is_default: true, priority: 0, pool_exclude: false },
+  { id: "2", name: "DeepSeek V4", format: "openai", base_url: "https://api.deepseek.com", model: "deepseek-v4-flash", api_key_hint: "…9c11", rate_per_second: 0, rate_per_minute: 60, context_window_k: 128, reasoning_effort: "", is_default: false, priority: 10, pool_exclude: false },
 ];
 
 export const llmConfig = {
@@ -2680,6 +2658,19 @@ export const settings: Settings = {
   web_search_proxy: "",
   python_interpreter: "/usr/bin/python3",
   workers: 3,
+  llm_pool_enabled: true,
+  llm_pool_bind_fallback: false,
+};
+
+// ── LLM 轮询（故障转移）──────────────────────────────────────────────────────
+// demo：激活配置正常，备用配置刚因余额不足熔断，正在冷却。
+export const llmPool: LLMPoolStatus = {
+  enabled: true,
+  bind_fallback: false,
+  chain: [
+    { profile_id: "1", name: "Claude Opus 4.8", model: "claude-opus-4-8", format: "anthropic", priority: 0, active: true, excluded: false, state: "ok", fails: 0, trips: 0, cooldown_secs: 0 },
+    { profile_id: "2", name: "DeepSeek V4", model: "deepseek-v4-flash", format: "openai", priority: 10, active: false, excluded: false, state: "tripped", fails: 0, trips: 1, cooldown_secs: 42, last_error: "openai: status 402: insufficient balance", last_at: T("2026-07-26T00:10:00Z") },
+  ],
 };
 
 // ── Intercept ────────────────────────────────────────────────────────────────
