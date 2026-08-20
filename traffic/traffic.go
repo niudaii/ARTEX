@@ -311,6 +311,10 @@ func (t *Traffic) record(f *mproxy.Flow) {
 	}
 	parts = append(parts, method, id)
 	exDir := filepath.Join(parts...)
+	if rel, err := filepath.Rel(t.dir, exDir); err != nil || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		log.Printf("[traffic] 写入失败：路径 %s 逃逸出流量根目录 %s（该条流量丢弃）", exDir, t.dir)
+		return
+	}
 	if err := os.MkdirAll(exDir, 0o755); err != nil {
 		log.Printf("[traffic] 写入失败：创建目录 %s 出错（磁盘满或权限问题，该条流量丢弃）：%v", exDir, err)
 		return
@@ -379,7 +383,7 @@ func headerLines(h map[string][]string) string {
 func sanitize(s string) string {
 	r := strings.NewReplacer("/", "_", "\\", "_", ":", "_", "?", "_", "*", "_", "\"", "_", "<", "_", ">", "_", "|", "_")
 	out := r.Replace(s)
-	if out == "" || out == "_" {
+	if out == "" || out == "_" || out == "." || out == ".." {
 		return "root"
 	}
 	if len(out) > 120 {

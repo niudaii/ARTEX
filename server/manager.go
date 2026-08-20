@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"sort"
 	"strconv"
@@ -417,13 +418,17 @@ func (m *Manager) syncBrowserMCPProxy() {
 	cert := m.ProxyCACert() // "" when capture off
 
 	args := stripProxyArgs(decodeStrSlice(srv.Args))
-	// 迁移：早期 seed 用 "npx @playwright/mcp" 启动 browser MCP，npx 即便全局装了仍联网验证
-	// 版本 + 多一层进程解析，per-run 连接（assembly.go ToolAugment）下握手拖长，agent context
-	// 先结束 → "browser 连接失败: context canceled"。改为直接调全局 bin playwright-mcp（npm
-	// install -g 已装），跳过 npx 联网/解析。幂等：command 已是 playwright-mcp 则跳过。
-	if srv.Command == "npx" && len(args) > 0 && args[0] == "@playwright/mcp" {
-		srv.Command = "playwright-mcp"
-		args = args[1:]
+	// 选择最佳启动方式：优先用全局二进制 playwright-mcp（启动快，跳过 npx 联网校验）；
+	// 未安装时回退 npx @playwright/mcp（npx 会按需下载，但握手较慢，可能触发 context canceled）。
+	// 幂等：已是目标形式则跳过。
+	if _, err := exec.LookPath("playwright-mcp"); err == nil {
+		if srv.Command == "npx" && len(args) > 0 && args[0] == "@playwright/mcp" {
+			srv.Command = "playwright-mcp"
+			args = args[1:]
+		}
+	} else if srv.Command == "playwright-mcp" {
+		srv.Command = "npx"
+		args = append([]string{"@playwright/mcp"}, args...)
 	}
 	env := decodeStrMap(srv.Env)
 	delete(env, "NODE_EXTRA_CA_CERTS")
