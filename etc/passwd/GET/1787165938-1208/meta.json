@@ -1,0 +1,1 @@
+{"id":"1787165938-1208","host":"nexus3.corp.youdao.com","method":"GET","url":"https://nexus3.corp.youdao.com/service/rest/v1/repository/maven-releases/../../../../../../../../etc/passwd","template":"/service/rest/v1/repository/maven-releases/../../../../../../../../etc/passwd","status":400,"content_type":"text/html"}

@@ -124,20 +124,20 @@ function TaskDetailInner() {
     <Tabs value={tab} onValueChange={setTab} className="flex flex-1 flex-col gap-0">
       {/* Top fixed area */}
       <header className="sticky top-0 z-10 flex flex-col gap-2 border-b bg-background/95 px-4 py-2.5 backdrop-blur lg:px-6">
-        <div className="flex items-center gap-2">
-          <SidebarTrigger className="-ml-1" />
-          <Button asChild variant="ghost" size="icon" className="size-7">
-            <Link href="/function/tasks">
-              <ArrowLeftIcon />
-            </Link>
-          </Button>
-          <h1 className="max-w-md truncate text-sm font-semibold" title={task.description}>
+       <div className="flex items-center gap-2">
+         <SidebarTrigger className="-ml-1" />
+         <Button asChild variant="ghost" size="icon" className="size-7">
+           <Link href="/function/tasks">
+             <ArrowLeftIcon />
+           </Link>
+         </Button>
+          <h1 className="min-w-0 flex-1 truncate text-sm font-semibold" title={task.description}>
             {task.description}
           </h1>
-          <code className="rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground">{task.id}</code>
-          <Separator orientation="vertical" className="mx-1 h-4" />
+          <code className="hidden shrink-0 rounded bg-muted px-1.5 py-0.5 font-mono text-xs text-muted-foreground sm:inline">{task.id}</code>
+          <Separator orientation="vertical" className="mx-1 h-4 hidden sm:block" />
           {/* status pills */}
-          <span className="inline-flex items-center gap-1 rounded-md border px-2 py-0.5 text-xs">
+          <span className="hidden items-center gap-1 rounded-md border px-2 py-0.5 text-xs sm:inline-flex">
             <BrainIcon className="size-3.5 text-emerald-500" /> LLM 已配置
           </span>
           {terminal ? (
@@ -145,7 +145,7 @@ function TaskDetailInner() {
           ) : (
             <StatusBadge domain="engine" value={engineMode} dot />
           )}
-          <div className="ml-auto">
+          <div className="ml-auto shrink-0">
             <Button size="sm" variant={paused ? "default" : "outline"} onClick={togglePause} disabled={terminal}>
               {paused ? <PlayIcon /> : <PauseIcon />}
               {paused ? "恢复" : "暂停"}
@@ -154,7 +154,7 @@ function TaskDetailInner() {
         </div>
         <p className="truncate text-xs text-muted-foreground">{task.goal}</p>
         {/* Tabs */}
-        <TabsList variant="default">
+        <TabsList variant="default" className="no-scrollbar w-full overflow-x-auto">
           {TABS.map((t) => (
             <TabsTrigger key={t.value} value={t.value}>
               {t.label}
