@@ -270,7 +270,7 @@ func writeTool(name, desc string, schema map[string]any, run func(context.Contex
 	})
 }
 
-func jsonResult(v any) (actool.Result, error) {
+func JSONResult(v any) (actool.Result, error) {
 	b, err := json.Marshal(v)
 	if err != nil {
 		return actool.Errorf(err.Error()), nil
@@ -288,7 +288,7 @@ func (t *ToolSet) graphOverview() actool.CoreTool {
 			if t.ts == nil {
 				return errNoTaskGraph("graph_overview")
 			}
-			return jsonResult(t.graphOverviewData())
+			return JSONResult(t.graphOverviewData())
 		})
 }
 
@@ -467,7 +467,7 @@ func (t *ToolSet) listFindings() actool.CoreTool {
 				}
 				out = append(out, m)
 			}
-			return jsonResult(out)
+			return JSONResult(out)
 		})
 }
 
@@ -483,7 +483,7 @@ func (t *ToolSet) listFacts() actool.CoreTool {
 			for _, n := range f {
 				out = append(out, compactNode(n))
 			}
-			return jsonResult(out)
+			return JSONResult(out)
 		})
 }
 
@@ -521,7 +521,7 @@ func (t *ToolSet) nodeDetail() actool.CoreTool {
 			if n == nil {
 				return actool.Errorf(fmt.Sprintf("未找到探索节点 %d。若你想查的是资产，请用 list_assets（资产与探索节点是不同的 id 空间，资产 id 不能传给 node_detail）。", id)), nil
 			}
-			return jsonResult(n) // full payload incl. detail / evidence
+			return JSONResult(n) // full payload incl. detail / evidence
 		})
 }
 
@@ -629,7 +629,7 @@ func (t *ToolSet) addIntent() actool.CoreTool {
 			if len(errs) > 0 {
 				out["errors"] = errs
 			}
-			return jsonResult(out)
+			return JSONResult(out)
 		})
 }
 
@@ -641,7 +641,7 @@ func (t *ToolSet) listGoals() actool.CoreTool {
 				return errNoTaskGraph("list_goals")
 			}
 			g, _ := t.ts.ListByKind(db.KindGoal, 100)
-			return jsonResult(g)
+			return JSONResult(g)
 		})
 }
 
@@ -1000,7 +1000,7 @@ func (t *ToolSet) recordFact() actool.CoreTool {
 			if len(errs) > 0 {
 				out["errors"] = errs
 			}
-			return jsonResult(out)
+			return JSONResult(out)
 		})
 }
 
@@ -1124,7 +1124,7 @@ func (t *ToolSet) setGoals() actool.CoreTool {
 			if len(errs) > 0 {
 				out["errors"] = errs
 			}
-			return jsonResult(out)
+			return JSONResult(out)
 		})
 }
 
@@ -1172,7 +1172,7 @@ func (t *ToolSet) addHint() actool.CoreTool {
 			if len(errs) > 0 {
 				out["errors"] = errs
 			}
-			return jsonResult(out)
+			return JSONResult(out)
 		})
 }
 
@@ -1273,7 +1273,7 @@ func (t *ToolSet) getWorkerOutput() actool.CoreTool {
 			if detail == "" {
 				detail = pick.Summary
 			}
-			return jsonResult(map[string]any{
+			return JSONResult(map[string]any{
 				"intent_id": id, "worker_name": pick.Worker, "final_text": detail,
 				"summary": pick.Summary, "is_error": pick.IsError, "terminated": terminated,
 			})
@@ -1288,7 +1288,7 @@ func traceSteps(acts []db.Activity) []map[string]any {
 	for i := range acts {
 		steps = append(steps, map[string]any{
 			"step_id": acts[i].ID, "kind": acts[i].Kind, "tool": acts[i].Tool,
-			"is_error": acts[i].IsError, "summary": firstLine(acts[i].Summary, 100),
+			"is_error": acts[i].IsError, "summary": FirstLine(acts[i].Summary, 100),
 		})
 	}
 	return steps
@@ -1347,7 +1347,7 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 						"is_error": acts[i].IsError, "detail": acts[i].Detail,
 					})
 				}
-				return jsonResult(map[string]any{"intent_id": id, "steps": steps})
+				return JSONResult(map[string]any{"intent_id": id, "steps": steps})
 			}
 			// ①/② summary stream, optionally keyword-filtered; 100-char summaries.
 			var acts []db.Activity
@@ -1360,7 +1360,7 @@ func (t *ToolSet) getWorkerTrace() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			return jsonResult(map[string]any{"intent_id": id, "steps": traceSteps(acts)})
+			return JSONResult(map[string]any{"intent_id": id, "steps": traceSteps(acts)})
 		})
 }
 
@@ -1402,10 +1402,10 @@ func (t *ToolSet) searchAllWorkerTraces() actool.CoreTool {
 				hits = append(hits, map[string]any{
 					"intent_id": intent, "step_id": acts[i].ID, "worker": acts[i].Worker,
 					"kind": acts[i].Kind, "tool": acts[i].Tool, "is_error": acts[i].IsError,
-					"summary": firstLine(acts[i].Summary, 100),
+					"summary": FirstLine(acts[i].Summary, 100),
 				})
 			}
-			return jsonResult(map[string]any{"query": a.Q, "hits": hits})
+			return JSONResult(map[string]any{"query": a.Q, "hits": hits})
 		})
 }
 
@@ -1460,7 +1460,7 @@ func (t *ToolSet) listWorkerTraces() actool.CoreTool {
 					break
 				}
 			}
-			return jsonResult(map[string]any{"works": out})
+			return JSONResult(map[string]any{"works": out})
 		})
 }
 

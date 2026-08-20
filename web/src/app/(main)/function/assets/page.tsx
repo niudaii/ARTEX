@@ -1,5 +1,6 @@
 "use client";
 
+import { statusTone } from "@/lib/format";
 import * as React from "react";
 
 import {
@@ -326,14 +327,6 @@ function MethodBadge({ method }: { method: string }) {
       {m || "—"}
     </span>
   );
-}
-
-function statusTone(code: number) {
-  if (code >= 500) return "text-red-500";
-  if (code >= 400) return "text-amber-500";
-  if (code >= 300) return "text-blue-500";
-  if (code >= 200) return "text-emerald-500";
-  return "text-muted-foreground";
 }
 
 const PAGE_SIZES = [25, 50, 100, 200];

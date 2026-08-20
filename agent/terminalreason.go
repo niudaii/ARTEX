@@ -88,7 +88,7 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 		if hint == "" {
 			hint = "未知终态（harness 新增了终态但这里还没登记，请补 reasonHint）"
 		}
-		sum = "（无文字总结，终态 " + string(reason) + "：" + firstLine(hint, 80) + "）"
+		sum = "（无文字总结，终态 " + string(reason) + "：" + FirstLine(hint, 80) + "）"
 	}
 
 	// ---- expandable detail ----
@@ -121,7 +121,7 @@ func terminalText(ctx context.Context, term *harness.Terminal, tr *runTrace) (st
 	if tr.name != "" {
 		if tr.pending {
 			fmt.Fprintf(&b, "- **中断时正在执行的工具**: `%s`(已跑 %s，**未返回结果**) — 若是硬超时/长时间无进展，问题多半就在这一步\n  ```\n  %s\n  ```\n",
-				tr.name, roundDur(time.Since(tr.at)), firstLine(tr.input, 300))
+				tr.name, roundDur(time.Since(tr.at)), FirstLine(tr.input, 300))
 		} else {
 			fmt.Fprintf(&b, "- **中断前最后一个工具**: `%s`(已正常返回)\n", tr.name)
 		}

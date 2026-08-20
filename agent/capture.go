@@ -52,7 +52,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 		tbuf.Reset()
 		tkind = ""
 		if s != "" {
-			rec(db.Activity{Kind: k, Summary: firstLine(s, 200), Detail: s})
+			rec(db.Activity{Kind: k, Summary: FirstLine(s, 200), Detail: s})
 		}
 	}
 	addDelta := func(kind, text string) {
@@ -77,7 +77,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			flush()
 			if ctx.Err() != nil { // ctx cancelled = stopped by the engine, not a failure
 				sum, detail := terminalText(ctx, &harness.Terminal{Reason: reason, Err: ctx.Err()}, lastTool)
-				rec(db.Activity{Kind: "result", Summary: firstLine(sum, 400), Detail: detail})
+				rec(db.Activity{Kind: "result", Summary: FirstLine(sum, 400), Detail: detail})
 				return finalText, reason, ctx.Err()
 			}
 			rec(db.Activity{Kind: "result", IsError: true, Summary: "执行出错: " + err.Error(), Detail: err.Error()})
@@ -93,7 +93,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			in := string(ev.ToolUse.Input)
 			lastTool.start(ev.ToolUse.ID, ev.ToolUse.Name, in)
 			rec(db.Activity{Kind: "tool_use", Tool: ev.ToolUse.Name, ToolUseID: ev.ToolUse.ID,
-				Summary: ev.ToolUse.Name + " " + firstLine(in, 200), Detail: in})
+				Summary: ev.ToolUse.Name + " " + FirstLine(in, 200), Detail: in})
 		case harness.KindToolResult:
 			if ev.ToolResult == nil {
 				continue
@@ -102,7 +102,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 			out := blocksText(ev.ToolResult.Content)
 			lastTool.done(ev.ToolResult.ToolUseID)
 			rec(db.Activity{Kind: "tool_result", Tool: toolNames[ev.ToolResult.ToolUseID], ToolUseID: ev.ToolResult.ToolUseID,
-				IsError: ev.ToolResult.IsError, Summary: firstLine(out, 200), Detail: out})
+				IsError: ev.ToolResult.IsError, Summary: FirstLine(out, 200), Detail: out})
 		case harness.KindText:
 			addDelta("text", ev.Text)
 		case harness.KindThinking:
@@ -135,7 +135,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 				}
 				u := ev.Terminal.Usage // cumulative token usage for this session
 				rec(db.Activity{Kind: "result", IsError: ev.Terminal.Err != nil,
-					Summary: firstLine(sum, 400), Detail: detail,
+					Summary: FirstLine(sum, 400), Detail: detail,
 					InputTokens: &u.InputTokens, OutputTokens: &u.OutputTokens,
 					CacheReadTokens: &u.CacheReadTokens, CacheWriteTokens: &u.CacheWriteTokens})
 				if ev.Terminal.Err != nil {
@@ -165,10 +165,10 @@ func blocksText(blocks []llm.ContentBlock) string {
 // firstLine returns a single-line, length-capped preview for the summary column.
 // max counts RUNES, not bytes: these previews are mostly 中文, and byte-slicing
 // used to cut a multi-byte rune in half and render as "恢�…".
-func firstLine(s string, max int) string {
+func FirstLine(s string, max int) string {
 	s = strings.TrimSpace(s)
-	if before, _, found := strings.Cut(s, "\n"); found {
-		s = before
+	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
+		s = s[:i]
 	}
 	if utf8.RuneCountInString(s) > max {
 		s = string([]rune(s)[:max]) + "…"

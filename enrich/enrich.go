@@ -163,7 +163,7 @@ func (e *Engine) worker() {
 
 // onCooldown returns true (skip) if this (kind,id) ran within the cooldown window.
 func (e *Engine) onCooldown(j job) bool {
-	key := string(rune(j.kind)) + ":" + itoa(j.id)
+	key := string(rune(j.kind)) + ":" + strconv.FormatInt(j.id, 10)
 	if v, ok := e.cool.Load(key); ok {
 		if t, ok := v.(time.Time); ok && time.Since(t) < cooldown {
 			return true
@@ -173,7 +173,6 @@ func (e *Engine) onCooldown(j job) bool {
 	return false
 }
 
-func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
 // ---- DNS ----
 

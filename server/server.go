@@ -2772,7 +2772,7 @@ func (s *Server) startArchiveRun(t *Task, notifyOnDone bool) (int64, error) {
 	if err != nil {
 		return 0, err
 	}
-	if _, err := pg.AppendConvActivity(c.ID, db.Activity{Worker: c.AgentKey, Kind: "user", Summary: firstLine(msg, 200), Detail: msg}); err != nil {
+	if _, err := pg.AppendConvActivity(c.ID, db.Activity{Worker: c.AgentKey, Kind: "user", Summary: agent.FirstLine(msg, 200), Detail: msg}); err != nil {
 		log.Printf("[report/archive] conv %d append msg failed: %v", c.ID, err)
 	}
 	_ = pg.TouchConversation(c.ID)

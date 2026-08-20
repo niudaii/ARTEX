@@ -37,11 +37,11 @@ func RootDomain(host string) (root string, isApex bool) {
 }
 
 func PortKey(ipID int64, proto string, port int) string {
-	return itoa(ipID) + "|" + strings.ToLower(proto) + "|" + strconv.Itoa(port)
+	return strconv.FormatInt(ipID, 10) + "|" + strings.ToLower(proto) + "|" + strconv.Itoa(port)
 }
 
 func ServiceKey(portID int64, svcName string) string {
-	return itoa(portID) + "|" + strings.ToLower(svcName)
+	return strconv.FormatInt(portID, 10) + "|" + strings.ToLower(svcName)
 }
 
 func SiteKey(scheme, host string, port int) string {
@@ -49,11 +49,11 @@ func SiteKey(scheme, host string, port int) string {
 }
 
 func EndpointKey(siteID int64, method, urlTemplate string) string {
-	return itoa(siteID) + "|" + strings.ToUpper(method) + "|" + urlTemplate
+	return strconv.FormatInt(siteID, 10) + "|" + strings.ToUpper(method) + "|" + urlTemplate
 }
 
 func ParameterKey(endpointID int64, location, name string) string {
-	return itoa(endpointID) + "|" + strings.ToLower(location) + "|" + name
+	return strconv.FormatInt(endpointID, 10) + "|" + strings.ToLower(location) + "|" + name
 }
 
 // NormalizeParamName 归一化参数名（endpoint.params 元素的「相同引用」判定）。
@@ -67,7 +67,6 @@ func TechKey(name, version string) string {
 	return strings.ToLower(name) + "|" + version
 }
 
-func itoa(n int64) string { return strconv.FormatInt(n, 10) }
 
 var (
 	reNumeric = regexp.MustCompile(`^\d+$`)

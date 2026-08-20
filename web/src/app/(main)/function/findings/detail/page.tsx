@@ -1,5 +1,6 @@
 "use client";
 
+import { fmtTime } from "@/lib/format";
 import * as React from "react";
 import Link from "next/link";
 import { useRouter, useSearchParams } from "next/navigation";
@@ -46,10 +47,6 @@ const FINDING_STATUSES: FindingStatus[] = [
   "duplicate",
   "risk_accepted",
 ];
-
-function fmtTime(ts: string) {
-  return new Date(ts).toLocaleString("zh-CN");
-}
 
 // FieldRow is one label/value line in the right-hand status panel.
 function FieldRow({

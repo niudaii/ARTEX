@@ -1,5 +1,6 @@
 "use client";
 
+import { fmtTime } from "@/lib/format";
 import * as React from "react";
 import Link from "next/link";
 import {
@@ -78,15 +79,6 @@ const EMPTY_STATS: FindingStats = {
   vulnclasses: [],
   tasks: [],
 };
-
-function fmtTime(ts: string) {
-  return new Date(ts).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
 
 export default function FindingsPage() {
   const [severity, setSeverity] = React.useState<"all" | Severity>("all");

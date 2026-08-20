@@ -1,5 +1,6 @@
 "use client";
 
+import { fmtTime, fmtBytes, statusTone } from "@/lib/format";
 import * as React from "react";
 
 import {
@@ -43,32 +44,6 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { api } from "@/lib/api";
 import type { TrafficDetail, TrafficExchange, TrafficHost, TrafficResp } from "@/lib/types";
 import { cn } from "@/lib/utils";
-
-function fmtTime(ts: string) {
-  return new Date(ts).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
-function fmtBytes(n: number) {
-  if (n <= 0) return "0 B";
-  const units = ["B", "KB", "MB"];
-  const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), units.length - 1);
-  const v = n / 1024 ** i;
-  return `${i === 0 ? v : v.toFixed(1)} ${units[i]}`;
-}
-
-function statusTone(status: number) {
-  if (status >= 500) return "text-red-500";
-  if (status >= 400) return "text-amber-500";
-  if (status >= 300) return "text-blue-500";
-  if (status >= 200) return "text-emerald-500";
-  return "text-muted-foreground";
-}
 
 // Fixed method set (server filters exact-match); avoids deriving options from a
 // single page, which would only ever list the methods on that page.

@@ -1,5 +1,6 @@
 "use client";
 
+import { fmtBytes, fmtTokens } from "@/lib/format";
 import * as React from "react";
 
 import {
@@ -42,19 +43,7 @@ import type { Activity, Agent, ChatAttachment, Conversation, LLMProfile } from "
 import { cn } from "@/lib/utils";
 
 // fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
-function fmtBytes(n: number): string {
-  if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
-  if (n >= 1 << 10) return `${(n / (1 << 10)).toFixed(1)} KB`;
-  return `${n} B`;
-}
-
 // fmtTokens renders a compact token count (1234 → 1.2k, 2_000_000 → 2M).
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
-  return String(n);
-}
-
 // fmtDuration renders an elapsed milliseconds span compactly (90s → 1m30s).
 function _fmtDuration(ms: number): string {
   const s = Math.floor(ms / 1000);

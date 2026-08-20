@@ -284,7 +284,7 @@ func (t *ToolSet) insertAssets() actool.CoreTool {
 				}
 			}
 
-			return jsonResult(map[string]any{
+			return JSONResult(map[string]any{
 				"results": results,
 				"errors":  errs,
 			})
@@ -338,7 +338,7 @@ func (t *ToolSet) addCompanyScope() actool.CoreTool {
 			if len(errMsgs) > 0 {
 				out["errors"] = errMsgs
 			}
-			return jsonResult(out)
+			return JSONResult(out)
 		},
 	)
 }
@@ -399,7 +399,7 @@ func (t *ToolSet) addTaskScope() actool.CoreTool {
 			if len(errs) > 0 {
 				out["errors"] = errs
 			}
-			return jsonResult(out)
+			return JSONResult(out)
 		},
 	)
 }
@@ -442,7 +442,7 @@ func (t *ToolSet) listUntestedAssets() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
-			return jsonResult(map[string]any{
+			return JSONResult(map[string]any{
 				"assets": assets, "total": total, "page": a.Page, "page_size": a.PageSize,
 			})
 		},
@@ -519,7 +519,7 @@ func (t *ToolSet) listAssets() actool.CoreTool {
 			if err != nil {
 				return actool.Errorf("DSL 错误: " + err.Error()), nil
 			}
-			return jsonResult(map[string]any{
+			return JSONResult(map[string]any{
 				"count":  len(assets),
 				"assets": assets,
 			})
@@ -567,7 +567,7 @@ func (t *ToolSet) listCompanies() actool.CoreTool {
 				}
 				out = append(out, companyOut{ID: c.ID, Name: c.Name, AssetCount: c.AssetCount, Scope: scope})
 			}
-			return jsonResult(map[string]any{"count": len(out), "companies": out})
+			return JSONResult(map[string]any{"count": len(out), "companies": out})
 		},
 	)
 }

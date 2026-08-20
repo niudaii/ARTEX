@@ -1,5 +1,6 @@
 "use client";
 
+import { fmtBytes, fmtTokens } from "@/lib/format";
 import * as React from "react";
 
 import Link from "next/link";
@@ -66,12 +67,6 @@ import { isTerminalTaskStatus } from "@/lib/status";
 import type { ChatAttachment, LLMProfile, Task, TaskStatus } from "@/lib/types";
 
 // fmtBytes renders a human file size for the upload manifest.
-function fmtBytes(n: number): string {
-  if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
-  if (n >= 1 << 10) return `${(n / (1 << 10)).toFixed(1)} KB`;
-  return `${n} B`;
-}
-
 // toScheduledRFC3339 把 datetime-local 本地值(YYYY-MM-DDTHH:MM[,SS])按 CST(+08:00) 转成 RFC3339,
 // 供后端 scheduled_start_at 解析;空串/不合法返回 undefined(立即开始)。固定偏移避免浏览器本地时区干扰。
 function toScheduledRFC3339(local: string): string | undefined {
@@ -106,12 +101,6 @@ const ACTIVE_PROFILE = "__active__";
 const POLL_MS = 10_000;
 
 // fmtTokens renders a compact token count (1234 → 1.2k, 2_000_000 → 2M).
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
-  return String(n);
-}
-
 // fmtDuration renders a run duration in seconds as a compact human string.
 function fmtDuration(sec: number): string {
   if (sec <= 0) return "—";

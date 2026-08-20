@@ -1,6 +1,7 @@
 package server
 
 import (
+	"github.com/Autumn-27/artex/agent"
 	"context"
 	"encoding/json"
 	"fmt"
@@ -77,7 +78,7 @@ func (s *Server) toolDeleteAssetsByHost() actool.CoreTool {
 			for _, n := range counts {
 				total += n
 			}
-			return jsonResult(map[string]any{
+			return agent.JSONResult(map[string]any{
 				"host":            a.Host,
 				"deleted":         total,
 				"deleted_by_type": counts,
@@ -120,7 +121,7 @@ func (s *Server) toolArchiveTaskReport() actool.CoreTool {
 				return actool.Errorf("归档写回失败: " + err.Error()), nil
 			}
 			log.Printf("[report/archive] task %s: agent archived report (%d chars)", t.ID, len(md))
-			return jsonResult(map[string]any{"task_id": t.ID, "saved_chars": len(md)})
+			return agent.JSONResult(map[string]any{"task_id": t.ID, "saved_chars": len(md)})
 		})
 }
 

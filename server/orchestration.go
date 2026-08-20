@@ -14,15 +14,6 @@ import (
 	actool "github.com/Autumn-27/norma/tool"
 )
 
-// jsonResult marshals v to a JSON tool result.
-func jsonResult(v any) (actool.Result, error) {
-	b, err := json.Marshal(v)
-	if err != nil {
-		return actool.Errorf(err.Error()), nil
-	}
-	return actool.Text(string(b)), nil
-}
-
 // 本文件实现 P2「跨任务编排工具集」(docs/跑分编排 §2 P2)。这些是 host 工具——需要
 // 访问 Manager(任意任务的 Store)、Engine(暂停)、以及建任务流程,所以住在 server 层。
 // 读类工具把「现有 per-task 工具」重定向到目标任务的 store 上跑(建一个临时 ToolSet
@@ -207,7 +198,7 @@ func (s *Server) toolListTasks() actool.CoreTool {
 				}
 				out = append(out, row)
 			}
-			return jsonResult(out)
+			return agent.JSONResult(out)
 		})
 }
 
@@ -228,7 +219,7 @@ func (s *Server) toolListLLMProfiles() actool.CoreTool {
 					"id": p.ID, "name": p.Name, "model": p.Model, "format": p.Format, "is_active": p.IsDefault,
 				})
 			}
-			return jsonResult(map[string]any{"profiles": out})
+			return agent.JSONResult(map[string]any{"profiles": out})
 		})
 }
 

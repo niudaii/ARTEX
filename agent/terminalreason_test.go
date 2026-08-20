@@ -162,11 +162,11 @@ func TestAbortCausesAreWellFormed(t *testing.T) {
 
 // summaries are mostly 中文; capping by bytes used to slice a rune in half.
 func TestFirstLineCapsByRuneNotByte(t *testing.T) {
-	got := firstLine(strings.Repeat("恢复", 10), 5)
+	got := FirstLine(strings.Repeat("恢复", 10), 5)
 	if got != "恢复恢复恢…" {
 		t.Errorf("firstLine 按字节截断了: %q", got)
 	}
-	if got := firstLine("头\n尾", 100); got != "头" {
+	if got := FirstLine("头\n尾", 100); got != "头" {
 		t.Errorf("多行没截到首行: %q", got)
 	}
 }

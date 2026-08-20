@@ -1,5 +1,6 @@
 "use client";
 
+import { fmtTime } from "@/lib/format";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
@@ -65,13 +66,6 @@ const levelDot: Record<LogLine["level"], string> = {
   warn: "bg-amber-500",
   error: "bg-red-500",
 };
-
-function fmtTime(ts: string) {
-  const d = new Date(ts);
-  if (isNaN(d.getTime())) return "";
-  const p = (n: number) => String(n).padStart(2, "0");
-  return `${d.getFullYear()}-${p(d.getMonth() + 1)}-${p(d.getDate())} ${p(d.getHours())}:${p(d.getMinutes())}:${p(d.getSeconds())}`;
-}
 
 export default function LogsPage() {
   const [lines, setLines] = React.useState<LogLine[]>([]);

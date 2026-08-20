@@ -1,5 +1,6 @@
 "use client";
 
+import { fmtTime } from "@/lib/format";
 import * as React from "react";
 
 import {
@@ -32,16 +33,6 @@ function fmtSize(n: number): string {
   if (n < 1024 * 1024 * 1024) return `${(n / 1024 / 1024).toFixed(1)} MB`;
   return `${(n / 1024 / 1024 / 1024).toFixed(1)} GB`;
 }
-function fmtTime(ms: number): string {
-  return new Date(ms).toLocaleString("zh-CN", {
-    year: "2-digit",
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-  });
-}
-
 type EditState = {
   file: WorkspaceFile;
   content: string;

@@ -1,5 +1,6 @@
 "use client";
 
+import { statusTone, fmtBytes } from "@/lib/format";
 import * as React from "react";
 
 import {
@@ -47,21 +48,6 @@ function MethodBadge({ method }: { method: string }) {
       {m || "—"}
     </span>
   );
-}
-
-function statusTone(code: number) {
-  if (code >= 500) return "text-red-500";
-  if (code >= 400) return "text-amber-500";
-  if (code >= 300) return "text-blue-500";
-  if (code >= 200) return "text-emerald-500";
-  return "text-muted-foreground";
-}
-
-function fmtBytes(n?: number | null) {
-  if (!n || !Number.isFinite(n) || n <= 0) return "—";
-  const u = ["B", "KB", "MB"];
-  const i = Math.min(Math.floor(Math.log(n) / Math.log(1024)), u.length - 1);
-  return `${i === 0 ? n : (n / 1024 ** i).toFixed(1)} ${u[i]}`;
 }
 
 function Chips({ items, mono }: { items: string[]; mono?: boolean }) {

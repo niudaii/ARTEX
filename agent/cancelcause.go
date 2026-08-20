@@ -112,5 +112,5 @@ func AbortReason(ctx context.Context) (code, short, text string, ok bool) {
 			"上游 context 被取消，但取消方没有用 context.WithCancelCause 挂上具名原因。" +
 				"这属于漏网的取消点——请在 agent/cancelcause.go 补一条枚举并接到该取消处", true
 	}
-	return "other", firstLine(c.Error(), 80), c.Error(), true
+	return "other", FirstLine(c.Error(), 80), c.Error(), true
 }

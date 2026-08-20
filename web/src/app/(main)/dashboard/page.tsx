@@ -1,5 +1,6 @@
 "use client";
 
+import { fmtTokens } from "@/lib/format";
 import * as React from "react";
 
 import Link from "next/link";
@@ -62,12 +63,6 @@ function fmtRel(ts?: string | number): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h 前`;
   return `${Math.floor(h / 24)}d 前`;
-}
-
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(n);
 }
 
 const ASSET_TYPE_LABELS: Record<string, string> = {

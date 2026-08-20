@@ -292,7 +292,7 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 	// renders attachment cards; without, Detail is the full text (Summary is truncated,
 	// so the transcript lazy-loads Detail to show the message untruncated).
 	ua := userActivityWithAttachments(c.AgentKey, msg, req.Attachments)
-	ua.Summary = firstLine(msg, 200)
+	ua.Summary = agent.FirstLine(msg, 200)
 	if ua.Detail == "" {
 		ua.Detail = msg
 	}
@@ -300,7 +300,7 @@ func (s *Server) pgSendConversationMessage(w http.ResponseWriter, r *http.Reques
 		log.Printf("[conv %d] append user msg failed: %v", c.ID, err)
 	}
 	if c.Title == "" || c.Title == "新对话" {
-		title := firstLine(msg, 40)
+		title := agent.FirstLine(msg, 40)
 		if title == "" {
 			title = "附件消息"
 		}
@@ -550,12 +550,12 @@ func (s *Server) runTriggeredRun(item triggeredRun) {
 		}
 	}()
 	pg := s.m.pg
-	c, err := pg.CreateConversation(item.agentKey, firstLine(item.title, 60), nil)
+	c, err := pg.CreateConversation(item.agentKey, agent.FirstLine(item.title, 60), nil)
 	if err != nil {
 		log.Printf("[trigger] create conversation for %s failed: %v", item.agentKey, err)
 		return
 	}
-	if _, err := pg.AppendConvActivity(c.ID, db.Activity{Worker: item.agentKey, Kind: "user", Summary: firstLine(item.message, 200), Detail: item.message}); err != nil {
+	if _, err := pg.AppendConvActivity(c.ID, db.Activity{Worker: item.agentKey, Kind: "user", Summary: agent.FirstLine(item.message, 200), Detail: item.message}); err != nil {
 		log.Printf("[trigger] append msg failed: %v", err)
 	}
 	busyKey := s.convBusyKey(c.ID)
@@ -563,16 +563,4 @@ func (s *Server) runTriggeredRun(item triggeredRun) {
 	s.chatBusy[busyKey] = true
 	s.chatMu.Unlock()
 	s.runConversationSync(c, item.message, busyKey)
-}
-
-// firstLine returns a single-line, length-capped preview (shared with summaries).
-func firstLine(s string, max int) string {
-	s = strings.TrimSpace(s)
-	if i := strings.IndexAny(s, "\r\n"); i >= 0 {
-		s = s[:i]
-	}
-	if len([]rune(s)) > max {
-		s = string([]rune(s)[:max]) + "…"
-	}
-	return s
 }

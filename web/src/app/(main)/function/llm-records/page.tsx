@@ -1,5 +1,6 @@
 "use client";
 
+import { fmtTime, fmtTokens } from "@/lib/format";
 import * as React from "react";
 
 import { ChevronLeftIcon, ChevronRightIcon, Loader2Icon, RadioIcon, SearchIcon, Trash2Icon, XIcon } from "lucide-react";
@@ -25,24 +26,9 @@ import { api } from "@/lib/api";
 import type { LLMRecordDetail, LLMRecordItem, LLMTask } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
-function fmtTime(ts: string) {
-  return new Date(ts).toLocaleString("zh-CN", {
-    month: "2-digit",
-    day: "2-digit",
-    hour: "2-digit",
-    minute: "2-digit",
-    second: "2-digit",
-  });
-}
-
 function fmtLatency(ms: number) {
   if (ms < 1000) return `${ms}ms`;
   return `${(ms / 1000).toFixed(1)}s`;
-}
-
-function fmtTokens(n: number) {
-  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
-  return String(n);
 }
 
 function tryFormatJSON(s: string): string {
