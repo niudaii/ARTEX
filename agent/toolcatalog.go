@@ -46,20 +46,15 @@ func builtinToolsByAgent() map[string][]actool.CoreTool {
 	}
 }
 
-// defaultUnbound lists system tools that stay cataloged but bind to no agent by
-// default. Tools can still be manually bound in the UI.
-//
-// goal_met：默认只给 mainagent（人在环路明确确认后收官）；planner 仍不默认绑定，避免
-// 绕过逐个 prove_goal 的误判路径回流到自动规划。
-var defaultUnbound = map[string]bool{}
-
 // defaultToolAgents overrides a tool's union-of-base-tools default binding.
+// goal_met is mainagent-only by default: a human confirms task completion in
+// the loop, while the planner still uses the per-goal proof path.
 var defaultToolAgents = map[string][]string{
 	"goal_met": {"mainagent"},
 }
 
 // BuiltinToolSeeds 把各 agent 的内置工具集去重合并成 seed 列表：同名工具（如 list_assets
-// 多个 agent 都有）合成一条，Agents 取并集；defaultUnbound 里的工具则强制绑定为空。
+// 多个 agent 都有）合成一条，Agents 取并集；defaultToolAgents 可覆盖默认绑定。
 func BuiltinToolSeeds() []ToolSeed {
 	byAgent := builtinToolsByAgent()
 	order := []string{"mainagent", "goals", "planner", "worker", "auto"}
@@ -86,9 +81,6 @@ func BuiltinToolSeeds() []ToolSeed {
 	for _, k := range keys {
 		a := m[k]
 		agents := a.agents
-		if defaultUnbound[k] {
-			agents = []string{} // 入目录、可手动绑，但默认不给任何 agent（存 [] 而非 null，与其它工具一致）
-		}
 		if override, ok := defaultToolAgents[k]; ok {
 			agents = override
 		}

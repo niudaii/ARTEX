@@ -971,26 +971,7 @@ FROM activity WHERE exploration_id=$1 ORDER BY id DESC LIMIT $2`, s.expID, limit
 		return nil, 0, err
 	}
 	defer rows.Close()
-	out := []Activity{}
-	var cursor int64
-	for rows.Next() {
-		var a Activity
-		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
-			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
-			return nil, 0, err
-		}
-		if a.ID > cursor {
-			cursor = a.ID
-		}
-		out = append(out, a)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, 0, err
-	}
-	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
-		out[i], out[j] = out[j], out[i]
-	}
-	return out, cursor, nil
+	return latestActivities(rows)
 }
 
 // ActivityLatestGlobal returns the most recent activity rows across all tasks,
@@ -1006,6 +987,10 @@ FROM activity ORDER BY id DESC LIMIT $1`, limit)
 		return nil, 0, err
 	}
 	defer rows.Close()
+	return latestActivities(rows)
+}
+
+func latestActivities(rows *sql.Rows) ([]Activity, int64, error) {
 	out := []Activity{}
 	var cursor int64
 	for rows.Next() {
