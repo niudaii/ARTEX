@@ -13,7 +13,6 @@ import {
   PlusIcon,
   SearchIcon,
   SlidersHorizontalIcon,
-  StarIcon,
   Trash2Icon,
   XIcon,
 } from "lucide-react";
@@ -633,7 +632,6 @@ const TaskRow = React.memo(function TaskRow({
           <span className="truncate" title={task.description}>
             {task.description}
           </span>
-          {task.active && <StarIcon className="size-4 shrink-0 fill-amber-400 text-amber-400" />}
           {task.status === "scheduled" && (
             <span
               className="inline-flex shrink-0 items-center gap-1 rounded-full border border-violet-500/40 bg-violet-500/10 px-1.5 py-0.5 text-xs font-medium whitespace-nowrap text-violet-600 dark:text-violet-400"
