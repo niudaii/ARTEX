@@ -1,6 +1,6 @@
 ---
 name: api-recon
-description: 收集网站API接口时调用该skill。
+description: API/接口侦察 skill。触发：枚举网站 API、端点、前端路由、JS 中的接口与参数，或需要产出接口+参数清单时调用。仅做侦察，不做漏洞利用。
 ---
 
 # API Recon（前端接口侦察）

@@ -1,6 +1,6 @@
 ---
 name: react-vuln
-description: "React/Next.js 漏洞检测插件集。用 plugins/ 下的插件对 React Server Components / Next.js 漏洞做高保真探测，当前内置 react2shell 插件：检测 CVE-2025-55182（React2Shell，RSC Flight 协议反序列化未授权 RCE，CVSS 10.0），双层探测——第一层安全错误旁路（不执行任何代码），第二层可选 OOB 带外回连确认（仅执行一行 http.get 回连，不执行命令）。触发场景：用户说「检测 react2shell」「React Server Components RCE」「CVE-2025-55182」「Next.js RCE 扫描」「React 漏洞检测」「react-vuln」，或给出目标 URL 要求探测 React/Next.js 反序列化 RCE 时使用。"
+description: "React/Next.js 漏洞检测插件集。触发：检测 react2shell、React Server Components RCE、CVE-2025-55182、Next.js 反序列化 RCE，或目标 URL 需要验证 React/Next.js 漏洞时调用。当前内置 react2shell 双层探测插件，默认不执行代码。"
 ---
 
 # React 漏洞检测插件集 (react-vuln)

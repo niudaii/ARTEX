@@ -3,6 +3,9 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"fmt"
+	"log"
+	"runtime/debug"
 
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -129,6 +132,33 @@ func (o *overriddenTool) InputSchema() map[string]any { return o.schema }
 
 func (o *overriddenTool) Call(ctx context.Context, in json.RawMessage, tc *actool.ToolContext) (actool.Result, error) {
 	return o.CoreTool.Call(ctx, injectDefaults(in, o.schema), tc)
+}
+
+// safeTool 把工具 Call 里未捕获的 panic 兜底成错误结果。norma SDK 在独立 goroutine
+// 执行工具且全程无 recover,任何工具 panic 都会打死整个进程(所有在跑任务/会话陪葬,
+// 调用方表现为永久"阻塞")。在 AugmentTools 出口对全部工具统一包裹(见 wrapSafe)。
+type safeTool struct {
+	actool.CoreTool
+}
+
+func (s safeTool) Call(ctx context.Context, in json.RawMessage, tc *actool.ToolContext) (res actool.Result, err error) {
+	defer func() {
+		if r := recover(); r != nil {
+			log.Printf("[tools] %s panic: %v\n%s", s.Name(), r, debug.Stack())
+			res, err = actool.Errorf(fmt.Sprintf("工具 %s 内部错误: %v", s.Name(), r)), nil
+		}
+	}()
+	return s.CoreTool.Call(ctx, in, tc)
+}
+
+// wrapSafe 返回每个工具都套上 safeTool 的新切片(不改动入参底层数组,
+// 避免污染调用方共享的 base 列表)。
+func wrapSafe(tools []actool.CoreTool) []actool.CoreTool {
+	out := make([]actool.CoreTool, len(tools))
+	for i, t := range tools {
+		out[i] = safeTool{CoreTool: t}
+	}
+	return out
 }
 
 // injectDefaults fills scalar parameter defaults declared in the (possibly edited)

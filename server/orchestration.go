@@ -125,7 +125,15 @@ func wrTool(name, desc string, schema map[string]any, run func(context.Context, 
 		Permissions: func(context.Context, json.RawMessage, permission.Context) permission.Decision {
 			return permission.Allowed()
 		},
-		Run: func(ctx context.Context, in json.RawMessage, _ *actool.ToolContext) (actool.Result, error) {
+		Run: func(ctx context.Context, in json.RawMessage, _ *actool.ToolContext) (res actool.Result, err error) {
+			// 工具在 SDK 的独立 goroutine 里执行,未捕获的 panic 会直接打死整个进程,
+			// 所有在跑任务/会话一起陪葬(表现为调用方永久"阻塞")。统一兜底为工具错误。
+			defer func() {
+				if r := recover(); r != nil {
+					log.Printf("[orchestration] tool %s panic: %v", name, r)
+					res, err = actool.Errorf(fmt.Sprintf("工具 %s 内部错误: %v", name, r)), nil
+				}
+			}()
 			return run(ctx, in)
 		},
 	})
@@ -271,8 +279,14 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 					pin = pt.LLMProfileID
 				}
 			}
+			// pin 可能为 nil(未指定且无可继承 pin)→ 传空链,落库后回退全局激活配置;
+			// 不能直接 *pin(曾因此 nil 解引用 panic 打死整个进程)。
+			var profileIDs []int64
+			if pin != nil {
+				profileIDs = []int64{*pin}
+			}
 			t, err := s.m.CreateTaskWithOptions(a.Description, a.Goal, db.TaskCreateOptions{
-				LLMProfileIDs: []int64{*pin}, TimeoutSeconds: a.TimeoutSeconds,
+				LLMProfileIDs: profileIDs, TimeoutSeconds: a.TimeoutSeconds,
 				PlanHeartbeatSeconds: a.PlanHeartbeatSeconds, SkipIntercept: a.SkipIntercept,
 				ScopeLocked: a.ScopeLocked,
 			})

@@ -56,26 +56,37 @@ AI 自主渗透测试系统（Go 后端 + Next.js 前端）
 
 ---
 
-## 安装
+## 部署
 
 > 依赖数据库 **PostgreSQL**；探索需配置 **LLM**（`ANTHROPIC_API_KEY` 或 `OPENAI_API_KEY`，也可在 UI 里配）。
 
-### 方式一：一键安装脚本（推荐）
+### 本地打包
 
 ```bash
 git clone https://github.com/Autumn-27/ARTEX.git
 cd ARTEX
-./install.sh
+./pack.sh [amd64|arm64]
 ```
 
-脚本会：检测 / 自动安装 Docker → 让你选 **① 全部 Docker** 或 **② 本地编译运行**：
+`pack.sh` 会构建前端、交叉编译 Linux 二进制、编译内置工具，并生成 `artex-deploy.tar.gz`。可通过 `ARTEX_TASK_URL` 写入任务回调地址。
 
-- **① 全部 Docker**：填一个 Postgres 密码（可回车随机）→ 自动写 `.env` → `docker compose up -d`。
-- **② 本地运行**：选数据库（连已有 / 用 Docker 起一个）→ 生成 `config.json` → `go` 编译内嵌单二进制 → 启动。
+### 一键远程部署
 
-装好后打开 **http://localhost:8787**（首次进入 `/setup` 设置管理员密码）。
+```bash
+REMOTE_DIR=artex SSH_PORT=22 ./deploy.sh user@server [amd64|arm64]
+```
 
-### 方式二：Docker Compose（手动）
+`deploy.sh` 会调用 `pack.sh`，上传部署包到远端，执行 `build-local.sh` 构建镜像并启动。首次部署和更新使用同一条命令；`REMOTE_DIR`、`SSH_PORT`、`ARTEX_TASK_URL` 可按需通过环境变量指定。
+
+### 本地启动
+
+```bash
+./dev.sh
+```
+
+`dev.sh` 会同时启动后端 `:8787`、流量代理 `:8788` 和前端开发服务器 `:5173`。
+
+### Docker Compose（手动）
 
 ```bash
 git clone https://github.com/Autumn-27/ARTEX.git
@@ -87,7 +98,7 @@ docker compose up -d          # 拉取 autumn27/artex 镜像 + postgres
 
 镜像已含常用工具（ripgrep/curl/vim/npm/nmap…）；`./skills` 与 `./data` 以绑定挂载持久化。
 
-### 方式三：下载预编译二进制（Releases）
+### 下载预编译二进制（Releases）
 
 到 [Releases](https://github.com/Autumn-27/ARTEX/releases) 下载对应平台的 zip，解压后得到 `artex` + `skills/` + `config.example.json`：
 
@@ -96,37 +107,9 @@ cp config.example.json config.json   # 填好 database 连接
 ./artex                              # → http://localhost:8787
 ```
 
-### 方式四：从源码编译单二进制
-
-```bash
-# 1) 前端静态导出
-cd web && npm ci && npm run build:static && cd ..
-# 2) 拷进内嵌目录
-cp -r web/out server/webui/dist
-# 3) 编译（-tags embedui 才内嵌前端）
-CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
-./artex
-```
-
----
-
-## 更新升级
-
 > 升级只换程序、不动数据：Postgres 数据卷 `pgdata`、`./data`（jwt.key / SQLite 等）、`./skills` 都会保留。**数据库迁移无需手动执行**——`artex` 每次启动会幂等重跑 `schema.sql`（含 `ADD COLUMN` / `CREATE INDEX IF NOT EXISTS`），即“重启即迁移”。升级前仍建议先备份 `./data` 与数据库。
 
-### 方式一：一键更新脚本（推荐）
-
-```bash
-cd ARTEX
-./update.sh
-```
-
-脚本先可选 `git pull` 拉取最新代码，再让你选 **① Docker 更新** 或 **② 本地编译更新**（与 `install.sh` 对应）：
-
-- **① Docker**：可指定目标镜像 tag（回车沿用 `.env` 的 `ARTEX_TAG`，缺省 `latest`）→ `docker compose pull` → `docker compose up -d`（换新镜像重启即自动迁移）。
-- **② 本地**：重建前端静态产物 → 重新编译 `./artex`（完成后重启进程生效）。
-
-### 方式二：Docker Compose（手动）
+### 手动更新
 
 ```bash
 cd ARTEX
@@ -135,25 +118,6 @@ git pull                       # 更新 compose / 脚本（可选）
 docker compose pull artex
 docker compose up -d artex     # 换新镜像重启 → 自动迁移 schema
 docker image prune -f          # 清理旧镜像（可选）
-```
-
-### 方式三：预编译二进制（Releases）
-
-到 [Releases](https://github.com/Autumn-27/ARTEX/releases) 下载新版本 zip，停掉旧进程后覆盖 `artex` 与 `skills/`（保留你的 `config.json` 与 `data/`），重启即可：
-
-```bash
-cp -r <解压目录>/skills ./ && cp <解压目录>/artex ./
-./artex
-```
-
-### 方式四：从源码编译
-
-```bash
-git pull
-cd web && npm ci && npm run build:static && cd ..
-cp -r web/out server/webui/dist
-CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
-# 重启 ./artex
 ```
 
 ---
@@ -189,10 +153,30 @@ CGO_ENABLED=0 go build -tags embedui -o artex ./cmd/artex
 ./dev.sh    # 后端(:8787) + 流量代理(:8788) + 前端 next dev(:5173) → http://localhost:5173
 ```
 
+### 根目录脚本
+
+| 脚本 | 用途 |
+| --- | --- |
+| `pack.sh` | 本地打包：构建前端、Linux 二进制、内置工具和完整部署包。 |
+| `deploy.sh` | 一键远程部署：打包、上传、远端构建镜像并启动。 |
+| `dev.sh` | 本地启动：同时运行后端、流量代理和前端开发服务器。 |
+
 - 后端：`go run ./cmd/artex`（不带 `-tags embedui` 则不内嵌前端）
 - 前端：`cd web && npm run dev`（`/api` 反代到后端，带热更新）
 - 测试：`go test ./...`
 - Mock 预览（无后端）：`cd web && NEXT_PUBLIC_MOCK=1 npm run dev`
+
+### 前端脚本
+
+| 命令 | 用途 |
+| --- | --- |
+| `npm run dev` | 启动 Next.js 开发服务器，支持热更新和 `/api` 反代。 |
+| `npm run build:static` | 生成纯静态前端到 `web/out`，用于内嵌后端或独立静态部署。 |
+| `npm run format` | 用 Biome 自动格式化前端代码。 |
+| `npm run check` | 只报错误的快速质量检查，适合日常开发。 |
+| `npm run check:all` | 完整 Biome 检查，包含警告，用于提交前审计。 |
+| `npm run generate:presets` | 从主题 CSS 生成 `theme.ts` 预设元数据；pre-commit 会自动执行。 |
+| `npm run prepare` | 安装依赖后初始化 Husky Git 钩子。 |
 
 ---
 

@@ -1,20 +1,21 @@
 #!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────
-# ARTEX 公网部署打包脚本（本地二进制 bind-mount 模式）
+# ARTEX 本地部署打包脚本（本地二进制 bind-mount 模式）
 #
-# 用法：./pack.sh [部署URL] [目标架构]
-#   部署URL：如 http://1.2.3.4:8787（写入 .env 的 ARTEX_TASK_URL）
+# 用法：./pack.sh [目标架构]
 #   目标架构：amd64（默认）/ arm64
+# 可选环境变量：
+#   ARTEX_TASK_URL=http://1.2.3.4:8787  写入 .env 的 ARTEX_TASK_URL
 #
 # 产出 artex-deploy/，内含交叉编译的 Linux 二进制 + 一键启动脚本
-# 更新二进制：重新编译 → scp 覆盖 → ./restart.sh
+# 远程部署：./deploy.sh user@server [目标架构]
 # ─────────────────────────────────────────────────────────
 set -euo pipefail
 cd "$(cd "$(dirname "$0")" && pwd)"
 
 DEST="artex-deploy"
-DEPLOY_URL="${1:-}"
-ARCH="${2:-amd64}"
+ARCH="${1:-amd64}"
+DEPLOY_URL="${ARTEX_TASK_URL:-}"
 
 info(){ printf '\033[36m[*]\033[0m %s\n' "$*"; }
 ok(){   printf '\033[32m[+]\033[0m %s\n' "$*"; }
@@ -196,10 +197,16 @@ set -euo pipefail
 cd "$(cd "$(dirname "$0")" && pwd)"
 
 echo "[1/5] 准备构建上下文…"
-mkdir -p dist/amd64 && cp artex dist/amd64/artex
-# 容器内置工具（jwtcrack/socctl 等）→ tools/bin/amd64，Dockerfile 会 COPY 进 /usr/local/bin
+ARCH="$(uname -m)"
+case "$ARCH" in
+    x86_64) ARCH=amd64 ;;
+    aarch64|arm64) ARCH=arm64 ;;
+    *) echo "[!] 不支持的远端架构：$ARCH"; exit 1 ;;
+esac
+mkdir -p "dist/$ARCH" && cp artex "dist/$ARCH/artex"
+# 容器内置工具（jwtcrack/socctl 等）→ tools/bin/<arch>，Dockerfile 会 COPY 进 /usr/local/bin
 if [ -d tools-bin ] && ls tools-bin/* >/dev/null 2>&1; then
-    mkdir -p tools/bin/amd64 && cp tools-bin/* tools/bin/amd64/
+    mkdir -p "tools/bin/$ARCH" && cp tools-bin/* "tools/bin/$ARCH/"
     echo "[+] 内置工具已放入构建上下文：$(ls tools-bin | tr '\n' ' ')"
 fi
 
@@ -233,8 +240,8 @@ ENTRYPOINT ["/app/artex"]
 CMD ["-addr", ":8787", "-proxy", ":8788"]
 EOF
 
-echo "[3/5] 本地构建镜像 artex:local（约 3-5 分钟）…"
-docker build -t artex:local .
+echo "[3/5] 本地构建镜像 artex:local（${ARCH}，约 3-5 分钟）…"
+docker build --build-arg TARGETARCH="$ARCH" -t artex:local .
 
 echo "[4/5] 改 docker-compose.yml 用本地镜像…"
 if grep -q "autumn27/artex" docker-compose.yml; then
@@ -313,13 +320,12 @@ Docker 镜像 `artex:local`（本地构建）提供运行时环境（Python / No
 ./build-local.sh    # 本地构建镜像 + 启动
 ```
 
-## 更新二进制（日常）
+## 更新部署
 
-本地重新打包后，传新二进制到服务器，然后重启：
+在源码机器执行一键远程部署：
 
 ```bash
-scp artex-deploy/artex user@server:~/artex-deploy/
-ssh user@server 'cd artex-deploy && ./restart.sh'
+./deploy.sh user@server amd64
 ```
 
 ## 文件说明
@@ -349,10 +355,8 @@ docker compose up -d              # 启动（已构建镜像后）
 工具烘焙在镜像里，不能像 `./artex` 那样热替换：
 
 ```bash
-# 本地（macOS）重新打包（pack.sh 会自动重编工具）→ 整包上传 → 重建镜像
-./pack.sh
-scp artex-deploy.tar.gz user@server:~/
-ssh user@server 'tar xzf artex-deploy.tar.gz && cd artex-deploy && ./build-local.sh'
+# 在源码机器执行一键远程部署（pack.sh 会自动重编工具并触发远端重建镜像）
+./deploy.sh user@server amd64
 ```
 README
 ok "已生成 README.md"
@@ -365,16 +369,6 @@ echo ""
 echo "═══════════════════════════════════════════════"
 echo "  打包完成！（本地二进制 bind-mount 模式）"
 echo ""
-echo "  首次部署："
-echo "    scp ${DEST}.tar.gz user@server:~/"
-echo "    ssh user@server 'tar xzf ${DEST}.tar.gz && cd ${DEST} && ./build-local.sh'"
-echo ""
-echo "  更新二进制（日常）："
-echo "    ./pack.sh                                    # 本地重新打包"
-echo "    scp ${DEST}/artex user@server:~/artex-deploy/ # 只传二进制"
-echo "    ssh user@server 'cd artex-deploy && ./restart.sh'"
-echo ""
-echo "  更新内置工具（jwtcrack/socctl）："
-echo "    ./pack.sh && scp ${DEST}.tar.gz user@server:~/"
-echo "    ssh user@server 'tar xzf ${DEST}.tar.gz && cd ${DEST} && ./build-local.sh' # 需重建镜像"
+echo "  一键远程部署 / 更新："
+echo "    ./deploy.sh user@server ${ARCH}"
 echo "═══════════════════════════════════════════════"

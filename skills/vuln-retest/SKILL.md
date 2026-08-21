@@ -1,13 +1,9 @@
 ---
 name: vuln-retest
 description: >
-  漏洞复测治理 skill。支持两种漏洞来源：ARTEX finding 系统（list_findings /
-  node_detail）和 SOC 漏洞平台（socctl detail）。读取漏洞详情、提取 PoC、
-  重放验证、判定修复状态的系统化流程。根据漏洞类型选择 HTTP 重放、
-  浏览器 DOM 验证或 OOB 检测策略，输出含证据的复测结论。
-  当任务要求复测/验证已报漏洞是否修复、retest、回归验证、SOC 漏洞复测时调用。
-  本 skill 不提供 payload——模型自带安全知识，本 skill 只负责让模型
-  按正确路径系统化复测，避免遗漏验证维度和误判修复状态。
+  漏洞复测治理 skill。触发：复测、验证已报漏洞是否修复、回归验证、SOC 漏洞复测时
+  调用。支持 ARTEX finding 与 SOC 漏洞详情，按漏洞类型选择 HTTP 重放、浏览器 DOM
+  验证或 OOB 检测，输出含证据的修复结论。
 ---
 
 # 漏洞复测治理

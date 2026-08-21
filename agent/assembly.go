@@ -55,5 +55,6 @@ func AugmentTools(ctx context.Context, agentKey string, base []actool.CoreTool) 
 	if ToolResolve != nil {
 		out = ToolResolve(ctx, agentKey, out)
 	}
-	return out, def, cleanup
+	// 统一 panic 兜底:SDK 无 recover,任何工具 panic 都会打死整个进程。
+	return wrapSafe(out), def, cleanup
 }

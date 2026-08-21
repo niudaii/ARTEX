@@ -237,10 +237,19 @@ ON CONFLICT (name) DO NOTHING`,
 // declares `mcps: ScopeSentry`, which only takes effect once it's made visible and
 // that MCP is enabled/configured.
 var builtinSkillVisibility = map[string][]string{
-	"api-recon": {"auto", "worker"},
+	"api-recon":          {"auto", "worker"},
+	"bypass-403":         {"worker"},
+	"bypass-pro":         {"worker"},
+	"java-vuln":          {"worker"},
+	"jwt-testing":        {"worker"},
+	"pentest-doctrine":   {"planner", "worker"},
+	"react-vuln":         {"worker"},
+	"redteam-cve-lookup": {"worker"},
 	// report-archive is invoked by the auto agent during the 「报告归档」 run
 	// (server.archiveMessage); invisible to pentest workers on purpose.
 	"report-archive": {"auto"},
+	"tsec-benchmark": {"worker"},
+	"vuln-retest":    {"worker"},
 }
 
 // seedBuiltinSkillVisibility binds the shipped built-in skills to their default

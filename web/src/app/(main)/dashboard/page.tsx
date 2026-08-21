@@ -234,6 +234,8 @@ export default function DashboardPage() {
     return m;
   }, [tasks]);
 
+  const pendingStartCount = (tasksByStatus.created ?? 0) + (tasksByStatus.scheduled ?? 0);
+
   const activeTaskCount = React.useMemo(
     () => tasks.filter((task) => !TERMINAL_TASK_STATUSES.has(task.status)).length,
     [tasks],
@@ -501,9 +503,7 @@ export default function DashboardPage() {
             {tasksByStatus.running > 0 && <span className="text-blue-400">探索 {tasksByStatus.running}</span>}
             {tasksByStatus.queued > 0 && <span className="text-amber-400">排队 {tasksByStatus.queued}</span>}
             {tasksByStatus.paused > 0 && <span className="text-amber-400">暂停 {tasksByStatus.paused}</span>}
-            {(tasksByStatus.created > 0 || tasksByStatus.scheduled > 0) && (
-              <span className="text-violet-400">待启动 {tasksByStatus.created + tasksByStatus.scheduled}</span>
-            )}
+            {pendingStartCount > 0 && <span className="text-violet-400">待启动 {pendingStartCount}</span>}
             {tasksByStatus.done > 0 && <span className="text-emerald-400">完成 {tasksByStatus.done}</span>}
             {tasks.length === 0 && <span className="text-muted-foreground">暂无任务</span>}
           </CardContent>

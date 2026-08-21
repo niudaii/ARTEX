@@ -39,11 +39,11 @@
 
 - Go: run `gofmt` on every changed `.go` file; keep functions small and prefer table-driven tests.
 - Go validation: run `go build ./...`, `go vet ./...`, and focused `go test` packages before handing off.
-- Frontend: run `pnpm --dir web exec biome check --write --diagnostic-level=error` on changed files.
+- Frontend: run `cd web && npm exec -- biome check --write --diagnostic-level=error` on changed files.
 - Frontend formatting: 2-space indentation, double quotes, semicolons, trailing commas, and 120-column lines.
 - TypeScript: prefer explicit domain types from `web/src/lib/types.ts`; avoid introducing new `any`.
 - React: prefer stable callback dependencies; do not add new dependency arrays used only as change triggers.
 - React lists: use stable domain IDs as keys; index keys are allowed only for static, non-reorderable legacy data.
 - Error handling: empty catch blocks must explain why the error is intentionally ignored.
 - Accessibility: new interactive elements need explicit button types and keyboard handlers; new images should use `next/image`.
-- Validation: run `pnpm --dir web exec tsc --noEmit`; use `pnpm --dir web run check:all` when auditing legacy warnings.
+- Validation: run `cd web && npm exec -- tsc --noEmit`; use `cd web && npm run check:all` when auditing legacy warnings.

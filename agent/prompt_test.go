@@ -54,6 +54,9 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	if !strings.Contains(withProxy, "traffic_search") {
 		t.Fatalf("worker with proxy should inject trafficTool: %q", withProxy)
 	}
+	if !strings.Contains(withProxy, "Skill 使用") {
+		t.Fatalf("worker missing code-owned skill guidance: %q", withProxy)
+	}
 	if !strings.Contains(withProxy, "中间产物输出规约") {
 		t.Fatalf("worker missing artifact tail: %q", withProxy)
 	}
@@ -63,5 +66,8 @@ func TestRenderSystemOverrideAndFallback(t *testing.T) {
 	}
 	if strings.Contains(noProxy, "traffic_search") {
 		t.Fatalf("worker without proxy must NOT inject trafficTool: %q", noProxy)
+	}
+	if !strings.Contains(noProxy, "Skill 使用") {
+		t.Fatalf("worker without proxy missing skill guidance: %q", noProxy)
 	}
 }

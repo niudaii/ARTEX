@@ -1,12 +1,9 @@
 ---
 name: bypass-403
 description: >
-  403/401 访问拒绝绕过治理 skill。提供绕过路径决策矩阵、请求头伪造策略、
-  URL 重写技巧、方法覆盖绕过和差异分析方法。当目标返回 403/401 且需要
-  测试是否存在访问控制缺陷时调用。本 skill 不提供 payload 字典——
-  模型自带绕过知识，本 skill 只负责让模型按正确路径系统化测试，
-  避免随机尝试和遗漏关键绕过向量。具体 payload 分类参考
-  bypass-pro/references/payloads.md 第 1 节。
+  403/401 访问拒绝绕过治理 skill。触发：目标返回 403/401，且需要系统化测试
+  是否存在访问控制缺陷时调用。覆盖路径重写、请求头伪造、方法覆盖与差异分析；
+  payload 分类参考 bypass-pro/references/payloads.md 第 1 节。
 ---
 
 # 403/401 绕过治理

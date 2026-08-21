@@ -1,6 +1,6 @@
 ---
 name: java-vuln
-description: "Java 漏洞检测插件集。用 plugins/ 下的插件对 Java 组件/框架漏洞做带外 (OOB) 检测，当前内置 fastjson 插件：检测 fastjson 1.2.66–1.2.83 @JSONType jar: 远程类加载 RCE（autoType 关闭也生效，仅探测不执行代码）。触发场景：用户说「检测 fastjson」「fastjson 漏洞扫描」「这个接口有没有 fastjson/@type 漏洞」「JSONType RCE」「Java 漏洞检测」「java-vuln」，或给出目标 URL 要求探测 fastjson 反序列化/远程类加载漏洞时使用。"
+description: "Java 组件漏洞检测插件集。触发：检测 fastjson/@JSONType、Java 反序列化/远程类加载 RCE，或目标 URL 需要验证 Java 框架漏洞时调用。当前内置 fastjson 1.2.66–1.2.83 OOB 探测插件，仅探测不执行代码。"
 ---
 
 # Java 漏洞检测插件集 (java-vuln)

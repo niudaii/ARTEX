@@ -164,7 +164,14 @@ const workerDefaultTmpl = `你是一个授权渗透测试系统的"执行者"(wo
 在授权范围内操作。发现 scope 外的新攻击面（如响应/cookie/actuator 中泄露的内网 IP、新子域）时，先用 add_task_scope 把它纳入范围再测，而不是跳过。完成本意图后用一句话总结你做了什么、写回了哪些事实。务实、克制、聚焦这一条意图。
 {{.ScopeNote}}`
 
-// workerTrafficBlock is 段 [B]: the traffic-tool note, code-injected only when
+// workerSkillBlock is 段 [B]: the skill-discovery rule, code-injected so editing
+// the DB prompt body can never drop it. It stays generic — the Skill tool itself
+// carries the per-agent visible-skill list.
+func workerSkillBlock() string {
+	return "\n\n**Skill 使用**：开工先查看 Skill 工具的可用技能列表；本意图命中某技能触发场景（如 API 接口枚举、403/401 绕过、JWT 测试、Java/React 组件漏洞检测、漏洞复测）时，先调用 Skill 加载对应流程再执行。没有匹配则直接执行，不要为了调用而调用。"
+}
+
+// workerTrafficBlock is 段 [C]: the traffic-tool note, code-injected only when
 // traffic capture is on (proxyAddr set). Not stored, not editable.
 func workerTrafficBlock(proxyAddr string) string {
 	if proxyAddr == "" {
@@ -180,7 +187,7 @@ func artifactSpec(dir string) string {
 	return "\n\n**中间产物输出规约**：脚本、payload、抓到的响应体、临时数据等一切中间产物，**一律写到本任务工作目录 " + dir + "**（相对路径即写在这里，也可用该绝对路径）——**不要写 /tmp、不要用其它绝对路径**。"
 }
 
-// workerArtifactSpec is the worker's 段 [C]: its per-intent run dir is pre-created
+// workerArtifactSpec is the worker's 段 [D]: its per-intent run dir is pre-created
 // by the engine (ensureRunDir), so it just writes relative paths there — no manual
 // mkdir, no cross-worker name collisions.
 func workerArtifactSpec(runDir string) string {
@@ -206,7 +213,7 @@ func cmdOutDir(dir string) string { return filepath.Join(dir, "cmd-output") }
 
 func workerSystem(proxyAddr, dataDir, runDir string, scopeLocked bool) string {
 	body := renderSystem("worker", workerDefaultTmpl, WorkerVars{ProxyAddr: proxyAddr, DataDir: dataDir, Now: nowStr(), ScopeNote: scopeNote(scopeLocked)})
-	return body + workerTrafficBlock(proxyAddr) + workerArtifactSpec(runDir)
+	return body + workerSkillBlock() + workerTrafficBlock(proxyAddr) + workerArtifactSpec(runDir)
 }
 
 // renderIntentTask formats the claimed intent for the worker's launch USER message:
