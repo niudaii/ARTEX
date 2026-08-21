@@ -113,11 +113,15 @@ func (s *AssetStore) AddAutoScope(taskID int64, assetType, domain, rawURL, ip st
 	return nil
 }
 
-// AddAgentScope parses an agent-provided (kind,value) and records it (source='agent').
+// AddAgentScope parses a (kind,value) pair and records it as task scope.
+// source is "agent" when called from an LLM tool, "manual" from the UI.
 // company: value = company name or id (must already exist). root_domain/subdomain:
 // value = a domain. ip/cidr: value = an IP or CIDR (bare IP → /32,/128).
-func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason string) (TaskScope, error) {
-	ts := TaskScope{TaskID: taskID, Kind: kind, Source: "agent", Reason: reason}
+func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source string) (TaskScope, error) {
+	if source == "" {
+		source = "agent"
+	}
+	ts := TaskScope{TaskID: taskID, Kind: kind, Source: source, Reason: reason}
 	if taskID <= 0 {
 		return ts, fmt.Errorf("需要 task_id")
 	}
@@ -182,6 +186,17 @@ func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason string) (Ta
 		return ts, err
 	}
 	return ts, nil
+}
+
+// DeleteTaskScope removes a single scope row by id, scoped to the given task.
+// Returns whether a row was actually deleted.
+func (s *AssetStore) DeleteTaskScope(taskID, scopeID int64) (bool, error) {
+	res, err := s.db.Exec(`DELETE FROM task_scope WHERE id=$1 AND task_id=$2`, scopeID, taskID)
+	if err != nil {
+		return false, err
+	}
+	n, _ := res.RowsAffected()
+	return n > 0, nil
 }
 
 // ListTaskScope returns all scope rows for a task.
@@ -347,23 +362,23 @@ func hostPortOf(n *CoverageGraphNode) (string, int) {
 	return host, port
 }
 
-// BuildCoverageGraph assembles the full coverage graph for a task: every in-scope
-// asset (all types) plus the connector root domains / companies needed to link
-// them, with a tested flag on each in-scope asset. The frontend does the folding
-// and highlighting; this only returns nodes + derived containment edges.
-func (s *AssetStore) BuildCoverageGraph(taskID, expID int64) (*CoverageGraphData, error) {
+// BuildCoverageGraph assembles the full coverage graph for a task and its direct
+// read-only sources: every in-scope asset plus connector root domains/companies,
+// with current-or-source fact anchors reflected in Tested. The legacy expID
+// argument is retained for API compatibility; the task registry is authoritative.
+func (s *AssetStore) BuildCoverageGraph(taskID, _ int64) (*CoverageGraphData, error) {
 	g := &CoverageGraphData{Nodes: []CoverageGraphNode{}, Edges: []CoverageGraphEdge{}}
 	if taskID <= 0 {
 		return g, nil
 	}
-	rows, err := s.db.Query(`WITH `+covTargetCTE+`
+	rows, err := s.db.Query(`WITH `+contextCoverageCTE+`
 SELECT a.id, a.type, COALESCE(a.company_id,0),
        COALESCE(a.domain,''), COALESCE(a.root_domain,''), COALESCE(a.ip,''),
        COALESCE(a.url,''), COALESCE(a.port,0), COALESCE(a.service_type,''),
        COALESCE(a.app_name,''), COALESCE(a.page_title,''), COALESCE(a.status_code,0),
        (a.id IN (SELECT asset_id FROM tested)) AS tested
 FROM assets a JOIN target t ON t.id = a.id
-ORDER BY a.id`, taskID, expID)
+ORDER BY a.id`, taskID)
 	if err != nil {
 		return nil, err
 	}

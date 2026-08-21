@@ -8,8 +8,14 @@
 package agent
 
 import (
+	"bytes"
 	"context"
+	"fmt"
+	"io"
+	"net/http"
+	"net/url"
 	"os"
+	"regexp"
 	"strings"
 	"time"
 
@@ -35,9 +41,14 @@ type Config struct {
 	// ContextWindowK is the model's context window in K tokens (user-configured),
 	// used to size compaction thresholds. 0 = default; see CompactionWindow.
 	ContextWindowK int
-	// ReasoningEffort selects the thinking mode: "" = 默认(不发送思考参数);
-	// "off" = 关闭(thinking.type=disabled); "low"/"medium"/"high"/"max" = 开启并设强度.
-	// NewProvider derives the provider-specific request fields from it.
+	// ThinkingType 独立控制思考「开关」字段(thinking.type):
+	//   "" = 不发送(默认,兼容不支持该字段的模型); "disabled" = 显式关闭;
+	//   "enabled" = 开启. 与 ReasoningEffort 完全解耦——有些接口没有 thinking 字段、
+	//   只靠强度参数就能激活思考,故两者可各自单独设置.
+	ThinkingType string
+	// ReasoningEffort 独立控制思考「强度」字段:
+	//   "" = 不发送(默认); "low"/"medium"/"high"/"xhigh"/"max" = 对应强度.
+	//   OpenAI 映射为顶层 reasoning_effort;Anthropic 映射为 output_config.effort.
 	ReasoningEffort string
 }
 
@@ -173,33 +184,113 @@ func isQwenModel(model string) bool {
 // limiter lives on the single provider instance — so planner + all workers +
 // main agent (which share this provider) are bounded by one shared rate limit.
 func (c Config) NewProvider() (llm.Provider, error) {
-	lc := llm.Config{
-		Format:  c.Format,
-		BaseURL: c.BaseURL,
-		APIKey:  c.APIKey,
-		Model:   c.Model,
-		Proxy:   c.Proxy,
+	client, err := quotaAwareHTTPClient(c.Proxy)
+	if err != nil {
+		return nil, err
 	}
-	// Derive the provider thinking params from the single UI selector:
-	//   "" → omit both (provider default); "off" → disable; else → enable + effort.
-	switch c.ReasoningEffort {
-	case "":
-		// leave both empty → omitted from the request
-	case "off":
-		lc.ThinkingType = "disabled"
-	default:
-		lc.ThinkingType = "enabled"
-		effort := c.ReasoningEffort
-		// Qwen models use "xhigh" as the top reasoning tier instead of "max".
-		if isQwenModel(c.Model) && effort == "max" {
-			effort = "xhigh"
-		}
-		lc.ReasoningEffort = effort
+	lc := llm.Config{
+		Format:     c.Format,
+		BaseURL:    c.BaseURL,
+		APIKey:     c.APIKey,
+		Model:      c.Model,
+		HTTPClient: client,
+	}
+	lc.ThinkingType = c.ThinkingType
+	lc.ReasoningEffort = c.ReasoningEffort
+	if isQwenModel(c.Model) && lc.ReasoningEffort == "max" {
+		lc.ReasoningEffort = "xhigh"
 	}
 	if c.RatePerSecond > 0 || c.RatePerMinute > 0 {
 		lc.RateLimit = &llm.RateLimit{PerSecond: c.RatePerSecond, PerMinute: c.RatePerMinute}
 	}
 	return llm.NewProvider(lc)
+}
+
+// IsQuotaExhaustedMessage deliberately recognizes only explicit balance,
+// billing, credit, or quota-exhaustion signals. Generic 429/rate-limit text,
+// authentication failures, network errors, and server failures are excluded.
+var nonFailoverHTTPStatus = regexp.MustCompile(`(?:status(?:\s+code)?|http(?:\s+status)?)\s*[=:]?\s*(?:401|403|5\d\d)\b`)
+var transientQuotaLimit = regexp.MustCompile(`(?i)(?:\b(?:rpm|tpm|rpd|qps)\b|quota[_\s-]*metric|rate[_\s-]*limit|too many requests|(?:requests?|tokens?)\s+(?:per|/)\s*(?:second|minute)|(?:per|/)\s*(?:second|minute)\s+(?:requests?|tokens?)|generate[_\s-]*requests[_\s-]*per[_\s-]*(?:minute|second)|tokens?[_\s-]*per[_\s-]*(?:minute|second))`)
+
+func IsQuotaExhaustedMessage(message string) bool {
+	message = strings.ToLower(message)
+	// Authentication/authorization and provider-side 5xx failures never rotate,
+	// even when a gateway happens to echo a quota-looking phrase in the body.
+	if nonFailoverHTTPStatus.MatchString(message) {
+		return false
+	}
+	// Provider APIs frequently describe an ordinary rate limit as "quota
+	// exceeded", especially Google-style responses containing a quota metric.
+	// These limits recover with time and must stay on the current provider.
+	if transientQuotaLimit.MatchString(message) {
+		return false
+	}
+	markers := []string{
+		"insufficient_quota", "quota_exceeded", "quota exceeded", "quota exhausted",
+		"exceeded your current quota", "billing_hard_limit_reached",
+		"billing hard limit", "billing_not_active", "credit balance", "insufficient credit",
+		"insufficient balance", "balance is too low", "payment required", "status 402",
+		"余额不足", "额度不足", "额度已用尽", "欠费",
+	}
+	for _, marker := range markers {
+		if strings.Contains(message, marker) {
+			return true
+		}
+	}
+	// gRPC RESOURCE_EXHAUSTED is overloaded for both account quota and ordinary
+	// request-rate limiting. Preserve it as an explicit exhaustion signal only
+	// when the same error does not identify a transient rate limit.
+	return strings.Contains(message, "resource_exhausted") &&
+		!strings.Contains(message, "rate limit") &&
+		!strings.Contains(message, "too many requests")
+}
+
+// quotaAwareTransport preserves Norma's normal retry behavior except for a 429
+// whose body explicitly says the account quota/balance is exhausted. Norma's
+// retry loop treats every 429 as transient; normalizing only that response to
+// 402 lets a task router fail over immediately while retaining the original
+// response body for provider-specific classification and audit logs.
+type quotaAwareTransport struct{ base http.RoundTripper }
+
+func (t quotaAwareTransport) RoundTrip(req *http.Request) (*http.Response, error) {
+	resp, err := t.base.RoundTrip(req)
+	if err != nil || resp == nil || resp.StatusCode != http.StatusTooManyRequests {
+		return resp, err
+	}
+	body, readErr := io.ReadAll(resp.Body)
+	_ = resp.Body.Close()
+	resp.Body = io.NopCloser(bytes.NewReader(body))
+	resp.ContentLength = int64(len(body))
+	if readErr != nil {
+		return resp, nil
+	}
+	if IsQuotaExhaustedMessage(string(body)) {
+		resp.StatusCode = http.StatusPaymentRequired
+		resp.Status = "402 Payment Required"
+	}
+	return resp, nil
+}
+
+func quotaAwareHTTPClient(proxy string) (*http.Client, error) {
+	transport := http.DefaultTransport.(*http.Transport).Clone()
+	proxy = strings.TrimSpace(proxy)
+	if proxy == "" {
+		transport.Proxy = http.ProxyFromEnvironment
+	} else {
+		proxyURL, err := url.Parse(proxy)
+		if err != nil {
+			return nil, fmt.Errorf("llm: invalid proxy %q: %w", proxy, err)
+		}
+		switch proxyURL.Scheme {
+		case "http", "https", "socks5":
+		case "":
+			return nil, fmt.Errorf("llm: proxy %q missing scheme (use http://, https:// or socks5://)", proxy)
+		default:
+			return nil, fmt.Errorf("llm: unsupported proxy scheme %q (use http, https or socks5)", proxyURL.Scheme)
+		}
+		transport.Proxy = http.ProxyURL(proxyURL)
+	}
+	return &http.Client{Transport: quotaAwareTransport{base: transport}}, nil
 }
 
 // TestConnection makes a minimal real completion to verify the provider/model/

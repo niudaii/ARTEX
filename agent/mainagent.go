@@ -21,6 +21,7 @@ type MainAgent struct {
 	model       string
 	tx          *transcript.Store // raw LLM conversation persistence (nil = off)
 	window      int               // context window in tokens (for compaction)
+	windowFn    func() int        // optional dynamic task-chain minimum
 	maxTurns    int               // max agent turns per run (0 = unlimited)
 	proxyAddr   string            // recording proxy for WebFetch (empty = direct)
 	proxyCACert string            // recording proxy's CA cert path (HTTPS verify)
@@ -30,6 +31,15 @@ type MainAgent struct {
 
 func NewMainAgent(prov llm.Provider, model, workDir string, tx *transcript.Store, window, maxTurns int) *MainAgent {
 	return &MainAgent{prov: prov, model: model, workDir: workDir, tx: tx, window: window, maxTurns: maxTurns}
+}
+
+func (m *MainAgent) SetCompactionWindowResolver(fn func() int) { m.windowFn = fn }
+
+func (m *MainAgent) compactionWindow() int {
+	if m.windowFn != nil {
+		return m.windowFn()
+	}
+	return m.window
 }
 
 // SetProxy points the main agent's WebFetch at the recording proxy plus the CA
@@ -76,6 +86,7 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, as *db.AssetStore, t
 	tsx.SetScopeLocked(scopeLocked)
 	// 领域工具 + 基础默认工具集（Read/Write/Edit/MultiEdit/LS/Glob/Grep/Bash）
 	base := append(tsx.MainAgentTools(), actool.DefaultTools()...)
+	ctx = WithRunInfo(ctx, RunInfo{TaskID: taskID, ExplorationID: explorationID(ts)})
 	tools, def, cleanup := AugmentTools(ctx, "mainagent", base)
 	defer cleanup()
 	// 本任务的工作目录 <workDir>/tasks/<taskID>，先建好。
@@ -102,9 +113,9 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, as *db.AssetStore, t
 		BashEnv:            proxyEnv(m.proxyAddr, m.proxyCACert), // Bash 子命令默认走代理+信任 CA
 		WorkingDir:         mainDir,                              // 本任务工作目录 <workDir>/tasks/<taskID>
 		ToolOutputDir:      cmdOutDir(mainDir),
-		MaxTurns:           m.maxTurns,                 // 0 = unlimited (configurable in agent management)
-		Compaction:         compactionConfig(m.window), // long chats stay within the window
-		Todos:              actool.NewTodoStore(),      // 会话级临时待办（TodoWrite），纯规划用，退出即丢
+		MaxTurns:           m.maxTurns,                             // 0 = unlimited (configurable in agent management)
+		Compaction:         compactionConfig(m.compactionWindow()), // long chats stay within the window
+		Todos:              actool.NewTodoStore(),                  // 会话级临时待办（TodoWrite），纯规划用，退出即丢
 		// 命中预算(步数)→ SDK 跑收尾:向用户输出一句进展总结。Prompt 与收尾轮数可后台编辑(默认 10 轮)。
 		Settlement: wrapupSettlement("mainagent", nil),
 	}

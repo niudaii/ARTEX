@@ -1,14 +1,29 @@
 "use client";
 
 import * as React from "react";
-
 import type { Graph as G6Graph } from "@antv/g6";
-import { AppWindow, Building2, Globe, Link2, type LucideIcon, Radio, RefreshCw, Server, Waypoints } from "lucide-react";
+import {
+  AppWindow,
+  Building2,
+  Globe,
+  Link2,
+  type LucideIcon,
+  Radio,
+  RefreshCw,
+  Server,
+  Waypoints,
+} from "lucide-react";
 
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
+import {
+  Sheet,
+  SheetContent,
+  SheetHeader,
+  SheetTitle,
+} from "@/components/ui/sheet";
 import { api } from "@/lib/api";
 import type { CoverageAssetRef, CoverageAssetRefs, CoverageGraphEdge, CoverageGraphNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -260,10 +275,18 @@ function RefList({ title, items }: { title: string; items: CoverageAssetRef[] })
       </h4>
       <div className="flex flex-col gap-1">
         {items.map((r) => (
-          <div key={`${r.kind}-${r.id}`} className="bg-muted/50 flex items-start gap-2 rounded-md px-2 py-1.5 text-xs">
-            <span className="text-muted-foreground shrink-0 font-mono">#{r.id}</span>
-            {r.state && <span className="text-muted-foreground shrink-0">{r.state}</span>}
-            <span className="text-foreground min-w-0 flex-1 break-words">{r.summary || "—"}</span>
+          <div
+            key={`${r.kind}-${r.id}`}
+            className="flex flex-wrap items-start gap-2 rounded-md bg-muted/50 px-2 py-1.5 text-xs"
+          >
+            <span className="shrink-0 font-mono text-muted-foreground">#{r.id}</span>
+            {r.state && <span className="shrink-0 text-muted-foreground">{r.state}</span>}
+            <span className="min-w-32 flex-1 break-words text-foreground">{r.summary || "—"}</span>
+            {r.inherited && r.source_task_id && (
+              <Badge variant="outline" className="shrink-0">
+                来源 #{r.source_task_id} · 只读
+              </Badge>
+            )}
           </div>
         ))}
       </div>
@@ -308,9 +331,7 @@ function AssetSheet({
           <>
             <SheetHeader className="border-b p-4">
               <div className="flex items-center gap-2.5 pr-8">
-                <span
-                  className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg shadow-sm", meta.iconBg)}
-                >
+                <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg shadow-sm", meta.iconBg)}>
                   <Icon className="size-4 text-white" />
                 </span>
                 <div className="min-w-0">
@@ -480,10 +501,7 @@ function GraphInner({ taskId }: { taskId: string }) {
   // 结构签名：只在可见节点/边集合变化时重建图 + 重跑布局，避免无谓抖动。
   const sig = React.useMemo(
     () =>
-      `${renderNodes
-        .map((n) => `${n.key}:${n.fold ? "f" : n.node.tested ? "t" : "u"}`)
-        .sort()
-        .join(",")}|${renderEdges.length}`,
+      `${renderNodes.map((n) => `${n.key}:${n.fold ? "f" : n.node.tested ? "t" : "u"}`).sort().join(",")}|${renderEdges.length}`,
     [renderNodes, renderEdges],
   );
 
@@ -499,11 +517,6 @@ function GraphInner({ taskId }: { taskId: string }) {
   const applyData = React.useCallback(() => {
     const graph = graphRef.current;
     if (!graph || graph.destroyed) return;
-    try {
-      graph.stopLayout();
-    } catch {
-      /* 上一次布局尚未启动 */
-    }
     graph.setData(gDataRef.current);
     // render() 异步跑 d3-force 布局;若组件在布局落地前被卸载/销毁,g6 会在已清空的
     // context 上访问 transform 抛错(见 runtime/layout transformDataAfterLayout)。这是纯
@@ -580,25 +593,14 @@ function GraphInner({ taskId }: { taskId: string }) {
     })();
     return () => {
       destroyed = true;
-      const g = graph;
-      graphRef.current = null;
-      if (!g) return;
+      // 先停布局再销毁:尽量缩短"布局在飞、context 被清空"的竞态窗口。
       try {
-        g.stopLayout();
+        graph?.stopLayout();
       } catch {
-        /* 布局尚未启动 */
+        /* 图可能尚未建成或已无布局上下文 */
       }
-      // @antv/g6 v5.1.1: stopLayout 会 resolve 挂起的异步 postLayout promise，
-      // 但 destroy 同步重置 context={} → resolve 的微任务读到空 context 上的
-      // transform 为 undefined → getTransformInstance 崩溃。
-      // 先让 postLayout 微任务排空（macrotask），再 destroy。
-      setTimeout(() => {
-        try {
-          g.destroy();
-        } catch {
-          /* 已销毁 */
-        }
-      }, 0);
+      graph?.destroy();
+      graphRef.current = null;
     };
   }, [applyData]);
 

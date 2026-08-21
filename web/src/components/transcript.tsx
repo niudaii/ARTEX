@@ -20,6 +20,7 @@ import {
 import { toast } from "sonner";
 
 import { Markdown } from "@/components/markdown";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
 import type { Activity } from "@/lib/types";
@@ -211,7 +212,7 @@ function InterceptCard({ step, getDetail }: { step: Activity; getDetail: (seq: n
   }, [pendingId]);
 
   async function decide(decision: "allowed" | "denied") {
-    if (!pendingId || deciding) return;
+    if (step.inherited || !pendingId || deciding) return;
     setDeciding(true);
     try {
       await api.interceptDecide(pendingId, decision);

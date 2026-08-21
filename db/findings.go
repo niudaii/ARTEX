@@ -9,7 +9,8 @@ import (
 	"time"
 )
 
-// DBFinding is a row in the standalone findings table (persists across task deletion).
+// DBFinding is a row in the standalone findings table. It persists across task
+// deletion unless the caller explicitly requests related finding cleanup.
 type DBFinding struct {
 	ID              int64
 	TaskID          *int64
@@ -75,7 +76,11 @@ func ValidSeverity(s string) bool {
 // AddFinding inserts a finding into the standalone findings table. taskID and
 // nodeID may be 0 (stored as NULL). name may be "" (frontend falls back to
 // vulnclass). Returns the new finding id.
-func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary, evidence, sourceFile, harm, fix, request, response, reproCmd, worker string, assetIDs []int64) (int64, error) {
+func (d *DB) AddFinding(taskID, nodeID int64, vulnclass, name, severity, summary, evidence, worker string, assetIDs []int64) (int64, error) {
+	return d.AddFindingDetail(taskID, nodeID, vulnclass, name, severity, summary, evidence, "", "", "", "", "", "", worker, assetIDs)
+}
+
+func (d *DB) AddFindingDetail(taskID, nodeID int64, vulnclass, name, severity, summary, evidence, sourceFile, harm, fix, request, response, reproCmd, worker string, assetIDs []int64) (int64, error) {
 	severity = strings.ToLower(strings.TrimSpace(severity))
 	aidsJSON, _ := json.Marshal(assetIDs)
 	if assetIDs == nil {
@@ -221,6 +226,57 @@ func (d *DB) ListFindingsPage(f FindingFilter, page, pageSize int) ([]*DBFinding
 	defer rows.Close()
 	out, err := scanFindings(rows)
 	return out, total, err
+}
+
+// ListFindingsForExport returns findings for the 发现 page 导出功能，携带完整
+// report 字段、不分页。ids 非空时按这批 finding id 精确导出(勾选导出),忽略
+// filter;ids 为空时按 filter 导出(导出当前筛选/全部)。结果按严重等级降序、
+// 再按时间倒序,与「导出汇总报告」的分组顺序一致。
+func (d *DB) ListFindingsForExport(f FindingFilter, ids []int64) ([]*DBFinding, error) {
+	const order = `ORDER BY CASE f.severity WHEN 'critical' THEN 4 WHEN 'high' THEN 3 WHEN 'medium' THEN 2 WHEN 'low' THEN 1 ELSE 0 END DESC, f.created_at DESC`
+	cols := findingSelectCols + `, COALESCE(f.report, '')`
+
+	var q string
+	var args []any
+	if len(ids) > 0 {
+		ph := make([]string, len(ids))
+		for i, id := range ids {
+			ph[i] = fmt.Sprintf("$%d", i+1)
+			args = append(args, id)
+		}
+		q = `SELECT ` + cols + `
+			FROM findings f
+			LEFT JOIN tasks t ON f.task_id = t.id
+			WHERE f.id IN (` + strings.Join(ph, ",") + `)
+			` + order
+	} else {
+		where, wargs := f.where()
+		q = `SELECT ` + cols + `
+			FROM findings f
+			LEFT JOIN tasks t ON f.task_id = t.id` + where + `
+			` + order
+		args = wargs
+	}
+
+	rows, err := d.Query(q, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+
+	var out []*DBFinding
+	for rows.Next() {
+		f := &DBFinding{}
+		var aidsJSON string
+		if err := rows.Scan(&f.ID, &f.TaskID, &f.NodeID, &f.VulnClass, &f.Name, &f.Severity,
+			&f.Summary, &f.Evidence, &f.Worker, &aidsJSON, &f.Status, &f.CreatedAt,
+			&f.TaskDescription, &f.Report); err != nil {
+			return nil, err
+		}
+		_ = json.Unmarshal([]byte(aidsJSON), &f.AssetIDs)
+		out = append(out, f)
+	}
+	return out, rows.Err()
 }
 
 // FindingStats is the whole-table aggregate powering the 发现 page's stat cards

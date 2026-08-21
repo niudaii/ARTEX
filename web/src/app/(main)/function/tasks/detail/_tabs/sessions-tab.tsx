@@ -1,31 +1,46 @@
 "use client";
 
-import { fmtBytes, fmtTokens } from "@/lib/format";
 import * as React from "react";
+
 import {
-  RadioIcon,
   BrainIcon,
-  UserIcon,
-  Loader2Icon,
-  ZapOffIcon,
-  SendIcon,
-  SquareIcon,
-  ClockIcon,
   CircleCheckIcon,
-  CircleXIcon,
   CircleSlashIcon,
-  ShieldAlertIcon,
-  WifiOffIcon,
-  RotateCwIcon,
+  CircleXIcon,
+  ClockIcon,
+  HistoryIcon,
+  Loader2Icon,
   PaperclipIcon,
+  PauseIcon,
+  PlayIcon,
+  RadioIcon,
+  RotateCwIcon,
+  SendIcon,
+  ShieldAlertIcon,
+  SquareIcon,
+  UserIcon,
+  WifiOffIcon,
   XIcon,
+  ZapOffIcon,
+  Trash2Icon,
 } from "lucide-react";
 import { toast } from "sonner";
-import { cn } from "@/lib/utils";
-import { Transcript } from "@/components/transcript";
+
 import { TodoPopover } from "@/components/todo-popover";
+import { Transcript } from "@/components/transcript";
+import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
-import { Textarea } from "@/components/ui/textarea";
+import {
+  AlertDialog,
+  AlertDialogAction,
+  AlertDialogCancel,
+  AlertDialogContent,
+  AlertDialogDescription,
+  AlertDialogFooter,
+  AlertDialogHeader,
+  AlertDialogTitle,
+} from "@/components/ui/alert-dialog";
+import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } from "@/components/ui/input-group";
 import { ScrollArea } from "@/components/ui/scroll-area";
 import {
   Tooltip,
@@ -44,8 +59,15 @@ import type {
   TaskNode,
   TokenTotal,
 } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 // fmtBytes renders a human file size for attachment chips (mirrors transcript.tsx).
+function fmtBytes(n: number): string {
+  if (n >= 1 << 20) return `${(n / (1 << 20)).toFixed(1)} MB`;
+  if (n >= 1 << 10) return `${(n / (1 << 10)).toFixed(1)} KB`;
+  return `${n} B`;
+}
+
 // ── Reliability model (see docs/task-session-history-sse-remediation.md) ──────────
 // The task's activity is NO LONGER one unbounded `allActivity` array replayed from
 // SSE since=0. Instead:
@@ -58,6 +80,7 @@ import type {
 //     so refresh / tab-switch / sleep / reconnect never drop the newest records.
 
 const PAGE = 200; // history page size
+const SYSTEM_SCAN_PAGE = 500; // generic activity pages scanned to recover sparse system audit events
 const MAX_KEEP = 4000; // per-session in-memory cap; older pages re-fetched on scroll-up
 const STREAM_WINDOW_MS = 5000; // "live" = activity seen within this window
 
@@ -93,6 +116,7 @@ function emptyState(): SessionState {
 // sessionKeyOf routes an activity to its stable session key. worker="planner" covers
 // BOTH the Goal Agent's round-0 decomposition and the Planner (single Plan session).
 function sessionKeyOf(a: Activity): string {
+  if (a.worker === "system" || a.kind === "llm_switch" || a.kind === "llm_failover") return "system";
   if (a.worker === "mainagent") return "main";
   if (a.worker === "planner") return "plan";
   if (a.intent_id) return `intent:${a.intent_id}`;
@@ -117,6 +141,8 @@ function statusIcon(status: SessionStatus) {
   switch (status) {
     case "running": // 执行中
       return <Loader2Icon className="size-3.5 animate-spin text-blue-500" />;
+    case "paused":
+      return <PauseIcon className="size-3.5 text-amber-500" />;
     case "pending": // 待领取(open intent)
       return <ClockIcon className="size-3.5 text-muted-foreground" />;
     case "done": // 完成
@@ -131,6 +157,12 @@ function statusIcon(status: SessionStatus) {
 }
 
 // fmtTokens renders a compact token count (1234 → 1.2k, 2_000_000 → 2M).
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k";
+  return String(n);
+}
+
 // fmtDuration renders an elapsed milliseconds span compactly (90s → 1m30s).
 function fmtDuration(ms: number): string {
   const s = Math.floor(ms / 1000);
@@ -145,6 +177,7 @@ const roleMeta = {
   mainagent: { label: "主 Agent", icon: UserIcon },
   planner: { label: "规划 Planner", icon: BrainIcon },
   worker: { label: "Workers", icon: RadioIcon },
+  system: { label: "系统审计", icon: HistoryIcon },
 } as const;
 
 // The main-agent session is the interactive entry point of this tab and has no
@@ -174,10 +207,24 @@ const PLANNER_SESSION: Session = {
   last_activity: "",
 };
 
+// LLM provider switches are task-level audit events rather than agent output. The
+// history endpoint has no "system" filter, so this fixed session is populated by
+// scanning the generic incremental activity endpoint and then tailed by task SSE.
+const SYSTEM_ID = "s-system";
+const SYSTEM_SESSION: Session = {
+  id: SYSTEM_ID,
+  role: "system",
+  title: "系统事件 · LLM 故障转移",
+  status: "done",
+  live: false,
+  last_activity: "",
+};
+
 // keyForSession maps a UI Session → its stable store key (main | plan | intent:<id>).
 function keyForSession(s: Session): string {
   if (s.role === "mainagent") return "main";
   if (s.role === "planner") return "plan";
+  if (s.role === "system") return "system";
   return `intent:${s.intent_id}`;
 }
 
@@ -192,6 +239,8 @@ function intentStatus(state: string): SessionStatus {
       return "exhausted";
     case "stopped":
       return "stopped";
+    case "paused":
+      return "paused";
     case "open": // 待领取，区别于执行中
       return "pending";
     default: // running
@@ -209,9 +258,11 @@ function intentToSession(n: TaskNode): Session {
     role: "worker",
     title: label || `Intent ${n.id}`,
     status: state,
-    live: state === "running",
+    live: !n.inherited && state === "running",
     last_activity: n.ts,
     intent_id: n.id,
+    source_task_id: n.source_task_id,
+    inherited: n.inherited,
   };
 }
 
@@ -222,6 +273,10 @@ function SessionItem({
   hasPending,
   unread,
   onClick,
+  onPause,
+  onResume,
+  onCancel,
+  controlling,
 }: {
   s: Session;
   active: boolean;
@@ -229,6 +284,10 @@ function SessionItem({
   hasPending?: boolean;
   unread?: number;
   onClick: () => void;
+  onPause?: () => void;
+  onResume?: () => void;
+  onCancel?: () => void;
+  controlling?: boolean;
 }) {
   const icon =
     s.role === "worker" ? (
@@ -237,36 +296,57 @@ function SessionItem({
       <Loader2Icon className="size-3.5 animate-spin text-blue-500" />
     ) : null;
 
+  const controllable = s.role === "worker" && !s.inherited && (s.status === "running" || s.status === "paused");
   return (
-    <button
-      onClick={onClick}
+    <div
       className={cn(
-        "flex w-full items-center gap-1 rounded-md px-2 py-1.5 text-left text-sm transition-colors",
+        "group/session flex w-full items-center rounded-md transition-colors",
         active ? "bg-accent text-accent-foreground" : "hover:bg-accent/50",
       )}
     >
-      {icon ?? <span className="size-3.5 shrink-0" />}
-      {s.intent_id && (
-        <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
-          #{s.intent_id}
-        </span>
+      <button type="button" onClick={onClick} className="flex min-w-0 flex-1 items-center gap-1 px-2 py-1.5 text-left text-sm">
+        {icon ?? <span className="size-3.5 shrink-0" />}
+        {s.intent_id && (
+          <span className="shrink-0 rounded bg-muted px-1 py-0.5 font-mono text-[10px] tabular-nums text-muted-foreground">
+            #{s.intent_id}
+          </span>
+        )}
+        {s.inherited && s.source_task_id && (
+          <Badge variant="outline" className="shrink-0">
+            来源 #{s.source_task_id}
+          </Badge>
+        )}
+        <span className="min-w-0 flex-1 truncate">{displayTitle}</span>
+        {hasPending && <ShieldAlertIcon className="size-3.5 shrink-0 text-amber-500" />}
+        {!active && unread ? (
+          <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-blue-500/15 px-1 text-[10px] font-medium tabular-nums text-blue-600 dark:text-blue-400">
+            {unread > 99 ? "99+" : unread}
+          </span>
+        ) : null}
+        {s.live && (
+          <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
+            <span className="size-1 animate-pulse rounded-full bg-blue-500" />
+            实时
+          </span>
+        )}
+      </button>
+      {controllable && (
+        <div className="flex shrink-0 items-center gap-0.5 pr-1 opacity-100 sm:opacity-0 sm:transition-opacity sm:group-hover/session:opacity-100 sm:group-focus-within/session:opacity-100">
+          {s.status === "running" ? (
+            <Button type="button" variant="ghost" size="icon-xs" onClick={onPause} disabled={controlling} title="暂停 Worker" aria-label="暂停 Worker">
+              {controlling ? <Loader2Icon className="animate-spin" /> : <PauseIcon />}
+            </Button>
+          ) : (
+            <Button type="button" variant="ghost" size="icon-xs" onClick={onResume} disabled={controlling} title="恢复 Worker" aria-label="恢复 Worker">
+              {controlling ? <Loader2Icon className="animate-spin" /> : <PlayIcon />}
+            </Button>
+          )}
+          <Button type="button" variant="ghost" size="icon-xs" onClick={onCancel} disabled={controlling} title="取消并清理 Worker 数据" aria-label="取消并清理 Worker 数据" className="text-destructive hover:text-destructive">
+            <Trash2Icon />
+          </Button>
+        </div>
       )}
-      <span className="min-w-0 flex-1 truncate">{displayTitle}</span>
-      {hasPending && (
-        <ShieldAlertIcon className="size-3.5 shrink-0 text-amber-500" />
-      )}
-      {!active && unread ? (
-        <span className="inline-flex min-w-4 items-center justify-center rounded-full bg-blue-500/15 px-1 text-[10px] font-medium tabular-nums text-blue-600 dark:text-blue-400">
-          {unread > 99 ? "99+" : unread}
-        </span>
-      ) : null}
-      {s.live && (
-        <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
-          <span className="size-1 animate-pulse rounded-full bg-blue-500" />
-          实时
-        </span>
-      )}
-    </button>
+    </div>
   );
 }
 
@@ -279,11 +359,11 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   const [olderIntents, setOlderIntents] = React.useState<TaskNode[]>([]);
   const [intentsHasMore, setIntentsHasMore] = React.useState(false);
   const [loadingOlderIntents, setLoadingOlderIntents] = React.useState(false);
-  // Local-only chat messages overlaid onto the main-agent transcript.
-  const [chatExtra, setChatExtra] = React.useState<Activity[]>([]);
   const [input, setInput] = React.useState("");
   const [sending, setSending] = React.useState(false);
   const [stopping, setStopping] = React.useState(false);
+  const [controllingIntent, setControllingIntent] = React.useState<string | null>(null);
+  const [cancelIntent, setCancelIntent] = React.useState<Session | null>(null);
   // 方式1 文件上传:选好的附件(已落到任务工作目录 uploads/),随下条消息一起发。
   const [attachments, setAttachments] = React.useState<ChatAttachment[]>([]);
   const [uploading, setUploading] = React.useState(false);
@@ -302,6 +382,42 @@ export function SessionsTab({ taskId }: { taskId: string }) {
       if (fileInputRef.current) fileInputRef.current.value = "";
     }
   }
+
+  const patchIntentState = React.useCallback((intentId: string, state?: string) => {
+    const patch = (rows: TaskNode[]) =>
+      state ? rows.map((row) => (row.id === intentId ? { ...row, state } : row)) : rows.filter((row) => row.id !== intentId);
+    setIntents(patch);
+    setOlderIntents(patch);
+  }, []);
+
+  const controlWorker = React.useCallback(async (session: Session, action: "pause" | "resume" | "cancel") => {
+    if (!session.intent_id || session.inherited || controllingIntent) return;
+    setControllingIntent(session.intent_id);
+    try {
+      const result = await api.controlIntent(taskId, session.intent_id, action);
+      if (action === "pause") {
+        patchIntentState(session.intent_id, "paused");
+        toast.success(`Worker #${session.intent_id} 已暂停`);
+      } else if (action === "resume") {
+        patchIntentState(session.intent_id, "open");
+        toast.success(`Worker #${session.intent_id} 已恢复，等待重新领取`);
+      } else {
+        patchIntentState(session.intent_id);
+        if (activeId === session.id) setActiveId(MAIN_ID);
+        const deleted = result.deleted;
+        toast.success(
+          deleted
+            ? `Worker #${session.intent_id} 已取消，清理 ${deleted.facts} 条事实、${deleted.findings} 个漏洞`
+            : `Worker #${session.intent_id} 已取消`,
+        );
+      }
+    } catch (error) {
+      toast.error("Worker 操作失败：" + (error as Error).message);
+    } finally {
+      setControllingIntent(null);
+      setCancelIntent(null);
+    }
+  }, [activeId, controllingIntent, patchIntentState, taskId]);
   // SSE connection state — surfaced so a dropped realtime link is visible, never
   // silently shown as "no messages".
   const [sseLive, setSseLive] = React.useState(false);
@@ -315,6 +431,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   const esRef = React.useRef<EventSource | null>(null);
   const activeKeyRef = React.useRef("main"); // current session key (for SSE dispatch/unread)
   const atBottomRef = React.useRef(true); // transcript pinned to bottom?
+  const llmToastSeqRef = React.useRef<Set<number>>(new Set());
   // Per-key request token: a stale response for a key is ignored (guards fast
   // latest/older interleaving). Writes are ALWAYS keyed, so a late response can only
   // touch its own session cache — never the currently-viewed one (see §7.5).
@@ -342,6 +459,48 @@ export function SessionsTab({ taskId }: { taskId: string }) {
       const token = (reqTokenRef.current[key] ?? 0) + 1;
       reqTokenRef.current[key] = token;
       patchStore(key, (s) => ({ ...s, loading: true, error: undefined }));
+
+      if (key === "system") {
+        void (async () => {
+          let since = 0;
+          let systemItems: Activity[] = [];
+          for (;;) {
+            const page = await api.activity(taskId, { since, limit: SYSTEM_SCAN_PAGE });
+            if (reqTokenRef.current[key] !== token) return;
+            systemItems = mergeBySeq(
+              systemItems,
+              page.items.filter((item) => item.worker === "system" || item.kind === "llm_failover"),
+            );
+            if (page.items.length < SYSTEM_SCAN_PAGE || page.cursor <= since) break;
+            since = page.cursor;
+          }
+          patchStore(key, (s) => {
+            const items = mergeBySeq(systemItems, s.items);
+            return {
+              ...s,
+              items,
+              loaded: true,
+              loading: false,
+              hasMore: false,
+              earliestSeq: items.length ? items[0].seq : 0,
+              unread: 0,
+              lastTs: items.length ? items[items.length - 1].ts : s.lastTs,
+              error: undefined,
+            };
+          });
+        })()
+          .catch((error) => {
+            if (reqTokenRef.current[key] !== token) return;
+            patchStore(key, (s) => ({
+              ...s,
+              loading: false,
+              error: (error as Error).message || "加载失败",
+            }));
+          })
+          .finally(() => loadingKeysRef.current.delete(key));
+        return;
+      }
+
       api
         .activityHistory(taskId, key, 0, PAGE)
         .then((r) => {
@@ -413,8 +572,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         .then((r) => {
           if (alive) setTaskTokens(r.total);
         })
-        .catch(() => {});
-    load();
+        .catch(() => {
+          // Polling is best-effort; the next interval retries automatically.
+        });
+    void load();
     const t = setInterval(load, 5000);
     return () => {
       alive = false;
@@ -427,8 +588,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     const load = () =>
       api.interceptTask(taskId)
         .then((rows) => { if (alive) setPendingIntercepts(rows.filter((r) => r.status === "pending")); })
-        .catch(() => {});
-    load();
+        .catch(() => {
+          // Polling is best-effort; the next interval retries automatically.
+        });
+    void load();
     const t = setInterval(load, 5000);
     return () => { alive = false; clearInterval(t); };
   }, [taskId]);
@@ -448,7 +611,6 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   // ID) resumes from the DB, so a dropped realtime link self-heals; seq-merge dedups.
   React.useEffect(() => {
     setStore({});
-    setChatExtra([]);
     setSseLive(false);
     setActiveId(MAIN_ID); // a stale worker id from the previous task must not leak in
     snapshotRef.current = 0;
@@ -479,9 +641,15 @@ export function SessionsTab({ taskId }: { taskId: string }) {
             st.lastTs = st.items.length ? st.items[st.items.length - 1].ts : "";
           }
           buckets.main ??= { ...emptyState(), loaded: true };
+          buckets.system ??= { ...emptyState(), loaded: true };
           setStore(buckets);
         })
-        .catch(() => setStore({ main: { ...emptyState(), loaded: true } }));
+        .catch(() =>
+          setStore({
+            main: { ...emptyState(), loaded: true },
+            system: { ...emptyState(), loaded: true },
+          }),
+        );
       return () => {
         alive = false;
       };
@@ -521,6 +689,17 @@ export function SessionsTab({ taskId }: { taskId: string }) {
           } catch {
             return; // ignore malformed frame
           }
+          if ((a.kind === "llm_switch" || a.kind === "llm_failover") && !llmToastSeqRef.current.has(a.seq)) {
+            llmToastSeqRef.current.add(a.seq);
+            const transition = a.metadata?.llm_transition;
+            if (transition?.mode === "exhausted" || a.is_error) {
+              toast.error(a.summary, { id: `task-${taskId}-llm-${a.seq}` });
+            } else if (transition?.mode === "automatic") {
+              toast.success(a.summary, { id: `task-${taskId}-llm-${a.seq}` });
+            } else {
+              toast.info(a.summary, { id: `task-${taskId}-llm-${a.seq}` });
+            }
+          }
           const k = sessionKeyOf(a);
           setStore((prev) => {
             const cur = prev[k] ?? emptyState();
@@ -558,8 +737,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
       esRef.current?.close();
       esRef.current = null;
     };
-    // eslint-disable-next-line react-hooks/exhaustive-deps
-  }, [taskId]);
+  }, [taskId, patchStore]);
 
   // ── worker (intent) session list — paged, poll first page lightly ───────────────
   React.useEffect(() => {
@@ -572,8 +750,10 @@ export function SessionsTab({ taskId }: { taskId: string }) {
           setIntents(r.items);
           setIntentsHasMore(r.hasMore);
         })
-        .catch(() => {});
-    load();
+        .catch(() => {
+          // Polling is best-effort; the next interval retries automatically.
+        });
+    void load();
     const t = setInterval(load, 5000);
     return () => {
       active = false;
@@ -596,7 +776,9 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         });
         setIntentsHasMore(r.hasMore);
       })
-      .catch(() => {})
+      .catch(() => {
+        // A later manual retry can fetch this page again.
+      })
       .finally(() => setLoadingOlderIntents(false));
   }, [taskId, intents, olderIntents, loadingOlderIntents]);
 
@@ -639,6 +821,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   // Worker agent_name format: "work#N · #intentID". Main/planner match by role key.
   const hasPendingForSession = React.useCallback(
     (s: Session): boolean => {
+      if (s.inherited) return false;
       if (!pendingIntercepts.length) return false;
       if (s.role === "mainagent") return pendingIntercepts.some((r) => r.agent_name === "mainagent");
       if (s.role === "planner")   return pendingIntercepts.some((r) => r.agent_name === "planner");
@@ -669,6 +852,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
       { ...MAIN_SESSION, live: mainLive },
       { ...PLANNER_SESSION, live: plannerLive },
       ...workerSessions,
+      SYSTEM_SESSION,
     ],
     [workerSessions, mainLive, plannerLive],
   );
@@ -677,16 +861,19 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     mainagent: sessions.filter((s) => s.role === "mainagent"),
     planner: sessions.filter((s) => s.role === "planner"),
     worker: sessions.filter((s) => s.role === "worker"),
+    system: sessions.filter((s) => s.role === "system"),
   };
 
   const active = sessions.find((s) => s.id === activeId) ?? MAIN_SESSION;
   const isMain = active.role === "mainagent";
   const isPlanner = active.role === "planner";
+  const isSystem = active.role === "system";
   const activeKey = keyForSession(active);
   const activeState = store[activeKey];
 
   // Keep the SSE dispatcher's notion of the active session current, and lazily load
   // + clear unread whenever the active session changes.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: cache updates must not reactivate the current session.
   React.useEffect(() => {
     activeKeyRef.current = activeKey;
     const st = store[activeKey];
@@ -695,7 +882,6 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     } else if (st.unread) {
       patchStore(activeKey, (s) => ({ ...s, unread: 0 }));
     }
-    // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [activeKey]);
 
   // Main agent is the human↔orchestrator CONSOLE: only the conversation (user msgs +
@@ -703,14 +889,12 @@ export function SessionsTab({ taskId }: { taskId: string }) {
   // worker session shows only its intent's activity, led by the intent objective.
   const activity = React.useMemo(() => {
     const items = activeState?.items ?? [];
-    if (isMain) {
-      // chatExtra is an optimistic local echo — drop any entry the persisted (SSE)
-      // copy already covers so messages don't show twice after the backend round-trips.
-      const seen = new Set(items.map((a) => `${a.kind} ${a.summary}`));
-      const pending = chatExtra.filter((a) => !seen.has(`${a.kind} ${a.summary}`));
-      return [...items, ...pending].sort((a, b) => a.seq - b.seq);
-    }
-    if (isPlanner) return items;
+    // The main-agent console renders purely from server data: the human turn is
+    // persisted+broadcast by the backend BEFORE it returns, so it arrives over the
+    // same SSE stream (worker="mainagent") as every agent step — no client-side
+    // optimistic echo, hence no fabricated seq that could collide with real DB ids.
+    if (isMain) return items;
+    if (isPlanner || isSystem) return items;
     // Worker session: the intent leads the transcript as a right-aligned "user"-style
     // message (the task handed to this worker), followed by its execution steps.
     const intentTitle = sessionMeta.get(active.id)?.title ?? active.title;
@@ -720,9 +904,22 @@ export function SessionsTab({ taskId }: { taskId: string }) {
       ts: active.last_activity || "",
       kind: "intent", // LLM-generated objective — rendered as a distinct (non-human) bubble
       summary: intentTitle,
+      source_task_id: active.source_task_id,
+      inherited: active.inherited,
     };
     return [intentMsg, ...items];
-  }, [isMain, isPlanner, activeState, chatExtra, active.id, active.title, active.last_activity, sessionMeta]);
+  }, [
+    isMain,
+    isPlanner,
+    isSystem,
+    activeState,
+    active.id,
+    active.title,
+    active.last_activity,
+    active.source_task_id,
+    active.inherited,
+    sessionMeta,
+  ]);
 
   // seq of this session's most-recent TodoWrite call — for the Todo popover.
   const latestTodoSeq = React.useMemo(() => {
@@ -780,6 +977,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
       null,
     [],
   );
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeId intentionally rebinds the scroll listener.
   React.useEffect(() => {
     const vp = viewport();
     if (!vp) return;
@@ -791,6 +989,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     return () => vp.removeEventListener("scroll", onScroll);
   }, [viewport, activeId, loadEarlier]);
   // open/switch a session → jump to the latest (bottom)
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeId intentionally scrolls a newly selected session.
   React.useLayoutEffect(() => {
     const vp = viewport();
     if (vp) {
@@ -799,52 +998,56 @@ export function SessionsTab({ taskId }: { taskId: string }) {
     }
   }, [activeId, viewport]);
   // new activity → stick to bottom only if the user is already pinned there
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activity growth intentionally drives live-edge scrolling.
   React.useLayoutEffect(() => {
     if (!atBottomRef.current) return;
     const vp = viewport();
     if (vp) vp.scrollTop = vp.scrollHeight;
   }, [activity, viewport]);
+  // Lazy detail loads (AnswerBlock / ToolBlock / Markdown) grow the content AFTER the
+  // activity array settles, WITHOUT changing its reference — so the layout effects
+  // above never re-fire and a freshly opened session would leave its last message
+  // scrolled partly off-screen (the final answer expands from a one-line summary to
+  // full markdown below the fold). A ResizeObserver re-pins to the bottom on any
+  // height change while the user is still at the bottom, so opening the main agent
+  // lands on the last message fully shown. contentRef's div is always mounted, so the
+  // observer catches the transcript mounting + each detail expanding.
+  // biome-ignore lint/correctness/useExhaustiveDependencies: activeId intentionally rebinds the observer to the new session's content.
+  React.useEffect(() => {
+    const el = contentRef.current;
+    if (!el || typeof ResizeObserver === "undefined") return;
+    const ro = new ResizeObserver(() => {
+      if (!atBottomRef.current) return;
+      const vp = viewport();
+      if (vp) vp.scrollTop = vp.scrollHeight;
+    });
+    ro.observe(el);
+    return () => ro.disconnect();
+  }, [activeId, viewport]);
 
   function stop() {
     if (stopping) return;
     setStopping(true);
-    api.stopChat(taskId).finally(() => setStopping(false));
+    void api.stopChat(taskId).finally(() => setStopping(false));
   }
 
   function send() {
     const text = input.trim();
     const atts = attachments;
     if ((!text && atts.length === 0) || sending) return;
-    const base = [...(store.main?.items ?? []), ...chatExtra];
-    const nextSeq = Math.max(0, ...base.map((a) => a.seq)) + 1;
-    const userMsg: Activity = {
-      seq: nextSeq,
-      worker: "mainagent",
-      ts: new Date().toISOString(),
-      kind: "user",
-      summary: text,
-      // 有附件时把 {text, attachments} 塞进 detail,乐观气泡直接渲染卡片,无需再拉取。
-      detail: atts.length > 0 ? JSON.stringify({ text, attachments: atts }) : undefined,
-    };
-    // optimistic echo of the human turn only; the agent's steps + final answer
-    // stream back live via SSE (worker="mainagent"), so we don't append the reply.
-    setChatExtra((prev) => [...prev, userMsg]);
+    // No optimistic echo: the backend persists+broadcasts the human turn before it
+    // returns, so it streams back over SSE (worker="mainagent") with its real DB
+    // seq — the transcript renders it from server data like every other step. Clear
+    // the composer eagerly for responsiveness; restore it if the send fails.
     setInput("");
     setAttachments([]);
     setSending(true);
     api
       .chat(text, taskId, atts.length > 0 ? atts : undefined)
-      .catch(() => {
-        setChatExtra((prev) => [
-          ...prev,
-          {
-            seq: nextSeq + 1,
-            worker: "mainagent",
-            ts: new Date().toISOString(),
-            kind: "text",
-            summary: "（发送失败，请稍后重试）",
-          },
-        ]);
+      .catch((e) => {
+        setInput(text); // restore so the user doesn't lose their text / attachments
+        setAttachments(atts);
+        toast.error("发送失败：" + ((e as Error).message || "请稍后重试"));
       })
       .finally(() => setSending(false));
   }
@@ -895,7 +1098,7 @@ export function SessionsTab({ taskId }: { taskId: string }) {
         </div>
         <ScrollArea type="auto" className="min-h-0 flex-1 [&_[data-slot=scroll-area-viewport]>div]:block!">
           <div className="flex w-full flex-col gap-3 p-2">
-            {(["mainagent", "planner", "worker"] as const).map((role) => {
+            {(["mainagent", "planner", "system", "worker"] as const).map((role) => {
               const items = grouped[role];
               if (!items.length) return null;
               const Meta = roleMeta[role];
@@ -916,11 +1119,16 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                         hasPending={hasPendingForSession(s)}
                         unread={store[keyForSession(s)]?.unread}
                         onClick={() => setActiveId(s.id)}
+                        controlling={controllingIntent === s.intent_id}
+                        onPause={() => void controlWorker(s, "pause")}
+                        onResume={() => void controlWorker(s, "resume")}
+                        onCancel={() => setCancelIntent(s)}
                       />
                     );
                   })}
                   {role === "worker" && intentsHasMore && (
                     <button
+                      type="button"
                       onClick={loadOlderIntents}
                       disabled={loadingOlderIntents}
                       className="mt-0.5 flex items-center justify-center gap-1 rounded-md px-2 py-1 text-xs text-muted-foreground hover:bg-accent/50"
@@ -966,6 +1174,11 @@ export function SessionsTab({ taskId }: { taskId: string }) {
               </Tooltip>
             ) : titleEl;
           })()}
+          {active.inherited && active.source_task_id && (
+            <Badge variant="outline">
+              来源任务 #{active.source_task_id} · 只读历史
+            </Badge>
+          )}
           {active.live && (
             <span className="inline-flex items-center gap-1 rounded bg-blue-500/15 px-1.5 py-0.5 text-[10px] font-medium text-blue-600 dark:text-blue-400">
               <span className="size-1 animate-pulse rounded-full bg-blue-500" />
@@ -1059,48 +1272,66 @@ export function SessionsTab({ taskId }: { taskId: string }) {
                 ))}
               </div>
             )}
-            <div className="flex items-end gap-2">
-              <input
-                ref={fileInputRef}
-                type="file"
-                multiple
-                className="hidden"
-                onChange={(e) => void pickFiles(e.target.files)}
-              />
-              <Button
-                size="icon"
-                variant="ghost"
-                onClick={() => fileInputRef.current?.click()}
-                disabled={mainLive || uploading}
-                title="上传文件"
-              >
-                {uploading ? <Loader2Icon className="animate-spin" /> : <PaperclipIcon />}
-              </Button>
-              <Textarea
-                className="max-h-40 min-h-9 flex-1 resize-none"
+            <input
+              ref={fileInputRef}
+              type="file"
+              multiple
+              className="hidden"
+              onChange={(e) => void pickFiles(e.target.files)}
+            />
+            <InputGroup className="min-h-9 items-end has-disabled:opacity-100">
+              <InputGroupAddon align="inline-start" className="self-end">
+                <InputGroupButton
+                  size="icon-xs"
+                  variant="ghost"
+                  onClick={() => fileInputRef.current?.click()}
+                  disabled={mainLive || uploading}
+                  title="上传文件"
+                  aria-label="上传文件"
+                >
+                  {uploading ? <Loader2Icon className="animate-spin" /> : <PaperclipIcon />}
+                </InputGroupButton>
+              </InputGroupAddon>
+              <InputGroupTextarea
                 rows={1}
-                placeholder="给主 Agent 发消息，Enter 换行，Ctrl+Enter 发送…"
+                aria-label="给主 Agent 发消息"
+                placeholder="给主 Agent 发消息，引导探索方向…"
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => {
-                  // Enter 换行；只有 Ctrl/Cmd+Enter 才发送。
-                  if (e.key === "Enter" && (e.ctrlKey || e.metaKey)) {
-                    e.preventDefault();
-                    if (!mainLive) send();
-                  }
+                  if (e.key !== "Enter" || e.shiftKey || e.nativeEvent.isComposing) return;
+                  e.preventDefault();
+                  if (!mainLive) send();
                 }}
                 disabled={mainLive}
+                className="max-h-36 min-h-9 overflow-y-auto"
               />
-              {mainLive ? (
-                <Button size="icon" variant="destructive" onClick={stop} disabled={stopping} title="停止当前执行">
-                  {stopping ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
-                </Button>
-              ) : (
-                <Button size="icon" onClick={send} disabled={(!input.trim() && attachments.length === 0) || sending}>
-                  {sending ? <Loader2Icon className="animate-spin" /> : <SendIcon />}
-                </Button>
-              )}
-            </div>
+              <InputGroupAddon align="inline-end" className="self-end">
+                {mainLive ? (
+                  <InputGroupButton
+                    size="icon-xs"
+                    variant="destructive"
+                    onClick={stop}
+                    disabled={stopping}
+                    title="停止当前执行"
+                    aria-label="停止当前执行"
+                  >
+                    {stopping ? <Loader2Icon className="animate-spin" /> : <SquareIcon />}
+                  </InputGroupButton>
+                ) : (
+                  <InputGroupButton
+                    size="icon-xs"
+                    variant="default"
+                    onClick={send}
+                    disabled={(!input.trim() && attachments.length === 0) || sending}
+                    title="发送消息"
+                    aria-label="发送消息"
+                  >
+                    {sending ? <Loader2Icon className="animate-spin" /> : <SendIcon />}
+                  </InputGroupButton>
+                )}
+              </InputGroupAddon>
+            </InputGroup>
           </div>
         ) : (
           <div className="flex items-center border-t px-4 py-2">
@@ -1111,6 +1342,27 @@ export function SessionsTab({ taskId }: { taskId: string }) {
           </div>
         )}
       </div>
+      <AlertDialog open={cancelIntent !== null} onOpenChange={(open) => !open && setCancelIntent(null)}>
+        <AlertDialogContent className="max-w-[min(32rem,calc(100vw-2rem))]">
+          <AlertDialogHeader>
+            <AlertDialogTitle>取消 Worker #{cancelIntent?.intent_id}？</AlertDialogTitle>
+            <AlertDialogDescription className="break-words whitespace-normal">
+              取消后将删除该意图、执行记录，以及该意图直接登记的事实和漏洞；全局资产、流量和其他 Planner 意图不会删除。此操作不可撤销。
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>返回</AlertDialogCancel>
+            <AlertDialogAction
+              variant="destructive"
+              disabled={!cancelIntent || controllingIntent !== null}
+              onClick={() => cancelIntent && void controlWorker(cancelIntent, "cancel")}
+            >
+              {controllingIntent ? <Loader2Icon className="animate-spin" /> : <Trash2Icon />}
+              确认取消并清理
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
     </div>
     </TooltipProvider>
   );

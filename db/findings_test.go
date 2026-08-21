@@ -14,7 +14,7 @@ func TestDeleteFinding(t *testing.T) {
 	}
 	defer d.Close()
 
-	tk, err := d.CreateTask("删除漏洞测试", "目标", nil, 0, 0, nil, false, false)
+	tk, err := d.CreateTask("删除漏洞测试", "目标", nil, 0, 0)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -26,7 +26,7 @@ func TestDeleteFinding(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fid, err := d.AddFinding(tk.ID, nodeID, "XSS", "反射型 XSS", "high", "summary", "poc", "", "", "", "", "", "", "worker", nil)
+	fid, err := d.AddFindingDetail(tk.ID, nodeID, "XSS", "反射型 XSS", "high", "summary", "poc", "", "", "", "", "", "", "worker", nil)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -83,7 +83,7 @@ func TestFindingsPageAndStats(t *testing.T) {
 	}
 	var ids []int64
 	for i, s := range seed {
-		id, err := d.AddFinding(0, 0, vc, s.name, s.sev, "summary", "poc", "", "", "", "", "", "", "tester", nil)
+		id, err := d.AddFindingDetail(0, 0, vc, s.name, s.sev, "summary", "poc", "", "", "", "", "", "", "tester", nil)
 		if err != nil {
 			t.Fatalf("AddFinding[%d]: %v", i, err)
 		}

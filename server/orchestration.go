@@ -10,6 +10,7 @@ import (
 	"time"
 
 	"github.com/Autumn-27/artex/agent"
+	"github.com/Autumn-27/artex/db"
 	"github.com/Autumn-27/norma/permission"
 	actool "github.com/Autumn-27/norma/tool"
 )
@@ -189,12 +190,13 @@ func (s *Server) toolListTasks() actool.CoreTool {
 				if t.ParentRef != "" {
 					row["parent_ref"] = t.ParentRef
 				}
-				if t.LLMProfileID == nil {
+				llmState := t.llmStateSnapshot()
+				if llmState.ProfileID == nil {
 					row["llm_profile"] = "(激活配置)"
-				} else if n, ok := profName[*t.LLMProfileID]; ok {
+				} else if n, ok := profName[*llmState.ProfileID]; ok {
 					row["llm_profile"] = n
 				} else {
-					row["llm_profile"] = fmt.Sprintf("#%d(已删除)", *t.LLMProfileID)
+					row["llm_profile"] = fmt.Sprintf("#%d(已删除)", *llmState.ProfileID)
 				}
 				out = append(out, row)
 			}
@@ -244,9 +246,9 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 				TimeoutSeconds               int             `json:"timeout_seconds"`
 				PlanHeartbeatSeconds         int             `json:"plan_heartbeat_seconds"`
 				SeedFirstIntent              bool            `json:"seed_first_intent"`
-			SkipIntercept                bool            `json:"skip_intercept"`
-			ScopeLocked                  bool            `json:"scope_locked"`
-		}
+				SkipIntercept                bool            `json:"skip_intercept"`
+				ScopeLocked                  bool            `json:"scope_locked"`
+			}
 			_ = json.Unmarshal(in, &a)
 			if strings.TrimSpace(a.Description) == "" {
 				a.Description = "未命名任务"
@@ -269,7 +271,11 @@ func (s *Server) toolSpawnTask() actool.CoreTool {
 					pin = pt.LLMProfileID
 				}
 			}
-			t, err := s.m.CreateTask(a.Description, a.Goal, pin, a.TimeoutSeconds, a.PlanHeartbeatSeconds, nil, a.SkipIntercept, a.ScopeLocked)
+			t, err := s.m.CreateTaskWithOptions(a.Description, a.Goal, db.TaskCreateOptions{
+				LLMProfileIDs: []int64{*pin}, TimeoutSeconds: a.TimeoutSeconds,
+				PlanHeartbeatSeconds: a.PlanHeartbeatSeconds, SkipIntercept: a.SkipIntercept,
+				ScopeLocked: a.ScopeLocked,
+			})
 			if err != nil {
 				return actool.Errorf(err.Error()), nil
 			}
@@ -299,6 +305,7 @@ func (s *Server) toolPauseTask() actool.CoreTool {
 				return actool.Errorf("task 不存在: " + a.TaskID), nil
 			}
 			s.engine.Pause(a.TaskID, agent.AbortPausedByOrchestrator)
+			s.cancelTaskChat(a.TaskID, agent.AbortChatPausedWithTask)
 			return actool.Text("task paused: " + a.TaskID), nil
 		})
 }
@@ -415,7 +422,7 @@ func (s *Server) deriveTaskStatus(t *Task) string {
 		return "scheduled"
 	case t.Paused || s.engine.IsPaused(t.ID):
 		return "paused"
-	case s.engine.Ready() && s.engine.Started(t.ID):
+	case s.engine.ReadyFor(t) && s.engine.Started(t.ID):
 		return "running"
 	}
 	return "created"

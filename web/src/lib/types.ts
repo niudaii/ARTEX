@@ -15,6 +15,7 @@ export interface Task {
   completed_unix?: number; // completed_at as unix seconds (0/undef if unfinished)
   last_activity_unix?: number; // unix seconds of the last activity (0/undef if none)
   paused?: boolean;
+  queued?: boolean;
   active?: boolean;
   in_flight?: number;
   last_activity?: string;
@@ -24,11 +25,35 @@ export interface Task {
   engine_mode?: EngineMode;
   tokens?: TokenTotal; // whole-task token consumption
   llm_profile_id?: number; // LLM profile used; absent = default profile
+  llm_profile_ids?: number[]; // ordered task-level failover chain
+  active_llm_profile_id?: number; // profile used by the next LLM call
+  llm_failover_state?: "default" | "ready" | "chain_exhausted" | string;
+  llm_failover_reason?: string;
+  source_task_ids?: string[]; // directly related tasks inherited as read-only context
   llm_model?: string; // resolved model name of the bound LLM profile (display-only)
   scheduled_start_at?: string; // RFC3339 定时启动时间;空/缺省=立即开始
   scheduled_start_unix?: number; // 定时启动 unix 秒;0/缺省=立即开始
   skip_intercept?: boolean; // true=本任务跳过用户配置的拦截规则
   scope_locked?: boolean; // true=扫描范围锁定为初始 Host
+}
+
+export interface DeleteTaskOptions {
+  delete_assets: boolean;
+  delete_traffic: boolean;
+  delete_files: boolean;
+  delete_findings: boolean;
+  delete_llm_records: boolean;
+}
+
+export interface DeleteTaskResult {
+  deleted: string;
+  assets_deleted: number;
+  assets_detached: number;
+  traffic_deleted: number;
+  files_deleted: boolean;
+  findings_deleted: number;
+  llm_records_deleted: number;
+  cleanup_warning?: string;
 }
 
 // ---- Asset graph (global, shared across tasks) ----
@@ -176,6 +201,8 @@ export interface CoverageAssetRef {
   kind: string;
   state: string;
   summary: string;
+  source_task_id?: string;
+  inherited?: boolean;
 }
 export interface CoverageAssetRefs {
   intents: CoverageAssetRef[];
@@ -201,6 +228,18 @@ export interface WorkspaceFile {
   binary: boolean;
   too_large?: boolean;
   content?: string;
+}
+
+// 任务测试范围的一条（覆盖度分母 + 授权边界）。
+export interface TaskScopeRow {
+  id: number;
+  task_id: number;
+  kind: "company" | "root_domain" | "subdomain" | "ip" | "cidr";
+  company_id?: number;
+  domain?: string;
+  net?: string;
+  source: "auto" | "agent" | "manual";
+  reason?: string;
 }
 
 // 公司资产范围规则的一条（归属唯一真值来源）。
@@ -240,6 +279,8 @@ export interface TaskNode {
   origin: string;
   ts: string;
   last_error?: string; // blocked 意图：最近一次运行出错原因（为什么被拦/出错）
+  source_task_id?: string;
+  inherited?: boolean;
 }
 
 // ---- Findings ----
@@ -283,6 +324,8 @@ export interface Finding {
   param_id?: string;
   task_id?: string;
   task_description?: string;
+  source_task_id?: string;
+  inherited?: boolean;
   assets?: FindingAsset[];
   ts: string;
 }
@@ -337,6 +380,8 @@ export type ActivityKind =
   | "intent" // LLM-generated exploration objective leading a worker session (UI-synthesized)
   | "round" // planner round boundary marker (engine-emitted)
   | "usage" // live cumulative token usage (per model turn); not rendered
+  | "llm_switch" // automatic/manual task-level LLM switch
+  | "llm_failover" // task-level provider switch / chain exhaustion audit event
   | "intercept_request"; // user-approval request from the intercept layer
 
 // ChatAttachment 是一次上传的文件:path 相对该会话/任务工作目录(即 agent 的 CWD)。
@@ -358,11 +403,30 @@ export interface Activity {
   is_error?: boolean;
   summary: string;
   detail?: string;
+  metadata?: {
+    llm_transition?: LLMTransition;
+  };
+  source_task_id?: string;
+  inherited?: boolean;
   // token usage (present only on kind='result')
   input_tokens?: number;
   output_tokens?: number;
   cache_read_tokens?: number;
   cache_write_tokens?: number;
+}
+
+export interface LLMAuditProfile {
+  id: number;
+  name: string;
+  format: string;
+  model: string;
+}
+
+export interface LLMTransition {
+  mode: "automatic" | "manual" | "exhausted";
+  reason: string;
+  previous?: LLMAuditProfile;
+  next?: LLMAuditProfile;
 }
 
 // ---- Agent triggers (P3 调度，仅自定义 agent) ----
@@ -406,8 +470,8 @@ export interface LogLine {
   text: string;
 }
 
-export type SessionRole = "mainagent" | "planner" | "worker";
-export type SessionStatus = "running" | "done" | "blocked" | "exhausted" | "pending" | "stopped";
+export type SessionRole = "mainagent" | "planner" | "worker" | "system";
+export type SessionStatus = "running" | "paused" | "done" | "blocked" | "exhausted" | "pending" | "stopped";
 
 // Daily token aggregate bucket (GET /api/tokens/daily).
 export interface DailyTokenBucket {
@@ -435,6 +499,43 @@ export interface TokenTotal {
   cache_write_tokens: number;
 }
 
+// Global per-profile token spend from the llm_usage ledger (GET /api/tokens/usage).
+export interface ProfileUsage {
+  profile_name: string;
+  calls: number;
+  tasks: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+}
+
+// One (profile, UTC day) token bucket for the dashboard's daily chart (new source).
+export interface ProfileDayUsage {
+  profile_name: string;
+  date: string; // YYYY-MM-DD
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+}
+
+// Response of GET /api/tokens/usage — the dashboard's "new" (llm_usage) token view.
+export interface UsageStats {
+  by_profile: ProfileUsage[];
+  daily: ProfileDayUsage[];
+}
+
+// Per-model token usage for one task (GET /api/llm/records/by-model), from the
+// always-on llm_usage metering ledger. calls = number of LLM calls on this model.
+export interface ModelTokenStat {
+  model: string;
+  calls: number;
+  input_tokens: number;
+  output_tokens: number;
+  cache_read_tokens: number;
+  cache_write_tokens: number;
+}
+
 export interface Session {
   id: string;
   role: SessionRole;
@@ -443,6 +544,8 @@ export interface Session {
   live: boolean;
   last_activity: string;
   intent_id?: string;
+  source_task_id?: string;
+  inherited?: boolean;
 }
 
 // ---- Security ----
@@ -534,7 +637,9 @@ export interface LLMProfile {
   rate_per_second: number;
   rate_per_minute: number;
   context_window_k?: number;
-  // 思考模式: ""=默认(不发送) | "off"=关闭 | "low"/"medium"/"high"/"max"=开启并设强度
+  // 思考开关(thinking.type): ""=不发送(默认) | "disabled"=关闭 | "enabled"=开启
+  thinking_type?: string;
+  // 思考强度: ""=不发送(默认) | "low"/"medium"/"high"/"xhigh"/"max"
   reasoning_effort?: string;
   is_default: boolean;
   // 轮询顺位：越大越先被选中。激活配置恒为链首，与本值无关。
@@ -656,6 +761,25 @@ export interface SkillItem {
   compatibility?: string; // optional: environment requirements
   mcps?: string[]; // MCP server names this skill unlocks on load
   files: string[]; // files in the skill directory
+  calls: number;
+  tasks: number; // 加载过它的任务数（chat 会话不计入）
+  usage_agents: string[]; // 加载过它的 agent key
+  last_used?: string;
+}
+
+export interface SkillCall {
+  ts: string;
+  agent_key: string;
+  task_id: number; // 0 = 非任务场景（对话会话）
+  session_id: string;
+  args_len: number;
+}
+
+export interface MissingSkill {
+  skill: string;
+  calls: number;
+  agents: string[];
+  last_used?: string;
 }
 
 // ---- Tools (内置工具目录) ----
@@ -683,6 +807,7 @@ export interface Stats {
   llm_configured: boolean;
   roe_enabled: boolean;
   findings_confirmed: number;
+  active_task?: Partial<Task>;
 }
 
 // ---- Intercept Rules ----

@@ -1,6 +1,7 @@
 package server
 
 import (
+	"archive/zip"
 	"context"
 	"encoding/json"
 
@@ -12,6 +13,7 @@ import (
 	"net/url"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -52,14 +54,12 @@ type Server struct {
 	cfgMu     sync.Mutex
 	mainAgent *agent.MainAgent // nil when no LLM provider is configured
 	chatAgent *agent.ChatAgent // conversational runner for the chat page; nil w/o LLM
-	llmCfg    agent.Config     // current LLM config (key not exposed)
-	llmOn     bool
-	llmProf   string // active LLM profile name (for llmrec tagging)
 	// llmProv is the fully-decorated global provider (recorder + failover chain)
-	// applyLLM installed. Kept so one-off callers (goal decomposition) reuse the
-	// same instance instead of building a private one that skips the rate limiter,
-	// the recorder and failover.
+	// installed by applyLLM. Task routers use it after an explicit chain is cleared.
 	llmProv llm.Provider
+	llmCfg  agent.Config // current LLM config (key not exposed)
+	llmOn   bool
+	llmProf string // active LLM profile name (for llmrec tagging)
 
 	// chatBusy guards the per-task main-agent run: the chat handler launches the
 	// agent on the server's background ctx (not the request ctx) and returns
@@ -98,18 +98,25 @@ type Server struct {
 
 	// provByProfile caches ONE provider per LLM profile id so every agent bound or
 	// pinned to the same profile shares a single provider instance — hence one rate
-	// limiter. Separate from profAgents (whole planner/worker pairs). The globally-active
-	// provider (built in applyLLM) lives OUTSIDE this cache, so binding an agent to the
-	// currently-active profile builds a second instance — harmless (that binding equals
-	// leaving it unset), just not deduped. Cleared alongside profAgents on profile edits.
+	// limiter. Separate from profAgents (whole planner/worker pairs). applyLLM also
+	// resolves the persisted global-active profile through this cache, so global
+	// fallback and task chains do not accidentally double the configured request rate.
+	// Cleared alongside profAgents on profile edits, then repopulated by active reapply.
 	provCacheMu   sync.Mutex
 	provByProfile map[int64]*provEntry
+	provCacheGen  uint64
 
 	// llmHealth is the process-wide circuit-breaker state for LLM failover (轮询).
 	// It deliberately lives OUTSIDE the provider caches: rebuilding the chain
 	// (saving an unrelated profile, flipping a setting) must not erase what we
 	// learned about which backends are out of credit / rate-limited.
 	llmHealth *llmpool.Registry
+
+	// Explicit task chains use one task-scoped dynamic provider shared by goals,
+	// planner, workers, and the main agent. Bundles are stable; their runtime reads
+	// the persisted current profile at every new LLM call.
+	taskAgentMu sync.Mutex
+	taskAgents  map[string]*taskAgentBundle
 }
 
 // profBundle is a planner/worker pair built from one LLM profile.
@@ -144,14 +151,17 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		chatCancel: map[string]context.CancelCauseFunc{}, triggerQ: map[string][]triggeredRun{},
 		triggerActive: map[string]int{}, triggerCfg: map[string]triggerBehavior{},
 		profAgents: map[int64]*profBundle{}, profChatAgents: map[int64]*agent.ChatAgent{},
-		provByProfile: map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg)}
-	// per-task LLM: a task pinned to a specific profile runs on that profile's
-	// dedicated planner/worker; unpinned tasks fall back to the global active pair.
-	s.engine.SetAgentResolver(func(t *Task) (*agent.Planner, *agent.Worker) {
-		if t.LLMProfileID == nil {
+		provByProfile: map[int64]*provEntry{}, llmHealth: newLLMHealthRegistry(m.pg),
+		taskAgents: map[string]*taskAgentBundle{}}
+	// Every task uses a stable task router. An empty explicit chain is resolved by
+	// that router through Agent bindings and then the global provider, so adding a
+	// first chain to a running task takes effect on its very next LLM call.
+	s.engine.SetAuthoritativeAgentResolver(func(t *Task) (*agent.Planner, *agent.Worker) {
+		if !s.taskRuntimeAvailable(t, "planner", "worker") {
 			return nil, nil
 		}
-		return s.agentsForProfile(*t.LLMProfileID)
+		b := s.agentsForTask(t)
+		return b.pl, b.wk
 	})
 	// Archive the report when a task reaches terminal state; the POPO completion
 	// notification fires AFTER the archive finishes (see persistTaskReport).
@@ -278,14 +288,14 @@ func (s *Server) agentMaxTurns(key string) int {
 }
 
 // agentRunSeconds returns the configured wall-clock run budget (seconds) for an
-// agent key (0 = unlimited; 600 fallback when no DB or no row, matching schema).
+// agent key (0 = unlimited; 1200 fallback when no DB or no row, matching schema).
 func (s *Server) agentRunSeconds(key string) int {
 	if s.m.pg == nil {
-		return 600
+		return 1200
 	}
 	a, err := s.m.pg.GetAgentByKey(key)
 	if err != nil || a == nil {
-		return 600
+		return 1200
 	}
 	return a.RunSecs
 }
@@ -299,6 +309,7 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
+	cfg.ThinkingType = p.ThinkingType
 	cfg.ReasoningEffort = p.ReasoningEffort
 	if cfg.APIKey == "" {
 		return cfg, false
@@ -310,7 +321,7 @@ func (s *Server) loadLLMConfig() (agent.Config, bool) {
 }
 
 // saveLLMConfig persists the LLM config as the active "default" profile in PG.
-func (s *Server) saveLLMConfig(cfg agent.Config) {
+func (s *Server) saveLLMConfig(cfg agent.Config) error {
 	format := cfg.Provider()
 	if format != "anthropic" {
 		format = "openai"
@@ -332,12 +343,13 @@ func (s *Server) saveLLMConfig(cfg agent.Config) {
 	newID, err := s.m.pg.SaveProfile(&db.LLMProfile{
 		ID: id, Name: "default", Format: format, Model: cfg.Model, BaseURL: cfg.BaseURL, Proxy: cfg.Proxy,
 		APIKey: cfg.APIKey, RatePerSecond: cfg.RatePerSecond, RatePerMinute: cfg.RatePerMinute,
-		ContextWindowK: cfg.ContextWindowK, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
+		ContextWindowK: cfg.ContextWindowK, ThinkingType: cfg.ThinkingType, ReasoningEffort: cfg.ReasoningEffort, IsDefault: true,
 		Priority: priority, PoolExclude: poolExclude,
 	})
-	if err == nil {
-		_ = s.m.pg.SetActiveProfile(newID)
+	if err != nil {
+		return err
 	}
+	return s.m.pg.SetActiveProfile(newID)
 }
 
 // reapplyActiveProfile hot-reloads the engine from the active DB profile so that
@@ -393,15 +405,26 @@ func (s *Server) buildPlannerWorker(pinID *int64, gProv llm.Provider, gCfg agent
 // applyLLM (re)builds the planner/worker/main-agent from cfg and installs them on
 // the running engine as the GLOBAL active pair. Safe to call at runtime (UI configures LLM).
 func (s *Server) applyLLM(cfg agent.Config) error {
-	prov, err := cfg.NewProvider()
-	if err != nil {
-		return err
+	var prov llm.Provider
+	// A persisted active profile must use the same cached provider as task chains
+	// and Agent bindings, otherwise each path owns a separate rate limiter.
+	if active, _ := s.m.pg.ActiveProfile(); active != nil {
+		if activeCfg, ok := s.loadProfileConfig(active.ID); ok && activeCfg == cfg {
+			prov, _, _ = s.providerForProfile(active.ID)
+		}
 	}
-	// Wrap provider with LLM call recorder (persists request/response to PG).
-	s.cfgMu.Lock()
-	profName := s.llmProf
-	s.cfgMu.Unlock()
-	prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, s.m.LLMRecordEnabled)
+	if prov == nil {
+		var err error
+		prov, err = cfg.NewProvider()
+		if err != nil {
+			return err
+		}
+		// Non-persisted/env configs do not have a profile cache key.
+		s.cfgMu.Lock()
+		profName := s.llmProf
+		s.cfgMu.Unlock()
+		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, profName, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
+	}
 	// LLM 轮询(默认关):把激活配置包进故障转移链,当前配置不可用时自动切下一个。
 	// 只影响「走全局激活配置」的这条路径——agent 绑定 / 任务 pin 的走 providerForProfile,
 	// 默认仍然独占该配置(见 poolForBinding)。关闭或无备选时返回原 provider,行为不变。
@@ -427,10 +450,11 @@ func (s *Server) applyLLM(cfg agent.Config) error {
 	s.chatAgent.SetProxy(s.m.ProxyAddr(), s.m.ProxyCACert())
 	s.chatAgent.SetWebSearch(s.m.WebSearchOpts())
 	s.chatAgent.SetGuard(s.chatGuard())
-	s.llmCfg = cfg
 	s.llmProv = prov
+	s.llmCfg = cfg
 	s.llmOn = true
 	s.cfgMu.Unlock()
+	s.invalidateTaskAgents()
 
 	// wake the active task so a task created while idle starts exploring.
 	if t := s.m.ActiveTask(); t != nil {
@@ -449,6 +473,7 @@ func (s *Server) loadProfileConfig(id int64) (agent.Config, bool) {
 	cfg := agent.ConfigFrom(p.Format, p.Model, p.BaseURL, p.APIKey, p.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = p.RatePerSecond, p.RatePerMinute
 	cfg.ContextWindowK = p.ContextWindowK
+	cfg.ThinkingType = p.ThinkingType
 	cfg.ReasoningEffort = p.ReasoningEffort
 	if cfg.APIKey == "" {
 		return cfg, false
@@ -479,6 +504,7 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 		s.provCacheMu.Unlock()
 		return e.prov, e.cfg, true
 	}
+	generation := s.provCacheGen
 	s.provCacheMu.Unlock()
 	cfg, ok := s.loadProfileConfig(id)
 	if !ok {
@@ -491,9 +517,13 @@ func (s *Server) providerForProfile(id int64) (llm.Provider, agent.Config, bool)
 	}
 	// Wrap with recorder, tagged with this profile's name.
 	if p, _ := s.m.pg.ProfileByID(id); p != nil {
-		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, s.m.LLMRecordEnabled)
+		prov = llmrec.Wrap(prov, s.m.PG(), cfg.Model, p.Name, cfg.ThinkingType, cfg.ReasoningEffort, s.m.LLMRecordEnabled)
 	}
 	s.provCacheMu.Lock()
+	if generation != s.provCacheGen {
+		s.provCacheMu.Unlock()
+		return s.providerForProfile(id)
+	}
 	if e := s.provByProfile[id]; e != nil { // lost the race → keep the winner
 		prov, cfg = e.prov, e.cfg
 	} else {
@@ -584,8 +614,10 @@ func (s *Server) invalidateProfileAgents() {
 	s.profChatAgents = map[int64]*agent.ChatAgent{}
 	s.profMu.Unlock()
 	s.provCacheMu.Lock()
+	s.provCacheGen++
 	s.provByProfile = map[int64]*provEntry{}
 	s.provCacheMu.Unlock()
+	s.invalidateTaskAgents()
 }
 
 func (s *Server) mainAgentRef() *agent.MainAgent {
@@ -631,7 +663,11 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/workspace/download", s.wsDownload)
 	mux.HandleFunc("POST /api/workspace/upload", s.wsUpload)
 	mux.HandleFunc("GET /api/tasks/{id}/scope", s.taskScopeList)
+	mux.HandleFunc("POST /api/tasks/{id}/scope", s.taskScopeAdd)
+	mux.HandleFunc("DELETE /api/tasks/{id}/scope/{sid}", s.taskScopeDelete)
 	mux.HandleFunc("POST /api/tasks/{id}/control", s.control)
+	mux.HandleFunc("PUT /api/tasks/{id}/llm", s.updateTaskLLMProfiles)
+	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/control", s.controlIntent)
 	mux.HandleFunc("POST /api/tasks/{id}/intents/{iid}/rerun", s.rerunIntent)    // 重跑单条 blocked/exhausted/stopped 意图
 	mux.HandleFunc("POST /api/tasks/{id}/intents/rerun-blocked", s.rerunBlocked) // 批量重跑本任务全部 blocked 意图
 	mux.HandleFunc("POST /api/active", s.setActive)
@@ -657,6 +693,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/exploration/frontier", s.frontier)
 	mux.HandleFunc("GET /api/exploration/findings", s.findings)
 	mux.HandleFunc("GET /api/exploration/findings/stats", s.findingStats)
+	mux.HandleFunc("GET /api/exploration/findings/export", s.findingsExport)
 	mux.HandleFunc("GET /api/exploration/findings/{id}", s.getFinding)
 	mux.HandleFunc("GET /api/exploration/findings/{id}/lineage", s.findingLineage)
 	mux.HandleFunc("PATCH /api/exploration/findings/{id}", s.patchFinding)
@@ -670,6 +707,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/exploration/tokens", s.tokenStats)
 	mux.HandleFunc("GET /api/tokens/daily", s.tokenDailyStats)
 	mux.HandleFunc("GET /api/tokens/conversations", s.conversationTokens)
+	mux.HandleFunc("GET /api/tokens/usage", s.pgUsageStats) // 全局 llm_usage 聚合（仪表盘新版视图）
 
 	mux.HandleFunc("GET /api/audit", s.getAudit)
 	mux.HandleFunc("POST /api/gc", s.gc)
@@ -683,6 +721,7 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("GET /api/llm/records", s.pgListLLMRecords)
 	mux.HandleFunc("DELETE /api/llm/records", s.pgDeleteLLMRecords)
 	mux.HandleFunc("GET /api/llm/records/tasks", s.pgLLMTasks)
+	mux.HandleFunc("GET /api/llm/records/by-model", s.pgTokenByModel) // 按模型聚合本任务 token 用量
 	mux.HandleFunc("GET /api/llm/records/{id}", s.pgGetLLMRecord)
 	mux.HandleFunc("GET /api/settings", s.getSettings)
 	mux.HandleFunc("PUT /api/settings", s.putSettings)
@@ -754,6 +793,8 @@ func (s *Server) Handler() http.Handler {
 	mux.HandleFunc("POST /api/skills", s.fsCreateSkill)
 	mux.HandleFunc("POST /api/skills/upload", s.fsUploadSkill)
 	mux.HandleFunc("DELETE /api/skills/{name}", s.fsDeleteSkill)
+	mux.HandleFunc("GET /api/skills/missing", s.fsMissingSkills)   // 未命中(想调但不存在)的 skill 名
+	mux.HandleFunc("GET /api/skills/{name}/usage", s.fsSkillUsage) // 单个 skill 的最近调用
 	mux.HandleFunc("PUT /api/skills/{name}/meta", s.fsUpdateSkillMeta)
 	mux.HandleFunc("POST /api/skills/{name}/dirs", s.fsCreateDir)
 	mux.HandleFunc("GET /api/skills/{name}/files", s.fsListFiles)
@@ -836,6 +877,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, out) // no task selected: only global fields
 		return
 	}
+	out["llm_configured"] = s.engine.ReadyFor(t)
 
 	st, _ := t.Store.Stats()
 	out["exploration"] = st
@@ -857,6 +899,7 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	}
 	last := s.engine.LastActivity(t.ID)
 	paused := s.engine.IsPaused(t.ID)
+	activeCalls := s.engine.ActiveLLMCalls(t.ID)
 	// terminal tasks (done/failed/timeout) are never "running" even if the
 	// engine goroutines are still alive — they just spin on the terminal gate.
 	terminal := isTerminalStatus(s.m.TaskStatus(t.ID))
@@ -865,27 +908,28 @@ func (s *Server) stats(w http.ResponseWriter, r *http.Request) {
 	stalled := running && inFlight == 0 && last > 0 && time.Now().Unix()-last > 120
 
 	// engine_mode follows the spec enum (exploring|paused|stalled|idle).
+	engineMode := "idle"
 	switch {
 	case paused:
-		out["engine_mode"] = "paused"
+		engineMode = "paused"
 	case stalled:
-		out["engine_mode"] = "stalled"
-	case running:
-		out["engine_mode"] = "exploring"
-	default:
-		out["engine_mode"] = "idle"
+		engineMode = "stalled"
+	case running && activeCalls > 0:
+		engineMode = "exploring"
 	}
+	out["engine_mode"] = engineMode
 
 	out["active_task"] = map[string]any{
 		"id": t.ID, "description": t.Description, "goal": t.Goal,
 		"running":       running,
 		"paused":        paused,
+		"engine_mode":   engineMode,
 		"in_flight":     inFlight,
+		"llm_in_flight": activeCalls,
 		"last_activity": last,
 		"stalled":       stalled,
 		"goals_total":   len(goals),
 		"goals_met":     goalsMet,
-		"engine_mode":   out["engine_mode"],
 	}
 	writeJSON(w, 200, out)
 }
@@ -1021,6 +1065,28 @@ func (s *Server) listTasks(w http.ResponseWriter, r *http.Request) {
 	}
 }
 
+func (s *Server) resolvedTaskStatus(t *Task) string {
+	if t == nil {
+		return "created"
+	}
+	switch {
+	case isTerminalStatus(t.Status):
+		return t.Status
+	case t.Queued:
+		return "queued"
+	case t.Paused || s.engine.IsPaused(t.ID):
+		return "paused"
+	case t.llmStateSnapshot().FailoverState == "chain_exhausted" && s.engine.Started(t.ID):
+		// LLM readiness is an execution dependency, not lifecycle state. Keeping
+		// an exhausted task running lets the user edit/reset its chain directly.
+		return "running"
+	case s.engine.ReadyFor(t) && s.engine.Started(t.ID):
+		return "running"
+	default:
+		return "created"
+	}
+}
+
 func (s *Server) setActive(w http.ResponseWriter, r *http.Request) {
 	var req struct {
 		ID string `json:"id"`
@@ -1063,6 +1129,11 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	switch req.Action {
 	case "pause":
 		s.engine.Pause(t.ID, agent.AbortPausedByUser)
+		// Main Agent turns run outside Engine's planner/worker context so they need
+		// their own cancellation: pausing terminates the CURRENTLY running turn. New
+		// turns are still allowed while paused — the main-agent console is independent
+		// of task pause (the chat handler no longer rejects on IsPaused).
+		s.cancelTaskChat(t.ID, agent.AbortChatPausedWithTask)
 	case "resume":
 		s.engine.Run(s.ctx, t) // ensure loops are alive, then un-pause + nudge
 		s.engine.Resume(t)
@@ -1077,6 +1148,99 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 	}
 	log.Printf("[task] #%s %s", t.ID, map[bool]string{true: "已暂停", false: "已恢复"}[paused])
 	writeJSON(w, 200, map[string]any{"id": t.ID, "paused": paused})
+}
+
+// controlIntent pauses, resumes, or cancels one local worker intent. A running
+// worker is always stopped before state mutation/cleanup, preventing tool output
+// that arrives after the user action from recreating deleted blackboard records.
+func (s *Server) controlIntent(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.m.Task(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	if !s.engine.beginTaskOperation(t.ID) {
+		writeErr(w, 409, "任务正在删除，无法控制意图")
+		return
+	}
+	defer s.engine.decInflight(t.ID)
+
+	iid, err := strconv.ParseInt(r.PathValue("iid"), 10, 64)
+	if err != nil || iid <= 0 {
+		writeErr(w, 400, "bad intent id")
+		return
+	}
+	var req struct {
+		Action string `json:"action"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "bad json: "+err.Error())
+		return
+	}
+	if req.Action != "pause" && req.Action != "resume" && req.Action != "cancel" {
+		writeErr(w, 400, "action must be pause|resume|cancel")
+		return
+	}
+
+	node, err := t.Store.GetNode(iid)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if node == nil {
+		if inherited, sourceErr := t.Store.GetNodeWithSources(iid); sourceErr == nil && inherited != nil && inherited.Inherited {
+			writeErr(w, 409, "继承意图为只读，不能控制")
+		} else {
+			writeErr(w, 404, "intent not found")
+		}
+		return
+	}
+	if node.Kind != db.KindIntent {
+		writeErr(w, 409, "node is not an intent")
+		return
+	}
+
+	switch req.Action {
+	case "pause":
+		if node.State != "running" {
+			writeErr(w, 409, "仅运行中的意图可以暂停")
+			return
+		}
+		if err := s.engine.ControlWork(iid, "pause"); err != nil {
+			writeErr(w, 409, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"id": iid, "state": "paused"})
+	case "resume":
+		if node.State != "paused" {
+			writeErr(w, 409, "仅已暂停的意图可以恢复")
+			return
+		}
+		if err := t.Store.SetIntentState(iid, "open"); err != nil {
+			writeErr(w, 500, err.Error())
+			return
+		}
+		t.Notify()
+		writeJSON(w, 200, map[string]any{"id": iid, "state": "open"})
+	case "cancel":
+		if node.State != "running" && node.State != "paused" {
+			writeErr(w, 409, "仅运行中或已暂停的意图可以取消")
+			return
+		}
+		if node.State == "running" {
+			if err := s.engine.ControlWork(iid, "cancel"); err != nil {
+				writeErr(w, 409, err.Error())
+				return
+			}
+		}
+		deleted, err := t.Store.CancelIntent(iid)
+		if err != nil {
+			writeErr(w, 409, err.Error())
+			return
+		}
+		t.Notify()
+		writeJSON(w, 200, map[string]any{"id": iid, "state": "cancelled", "deleted": deleted})
+	}
 }
 
 // rerunIntent 重跑一条没跑成功的意图(blocked/exhausted/stopped):把它置回 open,worker
@@ -1141,6 +1305,7 @@ func (s *Server) getLLM(w http.ResponseWriter, r *http.Request) {
 		"rate_per_second":  s.llmCfg.RatePerSecond,
 		"rate_per_minute":  s.llmCfg.RatePerMinute,
 		"context_window_k": s.llmCfg.ContextWindowK,
+		"thinking_type":    s.llmCfg.ThinkingType,
 		"reasoning_effort": s.llmCfg.ReasoningEffort,
 	})
 }
@@ -1156,6 +1321,7 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		RatePerSecond   float64 `json:"rate_per_second"`
 		RatePerMinute   float64 `json:"rate_per_minute"`
 		ContextWindowK  int     `json:"context_window_k"`
+		ThinkingType    string  `json:"thinking_type"`
 		ReasoningEffort string  `json:"reasoning_effort"`
 	}
 	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
@@ -1164,6 +1330,7 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 	}
 	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
 	cfg.RatePerSecond, cfg.RatePerMinute = req.RatePerSecond, req.RatePerMinute
+	cfg.ThinkingType = req.ThinkingType
 	cfg.ReasoningEffort = req.ReasoningEffort
 	if k := req.ContextWindowK; k > 0 { // 0 = keep default (200K); cap at 1M
 		if k > 1000 {
@@ -1180,11 +1347,24 @@ func (s *Server) setLLM(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "api_key required")
 		return
 	}
+	// Validate provider construction before persisting it as the active profile.
+	if _, err := cfg.NewProvider(); err != nil {
+		writeErr(w, 400, "provider init failed: "+err.Error())
+		return
+	}
+	if err := s.saveLLMConfig(cfg); err != nil {
+		writeErr(w, 500, "persist provider failed: "+err.Error())
+		return
+	}
+	s.invalidateProfileAgents()
+	if _, ok := s.loadLLMConfig(); !ok {
+		writeErr(w, 500, "saved provider is unavailable")
+		return
+	}
 	if err := s.applyLLM(cfg); err != nil {
 		writeErr(w, 400, "provider init failed: "+err.Error())
 		return
 	}
-	s.saveLLMConfig(cfg) // persist to DB
 	log.Printf("[engine] LLM configured via UI: %s / %s", cfg.Provider(), cfg.Model)
 	s.getLLM(w, r)
 }
@@ -1197,6 +1377,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 		BaseURL         string `json:"base_url"`
 		Proxy           string `json:"proxy"`
 		APIKey          string `json:"api_key"`
+		ThinkingType    string `json:"thinking_type"`
 		ReasoningEffort string `json:"reasoning_effort"`
 		ProfileID       *int64 `json:"profile_id"` // 测已存 profile 时传入：api_key 为空则用它存的 key
 	}
@@ -1207,6 +1388,7 @@ func (s *Server) testLLM(w http.ResponseWriter, r *http.Request) {
 	cfg := agent.ConfigFrom(req.Provider, req.Model, req.BaseURL, req.APIKey, req.Proxy)
 	// mirror production: send the SAME thinking params so a provider that rejects the
 	// reasoning_effort/thinking field fails the test too (no false "test ok, run 400").
+	cfg.ThinkingType = req.ThinkingType
 	cfg.ReasoningEffort = req.ReasoningEffort
 	// API Key 解析优先级：表单输入 > 指定 profile 存的 key > 全局配置的 key。
 	// 已存 profile 的 key 不回传浏览器，所以测试已存配置时表单为空，需从 DB 取。
@@ -1236,12 +1418,13 @@ type createTaskReq struct {
 	Description          string     `json:"description"`
 	Goal                 string     `json:"goal"`
 	LLMProfileID         *int64     `json:"llm_profile_id,omitempty"`     // 指定运行本任务的 LLM 配置;省略/null=用激活配置
+	LLMProfileIDs        []int64    `json:"llm_profile_ids,omitempty"`    // 有序任务级配置链;第一项初始生效
 	TimeoutSeconds       int        `json:"timeout_seconds"`              // 任务级超时(秒);0/省略=不限时
 	PlanHeartbeatSeconds int        `json:"plan_heartbeat_seconds"`       // planner 心跳触发间隔(秒);0/省略=默认600(10min);下限=默认=600,低于自动抬到600
 	SeedFirstIntent      *bool      `json:"seed_first_intent,omitempty"`  // 创建时直接下发一条种子意图(内容=描述+目标),让 worker 免等首轮 planner 直接开跑;省略/null=默认关闭,走标准先规划再执行。显式传 true 才开(CTF 常一 work 解决时可省掉开跑前的 planner 轮)。
 	ScheduledStartAt     *time.Time `json:"scheduled_start_at,omitempty"` // 定时启动时间(RFC3339 带时区偏移;前端按 CST 解析);nil/省略/过去时间=创建后立即开始
 	SkipIntercept        bool       `json:"skip_intercept,omitempty"`     // true=本任务跳过用户配置的拦截规则(guard 以 nil interceptor 创建,仅保留审计日志);默认 false
-	ScopeLocked         *bool      `json:"scope_locked,omitempty"`       // true=扫描范围锁定为初始目标 Host(禁止自动/手动扩域);省略/null=默认 false
+	ScopeLocked          *bool      `json:"scope_locked,omitempty"`       // true=扫描范围锁定为初始目标 Host(禁止自动/手动扩域);省略/null=默认 false
 }
 
 func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
@@ -1253,19 +1436,22 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	if strings.TrimSpace(req.Description) == "" {
 		req.Description = "未命名任务"
 	}
-	// validate the pinned profile up front (must exist + be usable), so a bad id fails
-	// task creation instead of silently falling back to the active profile at run time.
-	if req.LLMProfileID != nil {
-		if _, ok := s.loadProfileConfig(*req.LLMProfileID); !ok {
-			writeErr(w, 400, "所选 LLM 配置不存在或未设置 API Key")
-			return
-		}
+	if len(req.LLMProfileIDs) == 0 && req.LLMProfileID != nil {
+		req.LLMProfileIDs = []int64{*req.LLMProfileID}
+	}
+	if err := s.validateTaskProfileIDs(req.LLMProfileIDs); err != nil {
+		writeErr(w, 400, err.Error())
+		return
 	}
 	if req.TimeoutSeconds < 0 {
 		req.TimeoutSeconds = 0
 	}
 	scopeLocked := req.ScopeLocked != nil && *req.ScopeLocked
-	t, err := s.m.CreateTask(req.Description, req.Goal, req.LLMProfileID, req.TimeoutSeconds, req.PlanHeartbeatSeconds, req.ScheduledStartAt, req.SkipIntercept, scopeLocked)
+	t, err := s.m.CreateTaskWithOptions(req.Description, req.Goal, db.TaskCreateOptions{
+		LLMProfileIDs: req.LLMProfileIDs, TimeoutSeconds: req.TimeoutSeconds,
+		PlanHeartbeatSeconds: req.PlanHeartbeatSeconds, ScheduledStartAt: req.ScheduledStartAt,
+		SkipIntercept: req.SkipIntercept, ScopeLocked: scopeLocked,
+	})
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -1275,6 +1461,70 @@ func (s *Server) createTask(w http.ResponseWriter, r *http.Request) {
 	// scheduleOrLaunch: 有定时且在未来则到点再 launch(持久化 scheduled 态,重启可重排),否则立即开始。
 	s.scheduleOrLaunch(t, req.Description+" "+req.Goal, req.SeedFirstIntent != nil && *req.SeedFirstIntent)
 	writeJSON(w, 201, t)
+}
+
+func (s *Server) validateTaskProfileIDs(ids []int64) error {
+	seen := map[int64]bool{}
+	for _, id := range ids {
+		if id <= 0 || seen[id] {
+			return fmt.Errorf("LLM 配置 id 无效或重复")
+		}
+		seen[id] = true
+		if _, ok := s.loadProfileConfig(id); !ok {
+			return fmt.Errorf("LLM 配置 #%d 不存在或未设置 API Key", id)
+		}
+	}
+	return nil
+}
+
+func (s *Server) updateTaskLLMProfiles(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.m.Task(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	if isTerminalStatus(t.Status) {
+		writeErr(w, 409, "已结束的任务不能修改 LLM 配置")
+		return
+	}
+	before := t.llmStateSnapshot()
+	var req struct {
+		LLMProfileIDs      []int64 `json:"llm_profile_ids"`
+		ActiveLLMProfileID *int64  `json:"active_llm_profile_id"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&req); err != nil {
+		writeErr(w, 400, "bad json: "+err.Error())
+		return
+	}
+	if err := s.validateTaskProfileIDs(req.LLMProfileIDs); err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	active := int64(0)
+	if req.ActiveLLMProfileID != nil {
+		active = *req.ActiveLLMProfileID
+	}
+	reopened, err := s.m.ReplaceTaskLLMProfiles(t.ID, req.LLMProfileIDs, active)
+	if err != nil {
+		if strings.Contains(err.Error(), "terminal") {
+			writeErr(w, 409, err.Error())
+		} else {
+			writeErr(w, 400, err.Error())
+		}
+		return
+	}
+	t.Notify()
+	llmState := t.llmStateSnapshot()
+	result := map[string]any{
+		"id": t.ID, "llm_profile_ids": llmState.ProfileIDs,
+		"active_llm_profile_id": llmState.ActiveID,
+		"llm_failover_state":    llmState.FailoverState, "reopened_intents": reopened,
+	}
+	if !sameOptionalID(before.ActiveID, llmState.ActiveID) {
+		event := s.emitManualTaskLLMSwitch(t, before.ActiveID, llmState.ActiveID)
+		result["switch_event"] = activityDTO(event)
+	}
+	writeJSON(w, 200, result)
 }
 
 var (
@@ -1362,12 +1612,13 @@ func (s *Server) seed(t *Task, text string) {
 	}
 	var rootID int64
 	if as := s.m.Assets(); as != nil {
+		taskID, _ := strconv.ParseInt(t.ID, 10, 64)
 		if net.ParseIP(host) != nil {
-			rootID, _ = as.UpsertIP(db.UpsertIPReq{IP: host})
+			rootID, _ = as.UpsertIP(db.UpsertIPReq{IP: host, TaskID: taskID})
 		} else if scheme == "https" || scheme == "http" {
-			rootID, _ = as.UpsertHTTPService(db.UpsertHTTPServiceReq{URL: u})
+			rootID, _ = as.UpsertHTTPService(db.UpsertHTTPServiceReq{URL: u, TaskID: taskID})
 		} else {
-			rootID, _ = as.UpsertRootDomain(db.UpsertRootDomainReq{Domain: host})
+			rootID, _ = as.UpsertRootDomain(db.UpsertRootDomainReq{Domain: host, TaskID: taskID})
 		}
 	}
 	// anchor the seeded assets to this task's begin root as lineage/provenance
@@ -1407,7 +1658,7 @@ func (s *Server) getTask(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "task not found")
 		return
 	}
-	writeJSON(w, 200, t)
+	writeJSON(w, 200, taskDTO(t, s.resolvedTaskStatus(t)))
 }
 
 // taskCoverage returns a task's rough asset test coverage (denominator/tested/backlog).
@@ -1423,7 +1674,7 @@ func (s *Server) taskCoverage(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
-	cov, err := as.TaskCoverage(taskID, t.ExpID)
+	cov, err := as.TaskCoverageWithSources(taskID)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
@@ -1466,22 +1717,23 @@ func (s *Server) taskAssetRefs(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, "需要 asset_id")
 		return
 	}
-	refs, err := t.Store.AssetRefs(assetID)
+	refs, err := t.Store.AssetRefsWithSources(assetID)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
-	intents := []db.AssetRef{}
-	facts := []db.AssetRef{}
-	findings := []db.AssetRef{}
+	intents := []CoverageAssetRefDTO{}
+	facts := []CoverageAssetRefDTO{}
+	findings := []CoverageAssetRefDTO{}
 	for _, ref := range refs {
+		dto := coverageAssetRefDTO(ref)
 		switch ref.Kind {
 		case "intent":
-			intents = append(intents, ref)
+			intents = append(intents, dto)
 		case "fact":
-			facts = append(facts, ref)
+			facts = append(facts, dto)
 		case "finding":
-			findings = append(findings, ref)
+			findings = append(findings, dto)
 		}
 	}
 	writeJSON(w, 200, map[string]any{"intents": intents, "facts": facts, "findings": findings})
@@ -1500,12 +1752,70 @@ func (s *Server) taskScopeList(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
-	rows, err := as.ListTaskScope(taskID)
+	rows, err := as.ListTaskScopeWithSources(taskID)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]any{"scope": rows})
+}
+
+func (s *Server) taskScopeAdd(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.m.Task(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	as := s.m.Assets()
+	if as == nil {
+		writeErr(w, 503, "asset store 未启用")
+		return
+	}
+	var body struct {
+		Kind   string `json:"kind"`
+		Value  string `json:"value"`
+		Reason string `json:"reason"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&body); err != nil {
+		writeErr(w, 400, "invalid JSON")
+		return
+	}
+	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	ts, err := as.AddAgentScope(taskID, body.Kind, body.Value, body.Reason, "manual")
+	if err != nil {
+		writeErr(w, 400, err.Error())
+		return
+	}
+	writeJSON(w, 200, ts)
+}
+
+func (s *Server) taskScopeDelete(w http.ResponseWriter, r *http.Request) {
+	t, ok := s.m.Task(r.PathValue("id"))
+	if !ok {
+		writeErr(w, 404, "task not found")
+		return
+	}
+	as := s.m.Assets()
+	if as == nil {
+		writeErr(w, 503, "asset store 未启用")
+		return
+	}
+	taskID, _ := strconv.ParseInt(t.ID, 10, 64)
+	scopeID, err := strconv.ParseInt(r.PathValue("sid"), 10, 64)
+	if err != nil {
+		writeErr(w, 400, "invalid scope id")
+		return
+	}
+	deleted, err := as.DeleteTaskScope(taskID, scopeID)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if !deleted {
+		writeErr(w, 404, "scope row not found")
+		return
+	}
+	writeJSON(w, 200, map[string]bool{"ok": true})
 }
 
 func (s *Server) frontier(w http.ResponseWriter, r *http.Request) {
@@ -1565,7 +1875,11 @@ func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, []any{})
 		return
 	}
-	f, _ := t.Store.ListByKind(db.KindFinding, 200)
+	f, err := t.Store.ListByKind(db.KindFinding, 200)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
 	tid, _ := strconv.ParseInt(t.ID, 10, 64)
 	meta, err := s.m.pg.FindingMetaByNodeID(tid)
 	if err != nil {
@@ -1576,7 +1890,42 @@ func (s *Server) findings(w http.ResponseWriter, r *http.Request) {
 		aidSet = append(aidSet, m.AssetIDs...)
 	}
 	assets := s.resolveAssetIDs(aidSet)
-	writeJSON(w, 200, findingDTOsForTask(t, f, meta, assets))
+	out := findingDTOsForTask(t, f, meta, assets)
+
+	// Related-task findings are a live, read-only view. Provenance metadata lets
+	// the task UI suppress mutation affordances while retaining stable ids.
+	sources, err := t.Store.DirectSourceStores()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	for _, source := range sources {
+		nodes, listErr := source.Store.ListByKind(db.KindFinding, 200)
+		if listErr != nil {
+			writeErr(w, 500, listErr.Error())
+			return
+		}
+		for _, node := range nodes {
+			node.SourceTaskID = source.Task.TaskID
+			node.Inherited = true
+		}
+		sourceMeta, metaErr := s.m.pg.FindingMetaByNodeID(source.Task.TaskID)
+		if metaErr != nil {
+			log.Printf("[findings] source_task=%d meta: %v", source.Task.TaskID, metaErr)
+		}
+		var sourceAssetIDs []int64
+		for _, item := range sourceMeta {
+			sourceAssetIDs = append(sourceAssetIDs, item.AssetIDs...)
+		}
+		out = append(out, findingDTOsForOwner(
+			i64s(source.Task.TaskID),
+			source.Task.Description,
+			nodes,
+			sourceMeta,
+			s.resolveAssetIDs(sourceAssetIDs),
+		)...)
+	}
+	writeJSON(w, 200, out)
 }
 
 // normFilter maps the frontend's "all" sentinel (and empty) to "" so the DB layer
@@ -1651,7 +2000,145 @@ func (s *Server) getFinding(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	assets := s.resolveAssetIDs(f.AssetIDs)
-	writeJSON(w, 200, findingFromDB(f, assets))
+	dto := findingFromDB(f, assets)
+	if contextTaskID := strings.TrimSpace(r.URL.Query().Get("context_task")); contextTaskID != "" {
+		contextTask := s.m.ResolveTask(contextTaskID)
+		if contextTask == nil {
+			writeErr(w, 404, "context task not found")
+			return
+		}
+		sourceTaskID, inherited, allowed := findingProvenanceInTask(contextTask, f.TaskID)
+		if !allowed {
+			writeErr(w, 404, "finding not available in task context")
+			return
+		}
+		dto.SourceTaskID = sourceTaskID
+		dto.Inherited = inherited
+	}
+	writeJSON(w, 200, dto)
+}
+
+// findingsExport 导出发现页的漏洞。
+//
+//	scope   = filtered（沿用页面筛选）| all（全部）| selected（勾选的 ids）
+//	format  = md-single（整合一份 .md）| md-zip（一漏洞一 .md,打包 zip）
+//	          | csv | json
+//	ids     = 逗号分隔的 finding id（scope=selected 时必填）
+//	筛选参数 severity/status/vulnclass/task_id/sort 与列表接口一致（scope=filtered 用）。
+func (s *Server) findingsExport(w http.ResponseWriter, r *http.Request) {
+	q := r.URL.Query()
+	scope := q.Get("scope")
+	format := q.Get("format")
+
+	var ids []int64
+	var filter db.FindingFilter
+	switch scope {
+	case "selected":
+		for _, part := range strings.Split(q.Get("ids"), ",") {
+			part = strings.TrimSpace(part)
+			if part == "" {
+				continue
+			}
+			id, err := strconv.ParseInt(part, 10, 64)
+			if err != nil || id <= 0 {
+				writeErr(w, 400, "bad finding id: "+part)
+				return
+			}
+			ids = append(ids, id)
+		}
+		if len(ids) == 0 {
+			writeErr(w, 400, "no findings selected")
+			return
+		}
+	case "all":
+		// 空 filter = 不加任何条件。
+	case "filtered", "":
+		filter = db.FindingFilter{
+			Severity:  normFilter(q.Get("severity")),
+			Status:    normFilter(q.Get("status")),
+			VulnClass: normFilter(q.Get("vulnclass")),
+			TaskID:    normFilter(q.Get("task_id")),
+			Sort:      q.Get("sort"),
+		}
+	default:
+		writeErr(w, 400, "bad scope: "+scope)
+		return
+	}
+
+	fs, err := s.m.pg.ListFindingsForExport(filter, ids)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+
+	now := time.Now()
+	stamp := now.Format("20060102-150405")
+	setDownload := func(contentType, filename string) {
+		w.Header().Set("Content-Type", contentType)
+		w.Header().Set("Content-Disposition", fmt.Sprintf(`attachment; filename="%s"`, filename))
+	}
+
+	switch format {
+	case "md-single":
+		setDownload("text/markdown; charset=utf-8", "findings-"+stamp+".md")
+		_, _ = w.Write([]byte(report.FindingsMarkdown(fs, now)))
+	case "md-zip":
+		setDownload("application/zip", "findings-"+stamp+".zip")
+		zw := zip.NewWriter(w)
+		used := map[string]int{}
+		for _, f := range fs {
+			base := report.FindingFilename(f)
+			name := base
+			// 去重:同名文件追加 -2、-3……
+			if n := used[base]; n > 0 {
+				name = fmt.Sprintf("%s-%d.md", strings.TrimSuffix(base, ".md"), n+1)
+			}
+			used[base]++
+			fw, werr := zw.Create(name)
+			if werr != nil {
+				log.Printf("[findings-export] zip create %s: %v", name, werr)
+				continue
+			}
+			_, _ = fw.Write([]byte(report.SingleFindingMarkdown(f, now)))
+		}
+		if cerr := zw.Close(); cerr != nil {
+			log.Printf("[findings-export] zip close: %v", cerr)
+		}
+	case "csv":
+		setDownload("text/csv; charset=utf-8", "findings-"+stamp+".csv")
+		_, _ = w.Write(report.FindingsCSV(fs))
+	case "json":
+		assets := s.resolveFindingAssets(fs)
+		out := make([]FindingDTO, 0, len(fs))
+		for _, f := range fs {
+			out = append(out, findingFromDB(f, assets))
+		}
+		setDownload("application/json; charset=utf-8", "findings-"+stamp+".json")
+		enc := json.NewEncoder(w)
+		enc.SetIndent("", "  ")
+		_ = enc.Encode(out)
+	default:
+		writeErr(w, 400, "bad format: "+format)
+	}
+}
+
+func findingProvenanceInTask(contextTask *Task, findingTaskID *int64) (sourceTaskID string, inherited, allowed bool) {
+	if contextTask == nil || findingTaskID == nil {
+		return "", false, false
+	}
+	contextID, err := strconv.ParseInt(contextTask.ID, 10, 64)
+	if err != nil {
+		return "", false, false
+	}
+	if *findingTaskID == contextID {
+		return "", false, true
+	}
+	for _, sourceID := range contextTask.SourceTaskIDs {
+		if sourceID == *findingTaskID {
+			return i64s(sourceID), true, true
+		}
+	}
+	return "", false, false
 }
 
 // findingLineage returns the exploration sub-DAG from the task root to this
@@ -1837,15 +2324,106 @@ func (s *Server) intents(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	// Paged form: ?before=<id> (or ?page as a marker) → {items, has_more} so the
-	// worker session list can reach past the old fixed 300 boundary on scroll.
+	// worker session list can reach past the old fixed 300 boundary on scroll. It
+	// also includes immutable intent results from directly related tasks; those
+	// rows never participate in this task's frontier or claim path.
 	before := int64(atoiDefault(q.Get("before"), 0))
-	in, hasMore, err := t.Store.ListByKindPage(db.KindIntent, before, limit)
+	in, hasMore, err := taskIntentHistoryPage(t.Store, before, limit, false, 0)
 	if err != nil {
 		log.Printf("[intents] task=%s before=%d limit=%d: %v", t.ID, before, limit, err)
 		writeErr(w, 500, err.Error())
 		return
 	}
+	sources, err := t.Store.DirectSourceStores()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	for _, source := range sources {
+		items, sourceMore, sourceErr := taskIntentHistoryPage(source.Store, before, limit, true, source.Task.TaskID)
+		if sourceErr != nil {
+			writeErr(w, 500, sourceErr.Error())
+			return
+		}
+		in = append(in, items...)
+		hasMore = hasMore || sourceMore
+	}
+	sort.Slice(in, func(i, j int) bool { return in[i].ID > in[j].ID })
+	if len(in) > limit {
+		in = in[:limit]
+		hasMore = true
+	}
 	writeJSON(w, 200, map[string]any{"items": taskNodeDTOs(in), "has_more": hasMore})
+}
+
+func inheritedIntentResult(state string) bool {
+	switch state {
+	case "done", "blocked", "exhausted", "stopped":
+		return true
+	default:
+		return false
+	}
+}
+
+// inheritedGraphSnapshot exposes immutable source-task history without leaking
+// work that is still open or running. Edges are filtered with the nodes so the
+// response cannot contain dangling ids that reveal hidden live intent topology.
+func inheritedGraphSnapshot(nodes []*db.Node, edges []db.Edge, sourceTaskID int64) ([]*db.Node, []db.Edge) {
+	visible := make(map[int64]struct{}, len(nodes))
+	filteredNodes := make([]*db.Node, 0, len(nodes))
+	for _, node := range nodes {
+		if node == nil || (node.Kind == db.KindIntent && !inheritedIntentResult(node.State)) {
+			continue
+		}
+		node.SourceTaskID = sourceTaskID
+		node.Inherited = true
+		visible[node.ID] = struct{}{}
+		filteredNodes = append(filteredNodes, node)
+	}
+	filteredEdges := make([]db.Edge, 0, len(edges))
+	for _, edge := range edges {
+		if _, ok := visible[edge.From]; !ok {
+			continue
+		}
+		if _, ok := visible[edge.To]; !ok {
+			continue
+		}
+		filteredEdges = append(filteredEdges, edge)
+	}
+	return filteredNodes, filteredEdges
+}
+
+// taskIntentHistoryPage returns one newest-first page for an exploration.
+// A source may have many open/running intents, so keep paging until enough
+// historical results are collected instead of leaking its frontier into the UI.
+func taskIntentHistoryPage(store *db.ExplorationStore, before int64, limit int, inherited bool, sourceTaskID int64) ([]*db.Node, bool, error) {
+	if !inherited {
+		return store.ListByKindPage(db.KindIntent, before, limit)
+	}
+	batch := max(limit, 300)
+	cursor := before
+	out := make([]*db.Node, 0, limit+1)
+	for {
+		page, more, err := store.ListByKindPage(db.KindIntent, cursor, batch)
+		if err != nil {
+			return nil, false, err
+		}
+		for _, node := range page {
+			if !inheritedIntentResult(node.State) {
+				continue
+			}
+			node.SourceTaskID = sourceTaskID
+			node.Inherited = true
+			out = append(out, node)
+			if len(out) > limit {
+				return out[:limit], true, nil
+			}
+		}
+		if !more || len(page) == 0 {
+			return out, false, nil
+		}
+		cursor = page[len(page)-1].ID
+	}
 }
 
 // explorationGraph returns the whole exploration chain (task graph) as nodes+edges.
@@ -1855,8 +2433,36 @@ func (s *Server) explorationGraph(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"nodes": []any{}, "edges": []any{}})
 		return
 	}
-	nodes, _ := t.Store.Nodes(2000)
-	edges, _ := t.Store.Edges(5000)
+	nodes, err := t.Store.Nodes(2000)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	edges, err := t.Store.Edges(5000)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	sources, err := t.Store.DirectSourceStores()
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	for _, source := range sources {
+		sourceNodes, nodeErr := source.Store.Nodes(2000)
+		if nodeErr != nil {
+			writeErr(w, 500, nodeErr.Error())
+			return
+		}
+		sourceEdges, edgeErr := source.Store.Edges(5000)
+		if edgeErr != nil {
+			writeErr(w, 500, edgeErr.Error())
+			return
+		}
+		sourceNodes, sourceEdges = inheritedGraphSnapshot(sourceNodes, sourceEdges, source.Task.TaskID)
+		nodes = append(nodes, sourceNodes...)
+		edges = append(edges, sourceEdges...)
+	}
 	writeJSON(w, 200, map[string]any{"nodes": taskNodeDTOs(nodes), "edges": edgeDTOs(edges)})
 }
 
@@ -1914,6 +2520,38 @@ func parseActivitySession(sess string) (db.ActivitySessionFilter, bool) {
 	return db.ActivitySessionFilter{}, false
 }
 
+// activitySessionStore resolves a worker session against the current task and
+// its direct sources. Planner/main always stay local; inherited intent sessions
+// are immutable history and use the source exploration only for reads.
+func activitySessionStore(t *Task, filter db.ActivitySessionFilter) (*db.ExplorationStore, int64, error) {
+	if filter.NodeID == nil {
+		return t.Store, 0, nil
+	}
+	node, err := t.Store.GetNodeWithSources(*filter.NodeID)
+	if err != nil {
+		return nil, 0, err
+	}
+	if node == nil || node.Kind != db.KindIntent {
+		return nil, 0, nil
+	}
+	if !node.Inherited {
+		return t.Store, 0, nil
+	}
+	if !inheritedIntentResult(node.State) {
+		return nil, 0, nil
+	}
+	sources, err := t.Store.DirectSourceStores()
+	if err != nil {
+		return nil, 0, err
+	}
+	for _, source := range sources {
+		if source.Task.TaskID == node.SourceTaskID {
+			return source.Store, source.Task.TaskID, nil
+		}
+	}
+	return nil, 0, nil
+}
+
 // activityHistory serves one reverse-paginated page of a session's activity history.
 // The latest page (no ?before) opens a session; ?before=<id> pulls the older page on
 // scroll-up. snapshot_cursor is the TASK-level max id at query time — the client uses
@@ -1934,17 +2572,42 @@ func (s *Server) activityHistory(w http.ResponseWriter, r *http.Request) {
 	}
 	before := int64(atoiDefault(q.Get("before"), 0))
 	limit := min(atoiDefault(q.Get("limit"), 200), 500) // cap so one request can't pull an unbounded slice
+	store, sourceTaskID, err := activitySessionStore(t, filter)
+	if err != nil {
+		writeErr(w, 500, err.Error())
+		return
+	}
+	if store == nil {
+		writeErr(w, 404, "session not found")
+		return
+	}
+	// The browser tails only this task's broadcaster. Keep the SSE join cursor
+	// local even when the opened worker transcript comes from a related task.
 	snapshot, err := t.Store.ActivityMaxID()
 	if err != nil {
 		log.Printf("[activity/history] task=%s session=%s snapshot: %v", t.ID, sess, err)
 		writeErr(w, 500, err.Error())
 		return
 	}
-	items, hasMore, err := t.Store.ActivityPage(filter, before, limit)
+	var items []db.Activity
+	var hasMore bool
+	if sourceTaskID > 0 {
+		// Source sessions are readable only while the intent remains terminal. The
+		// DB query also removes model reasoning/accounting rows from inherited data.
+		items, hasMore, err = store.ActivityPageForTerminalIntent(*filter.NodeID, before, limit)
+	} else {
+		items, hasMore, err = store.ActivityPage(filter, before, limit)
+	}
 	if err != nil {
 		log.Printf("[activity/history] task=%s session=%s before=%d limit=%d: %v", t.ID, sess, before, limit, err)
 		writeErr(w, 500, err.Error())
 		return
+	}
+	if sourceTaskID > 0 {
+		for i := range items {
+			items[i].SourceTaskID = sourceTaskID
+			items[i].Inherited = true
+		}
 	}
 	earliest := before
 	if len(items) > 0 {
@@ -2221,12 +2884,20 @@ func (s *Server) activityDetail(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	seq, _ := strconv.ParseInt(r.PathValue("seq"), 10, 64)
-	d, err := t.Store.ActivityDetail(seq)
+	d, err := taskActivityDetail(t, seq)
 	if err != nil {
 		writeErr(w, 500, err.Error())
 		return
 	}
 	writeJSON(w, 200, map[string]any{"detail": d})
+}
+
+// taskActivityDetail keeps the legacy local-task behavior (including thinking
+// rows), while inherited details are restricted to terminal worker intents.
+// This prevents a guessed global activity id from exposing source planner/main
+// or in-flight transcripts.
+func taskActivityDetail(t *Task, seq int64) (string, error) {
+	return t.Store.ActivityDetailWithSources(seq)
 }
 
 func (s *Server) getTraffic(w http.ResponseWriter, r *http.Request) {
@@ -2611,6 +3282,12 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "no active task")
 		return
 	}
+	if s.engine.IsDeleting(t.ID) {
+		writeErr(w, 409, "任务正在删除，无法发送新消息")
+		return
+	}
+	// 注意:任务暂停(paused)不拦截主 Agent 对话。主 Agent 编排会话独立于 planner/
+	// worker 的暂停,暂停中仍可继续对话(暂停只终止其正在进行的那一轮,见 control())。
 	var req struct {
 		Message     string           `json:"message"`
 		Attachments []chatAttachment `json:"attachments,omitempty"` // 方式1 上传的文件(路径相对任务工作目录)
@@ -2619,29 +3296,36 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 400, err.Error())
 		return
 	}
+	// Admission is serialized with deletion's chat cancellation. Mark every chat
+	// turn busy before its first activity/file write, including rule-mode turns.
+	// If deletion wins the race, the second barrier check rejects this request.
+	s.chatMu.Lock()
+	if s.engine.IsDeleting(t.ID) {
+		s.chatMu.Unlock()
+		writeErr(w, 409, "任务正在删除，无法发送新消息")
+		return
+	}
+	if s.chatBusy[t.ID] {
+		s.chatMu.Unlock()
+		writeErr(w, 409, "主 Agent 正在处理上一条消息，请稍候")
+		return
+	}
+	ctx, cancel := context.WithCancelCause(s.ctx)
+	s.chatBusy[t.ID] = true
+	s.chatCancel[t.ID] = cancel
+	s.chatMu.Unlock()
+
 	// Persist + broadcast the human turn so the 主 Agent 编排会话 survives page
 	// reloads and updates live: the conversation lives in the activity stream as
 	// worker="mainagent" (the per-task activity table, replayed via SSE). With
 	// attachments, the activity's Detail carries {text, attachments} so the transcript
 	// renders attachment cards.
 	s.engine.emitActivity(t, userActivityWithAttachments("mainagent", req.Message, req.Attachments))
-	if ma := s.mainAgentRef(); ma != nil {
-		// Serialize per task: one main-agent run at a time so concurrent messages
-		// don't corrupt the shared exp<id>-main transcript. If a prior turn is still
-		// running, tell the caller to wait rather than starting a racing run.
-		s.chatMu.Lock()
-		if s.chatBusy[t.ID] {
-			s.chatMu.Unlock()
-			writeErr(w, 409, "主 Agent 正在处理上一条消息，请稍候")
-			return
-		}
-		// Cancellable context so stopChat can abort this turn without affecting
-		// the server's root context (mirrors the conversation stop pattern).
-		ctx, cancel := context.WithCancelCause(s.ctx)
-		s.chatBusy[t.ID] = true
-		s.chatCancel[t.ID] = cancel
-		s.chatMu.Unlock()
-
+	var ma *agent.MainAgent
+	if s.taskRuntimeAvailable(t, "mainagent") {
+		ma = s.agentsForTask(t).main
+	}
+	if ma != nil {
 		// Run the agent on a per-turn cancellable ctx (NOT r.Context()): the turn can
 		// take minutes (multi-tool loop), and binding it to the request lifecycle meant
 		// a page reload / proxy timeout cancelled it mid-run ("context canceled"). The
@@ -2649,11 +3333,7 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 		// handler returns immediately and the browser never needs to hold the request.
 		go func() {
 			defer func() {
-				cancel(agent.AbortChatTurnFinished)
-				s.chatMu.Lock()
-				delete(s.chatBusy, t.ID)
-				delete(s.chatCancel, t.ID)
-				s.chatMu.Unlock()
+				s.finishTaskChat(t.ID, cancel)
 			}()
 			// emit every step (thinking/tool_use/tool_result/text/result) so the main
 			// agent session shows its work live, like worker/planner. The final answer
@@ -2674,7 +3354,26 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 	}
 	reply := s.fallbackChat(t, req.Message)
 	s.engine.emitActivity(t, db.Activity{Worker: "mainagent", Kind: "text", Summary: reply})
+	s.finishTaskChat(t.ID, cancel)
 	writeJSON(w, 200, map[string]any{"reply": reply, "mode": "rule"})
+}
+
+func (s *Server) cancelTaskChat(taskID string, cause error) bool {
+	s.chatMu.Lock()
+	cancel := s.chatCancel[taskID]
+	if cancel != nil {
+		cancel(cause)
+	}
+	s.chatMu.Unlock()
+	return cancel != nil
+}
+
+func (s *Server) finishTaskChat(taskID string, cancel context.CancelCauseFunc) {
+	cancel(agent.AbortChatTurnFinished)
+	s.chatMu.Lock()
+	delete(s.chatBusy, taskID)
+	delete(s.chatCancel, taskID)
+	s.chatMu.Unlock()
 }
 
 // stopChat aborts the in-flight main-agent turn for a task (manual stop button).
@@ -2686,14 +3385,10 @@ func (s *Server) stopChat(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, 404, "task not found")
 		return
 	}
-	s.chatMu.Lock()
-	cancel := s.chatCancel[t.ID]
-	s.chatMu.Unlock()
-	if cancel == nil {
+	if !s.cancelTaskChat(t.ID, agent.AbortChatStoppedByUser) {
 		writeJSON(w, 200, map[string]any{"status": "idle"})
 		return
 	}
-	cancel(agent.AbortChatStoppedByUser)
 	writeJSON(w, 200, map[string]any{"status": "stopping"})
 }
 

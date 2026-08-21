@@ -21,6 +21,8 @@ import type {
   CoverageAssetRefs,
   CoverageGraphData,
   DailyTokenBucket,
+  DeleteTaskOptions,
+  DeleteTaskResult,
   Edge,
   Finding,
   FindingQuery,
@@ -37,23 +39,28 @@ import type {
   LLMTask,
   MCPServer,
   MCPTool,
+  ModelTokenStat,
   PromptVar,
   PromptVersion,
   Settings,
   Severity,
+  SkillCall,
   SkillItem,
+  MissingSkill,
   SSProject,
   SSTask,
   Stats,
   Task,
   TaskAssetView,
   TaskNode,
+  TaskScopeRow,
   TokenTotal,
   TokenUsage,
   Tool,
   TrafficDetail,
   TrafficHost,
   TrafficResp,
+  UsageStats,
   WorkspaceFile,
   WorkspaceListing,
 } from "@/lib/types";
@@ -82,7 +89,19 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
     }
     throw new Error("未授权");
   }
-  if (!r.ok) throw new Error(`${init?.method ?? "GET"} ${path}: ${r.status}`);
+  if (!r.ok) {
+    const fallback = `${init?.method ?? "GET"} ${path}: ${r.status}`;
+    let message = fallback;
+    try {
+      const payload = (await r.json()) as { error?: unknown };
+      if (typeof payload.error === "string" && payload.error.trim()) {
+        message = payload.error.trim();
+      }
+    } catch {
+      // Keep the status-based fallback for empty or non-JSON error responses.
+    }
+    throw new Error(message);
+  }
   if (r.status === 204) return undefined as T;
   return r.json();
 }
@@ -97,7 +116,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
 // browser does not send cookies cross-port.
 // mockReport returns a canned Markdown report for the demo.
 function mockReport(_task?: string): string {
-  return `# ATX 渗透测试报告 — Acme Corp
+  return `# ARTEX 渗透测试报告 — Acme Corp
 
 ## 概览
 - 范围：acme.com（含 www / admin / api / shop / vpn 子域）
@@ -153,51 +172,47 @@ export const api = {
     post<{ ok: boolean }>("/auth/change-password", { old_password: oldPassword, new_password: newPassword }),
 
   // ---- tasks ----
-  tasks: (qp?: { page?: number; pageSize?: number; status?: string; query?: string }) => {
-    const p = new URLSearchParams();
-    if (qp?.page) p.set("page", String(qp.page));
-    if (qp?.pageSize) p.set("limit", String(qp.pageSize));
-    if (qp?.status && qp.status !== "all") p.set("status", qp.status);
-    if (qp?.query) p.set("q", qp.query);
-    const qs = p.toString();
-    return get<{ tasks: Task[]; active: string; total?: number; page?: number; page_size?: number }>(
-      `/tasks${qs ? `?${qs}` : ""}`,
-    ).then((r) => ({ ...r, tasks: arr(r.tasks), active: r.active ?? "" }));
-  },
-  createTask: (
-    description: string,
-    goal: string,
-    llmProfileId?: number,
-    timeoutSeconds?: number,
-    seedFirstIntent?: boolean,
-    planHeartbeatSeconds?: number,
-    scheduledStartAt?: string, // RFC3339 带时区偏移(前端按 CST 转);空/省略=立即开始
-    skipIntercept?: boolean, // true=跳过用户配置的拦截规则;默认 false
-    scopeLocked?: boolean, // true=扫描范围锁定为初始 Host;默认 false
-  ) =>
+  tasks: () =>
+    get<{ tasks: Task[]; active: string }>("/tasks").then((r) => ({ tasks: arr(r.tasks), active: r.active ?? "" })),
+  createTask: (input: {
+    description: string;
+    goal: string;
+    llmProfileIds?: number[];
+    sourceTaskIds?: string[];
+    timeoutSeconds?: number;
+    seedFirstIntent?: boolean;
+    planHeartbeatSeconds?: number;
+  }) =>
     post<Task>("/tasks", {
-      description,
-      goal,
-      llm_profile_id: llmProfileId ?? null,
-      timeout_seconds: timeoutSeconds ?? 0,
-      seed_first_intent: seedFirstIntent ?? false,
-      plan_heartbeat_seconds: planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)
-      scheduled_start_at: scheduledStartAt ?? null,
-      skip_intercept: skipIntercept ?? false,
-      scope_locked: scopeLocked ?? false,
+      description: input.description,
+      goal: input.goal,
+      llm_profile_ids: input.llmProfileIds ?? [],
+      source_task_ids: input.sourceTaskIds ?? [],
+      timeout_seconds: input.timeoutSeconds ?? 0,
+      seed_first_intent: input.seedFirstIntent ?? false,
+      plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)
     }),
-  // 删除任务;opts 里的四个可选项默认不删:assets 关联资产、findings 发现漏洞、
-  // traffic 测试流量(按任务 host 清)、files 测试过程写的文件(tasks/<id> 目录)。
-  deleteTask: (
-    id: string,
-    opts?: { assets?: boolean; findings?: boolean; traffic?: boolean; files?: boolean },
-  ) =>
-    del<{ deleted: string; assets_deleted?: number; findings_deleted?: number; traffic_deleted?: number; files_deleted?: boolean }>(
-      `/tasks/${id}`,
-      opts,
-    ),
+  updateTaskLLMProfiles: (id: string, llmProfileIds: number[], activeLLMProfileId?: number) =>
+    put<{
+      id: string;
+      llm_profile_ids: number[];
+      active_llm_profile_id?: number;
+      llm_failover_state: string;
+      reopened_intents: number;
+      switch_event?: Activity;
+    }>(`/tasks/${id}/llm`, {
+      llm_profile_ids: llmProfileIds,
+      active_llm_profile_id: activeLLMProfileId ?? null,
+    }),
+  deleteTask: (id: string, options: DeleteTaskOptions) => del<DeleteTaskResult>(`/tasks/${id}`, options),
   controlTask: (id: string, action: "pause" | "resume") =>
     post<{ id: string; paused: boolean }>(`/tasks/${id}/control`, { action }),
+  controlIntent: (taskId: string, intentId: string, action: "pause" | "resume" | "cancel") =>
+    post<{
+      id: number;
+      state: "paused" | "open" | "cancelled";
+      deleted?: { intents: number; facts: number; findings: number; activities: number };
+    }>(`/tasks/${taskId}/intents/${intentId}/control`, { action }),
   // 重跑一条没跑成功的意图(blocked/exhausted/stopped)：置回 open，worker 会重新认领、从头再跑。
   rerunIntent: (taskId: string, intentId: string) =>
     post<{ id: string; reopened: number }>(`/tasks/${taskId}/intents/${intentId}/rerun`),
@@ -217,6 +232,15 @@ export const api = {
     }>(`/tasks/${id}/coverage`),
   // 资产覆盖图：范围内全部资产 + 连接用的根域名/公司节点，含 tested/in_scope。
   taskCoverageGraph: (id: string) => get<CoverageGraphData>(`/tasks/${id}/coverage-graph`),
+  // 全局 llm_usage 聚合（仪表盘新版 token 视图）：按 profile 总量 + 按天分桶。
+  usageStats: (days = 365) => get<UsageStats>(`/tokens/usage?days=${days}`),
+  // 本任务测试范围列表（含继承自来源任务的范围）。
+  taskScope: (id: string) => get<{ scope: TaskScopeRow[] }>(`/tasks/${id}/scope`),
+  // 手动新增一条测试范围（kind=company/root_domain/subdomain/ip/cidr）。
+  addTaskScope: (id: string, kind: string, value: string, reason?: string) =>
+    post<TaskScopeRow>(`/tasks/${id}/scope`, { kind, value, reason }),
+  // 删除本任务的一条测试范围。
+  deleteTaskScope: (id: string, scopeId: number) => del<{ ok: boolean }>(`/tasks/${id}/scope/${scopeId}`),
   // 某资产在本任务里关联的意图 / 事实 / 发现（覆盖图节点抽屉用）。
   taskAssetRefs: (id: string, assetId: number) => get<CoverageAssetRefs>(`/tasks/${id}/asset-refs?asset_id=${assetId}`),
 
@@ -338,14 +362,52 @@ export const api = {
     return get<FindingsPage>(`/exploration/findings?${p.toString()}`);
   },
   findingStats: () => get<FindingStats>("/exploration/findings/stats"),
-  getFinding: (id: string) => get<Finding>(`/exploration/findings/${id}`),
+  // exportFindings 触发发现页导出并下载文件。scope=selected 时传 ids(finding_id 列表);
+  // scope=filtered 时传当前筛选(沿用 FindingQuery 的筛选字段);scope=all 忽略筛选。
+  exportFindings: async (opts: {
+    format: "md-single" | "md-zip" | "csv" | "json";
+    scope: "filtered" | "all" | "selected";
+    filters?: Omit<FindingQuery, "page" | "pageSize">;
+    ids?: string[];
+  }) => {
+    const p = new URLSearchParams({ format: opts.format, scope: opts.scope });
+    if (opts.scope === "selected") {
+      p.set("ids", (opts.ids ?? []).join(","));
+    } else if (opts.scope === "filtered" && opts.filters) {
+      const f = opts.filters;
+      if (f.severity && f.severity !== "all") p.set("severity", f.severity);
+      if (f.status && f.status !== "all") p.set("status", f.status);
+      if (f.vulnclass && f.vulnclass !== "all") p.set("vulnclass", f.vulnclass);
+      if (f.task && f.task !== "all") p.set("task_id", f.task);
+      if (f.sort) p.set("sort", f.sort);
+    }
+    const token = getToken();
+    const r = await fetch(`/api/exploration/findings/export?${p.toString()}`, {
+      headers: token ? { Authorization: `Bearer ${token}` } : {},
+    });
+    if (!r.ok) throw new Error(`export: ${r.status}`);
+    const blob = await r.blob();
+    // 文件名优先取后端 Content-Disposition,取不到则用默认名。
+    const disp = r.headers.get("Content-Disposition") ?? "";
+    const m = disp.match(/filename="?([^"]+)"?/);
+    const filename = m?.[1] ?? `findings-export`;
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement("a");
+    a.href = url;
+    a.download = filename;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+  },
+  getFinding: (id: string, contextTaskId?: string) =>
+    get<Finding>(
+      `/exploration/findings/${id}${contextTaskId ? `?context_task=${encodeURIComponent(contextTaskId)}` : ""}`,
+    ),
   // 漏洞链路:该漏洞节点回溯到任务初始节点的子图(节点 + 关系)。
-  findingLineage: (id: string) =>
-    get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/findings/${id}/lineage`),
-  setFindingStatus: (id: string, status: FindingStatus) =>
-    patch<Finding>(`/exploration/findings/${id}`, { status }),
-  setFindingSeverity: (id: string, severity: Severity) =>
-    patch<Finding>(`/exploration/findings/${id}`, { severity }),
+  findingLineage: (id: string) => get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/findings/${id}/lineage`),
+  setFindingStatus: (id: string, status: FindingStatus) => patch<Finding>(`/exploration/findings/${id}`, { status }),
+  setFindingSeverity: (id: string, severity: Severity) => patch<Finding>(`/exploration/findings/${id}`, { severity }),
   // 一次保存漏洞的名称/类别/严重等级(发现列表行内编辑用),只传出现的字段。
   updateFinding: (
     id: string,
@@ -365,17 +427,12 @@ export const api = {
       .then(arr)
       .catch(() => [] as ConvTokenSummary[]),
   explorationGraph: (task?: string) => get<{ nodes: TaskNode[]; edges: Edge[] }>(`/exploration/graph${tq(task)}`),
-  activity: (
-    task?: string,
-    opts?: { intent?: string; since?: number; limit?: number; latest?: number; exclude?: string },
-  ) => {
+  activity: (task?: string, opts?: { intent?: string; since?: number; limit?: number }) => {
     const q = new URLSearchParams();
     if (task) q.set("task", task);
     if (opts?.intent) q.set("intent", opts.intent);
     if (opts?.since) q.set("since", String(opts.since));
     if (opts?.limit) q.set("limit", String(opts.limit));
-    if (opts?.latest) q.set("latest", String(opts.latest));
-    if (opts?.exclude) q.set("exclude", opts.exclude);
     return get<{ items: Activity[]; cursor: number }>(`/exploration/activity?${q.toString()}`).then((r) => ({
       items: arr(r.items),
       cursor: r.cursor ?? 0,
@@ -426,9 +483,6 @@ export const api = {
   trafficHosts: () => get<{ hosts: TrafficHost[] }>(`/traffic/hosts`),
   trafficDeleteHost: (host: string) => del<{ deleted: number }>(`/traffic?host=${encodeURIComponent(host)}`),
   trafficDeleteHosts: (hosts: string[]) => del<{ deleted: number }>(`/traffic/hosts`, { hosts }),
-  // Export the exchanges matching the current filters as a download (bodies
-  // included, blob pointers resolved; server caps the row count).
-  // format: "raw" (default, one text block per exchange) or "json".
   trafficExport: async (host = "", method = "", q = "", limit = 2000, format: "raw" | "json" = "raw") => {
     const params = new URLSearchParams();
     if (host) params.set("host", host);
@@ -487,6 +541,9 @@ export const api = {
     return r.json() as Promise<{ status: string; conversation_id?: number }>;
   },
   reportWithStatus: async (task?: string, nofilter?: boolean) => {
+    if (MOCK) {
+      return { text: await mockReport(task), filtering: false, filtered: false };
+    }
     const token = getToken();
     let qs = tq(task);
     if (nofilter) qs += qs ? "&nofilter=1" : "?nofilter=1";
@@ -504,7 +561,15 @@ export const api = {
     post<{ reply: string; mode: string }>(`/chat${tq(task)}`, { message, attachments }),
   // 方式1 文件上传:落到会话/任务工作目录 uploads/，返回可供 agent Read 的相对路径。
   chatUpload: async (scope: "task" | "session" | "staging", id: string, files: File[]) => {
-    if (MOCK) return { attachments: files.map((f) => ({ name: f.name, path: `uploads/${f.name}`, size: f.size, abs: `/mock/${f.name}` })) };
+    if (MOCK)
+      return {
+        attachments: files.map((f) => ({
+          name: f.name,
+          path: `uploads/${f.name}`,
+          size: f.size,
+          abs: `/mock/${f.name}`,
+        })),
+      };
     const fd = new FormData();
     for (const f of files) fd.append("file", f);
     const token = getToken();
@@ -531,6 +596,7 @@ export const api = {
       rate_per_second?: number;
       rate_per_minute?: number;
       context_window_k?: number;
+      thinking_type?: string;
       reasoning_effort?: string;
     }>("/llm"),
   setLLM: (
@@ -549,6 +615,7 @@ export const api = {
     base_url: string,
     api_key: string,
     proxy = "",
+    thinking_type = "",
     reasoning_effort = "",
     profile_id?: number,
   ) =>
@@ -558,6 +625,7 @@ export const api = {
       base_url,
       proxy,
       api_key,
+      thinking_type,
       reasoning_effort,
       profile_id,
     }),
@@ -573,7 +641,8 @@ export const api = {
     rate_per_second?: number;
     rate_per_minute?: number;
     context_window_k?: number;
-    reasoning_effort?: string; // ""|"off"|"low"|"medium"|"high"|"max"
+    thinking_type?: string; // ""(不发送)|"disabled"|"enabled"
+    reasoning_effort?: string; // ""(不发送)|"low"|"medium"|"high"|"xhigh"|"max"
     priority?: number; // 轮询顺位，越大越先用
     pool_exclude?: boolean; // true=不作为故障转移目标
   }) => post<{ id: number }>("/llm/profiles", p),
@@ -767,6 +836,10 @@ export const api = {
   writeSkillFile: (name: string, file: string, content: string) =>
     put<{ ok: boolean }>(`/skills/${name}/files/${file}`, { content }),
   deleteSkillPath: (skill: string, path: string) => del<{ deleted: string }>(`/skills/${skill}/files/${path}`),
+  skillUsage: (name: string, limit = 50) =>
+    get<{ calls: SkillCall[] }>(`/skills/${name}/usage?limit=${limit}`).then((r) => arr(r.calls)),
+  missingSkills: (limit = 20) =>
+    get<{ missing: MissingSkill[] }>(`/skills/missing?limit=${limit}`).then((r) => arr(r.missing)),
 
   // ---- visibility (MCP resource side) ---- (agent ids are strings per spec)
   resourceVisibility: (kind: string, id: number) =>
@@ -845,4 +918,8 @@ export const api = {
   llmRecordDetail: (id: number) => get<LLMRecordDetail>(`/llm/records/${id}`),
   llmTasks: () => get<{ tasks: LLMTask[] }>(`/llm/records/tasks`),
   llmRecordsDeleteTask: (task: string) => del<{ deleted: number }>(`/llm/records?task=${encodeURIComponent(task)}`),
+  // 按模型聚合本任务的 token 用量（来自常开的 llm_usage 计量账本，逐次调用精确，
+  // per-agent 绑定 / 轮询 / 中断消耗都覆盖）。
+  tokensByModel: (task: string) =>
+    get<{ models: ModelTokenStat[] }>(`/llm/records/by-model?task=${encodeURIComponent(task)}`),
 };

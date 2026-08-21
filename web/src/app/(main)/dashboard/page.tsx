@@ -1,6 +1,5 @@
 "use client";
 
-import { fmtTokens } from "@/lib/format";
 import * as React from "react";
 
 import Link from "next/link";
@@ -16,11 +15,11 @@ import {
   TargetIcon,
   ZapIcon,
 } from "lucide-react";
-import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, Tooltip as RechartsTooltip, XAxis, YAxis } from "recharts";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader } from "@/components/ui/card";
+import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
 import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
@@ -29,7 +28,6 @@ import type {
   Agent,
   ConvTokenSummary,
   Finding,
-  FindingStats,
   InterceptPending,
   LLMProfile,
   MCPServer,
@@ -40,6 +38,7 @@ import type {
   TokenTotal,
   Tool,
   TrafficExchange,
+  UsageStats,
 } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -63,6 +62,12 @@ function fmtRel(ts?: string | number): string {
   const h = Math.floor(m / 60);
   if (h < 24) return `${h}h 前`;
   return `${Math.floor(h / 24)}d 前`;
+}
+
+function fmtTokens(n: number): string {
+  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
+  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  return String(n);
 }
 
 const ASSET_TYPE_LABELS: Record<string, string> = {
@@ -129,51 +134,39 @@ export default function DashboardPage() {
   // data state
   const [tasks, setTasks] = React.useState<Task[]>([]);
   const [findings, setFindings] = React.useState<Finding[]>([]);
-  const [fstats, setFstats] = React.useState<FindingStats>({
-    total: 0,
-    pending: 0,
-    critical: 0,
-    high: 0,
-    medium: 0,
-    low: 0,
-    vulnclasses: [],
-    tasks: [],
-  });
   const [stats, setStats] = React.useState<Stats | null>(null);
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [pending, setPending] = React.useState<InterceptPending[]>([]);
   const [activity, setActivity] = React.useState<Activity[]>([]);
-  const [_tokens, setTokens] = React.useState<TokenTotal | null>(null);
+  const [tokens, setTokens] = React.useState<TokenTotal | null>(null);
   const [convTokens, setConvTokens] = React.useState<ConvTokenSummary[]>([]);
+  const [usageStats, setUsageStats] = React.useState<UsageStats | null>(null);
   const [assetCounts, setAssetCounts] = React.useState<Record<string, number>>({});
   const [traffic, setTraffic] = React.useState<TrafficExchange[]>([]);
-  const [trafficCount, setTrafficCount] = React.useState(0);
-  const [_agents, setAgents] = React.useState<Agent[]>([]);
-  const [_mcpServers, setMcpServers] = React.useState<MCPServer[]>([]);
-  const [_skills, setSkills] = React.useState<SkillItem[]>([]);
+  const [agents, setAgents] = React.useState<Agent[]>([]);
+  const [mcpServers, setMcpServers] = React.useState<MCPServer[]>([]);
+  const [skills, setSkills] = React.useState<SkillItem[]>([]);
   const [tools, setTools] = React.useState<Tool[]>([]);
   const [llmProfiles, setLLMProfiles] = React.useState<LLMProfile[]>([]);
 
-  // fast poll: tasks, finding stats + recent 8, stats, pending, activity (every 5s)
+  // fast poll: tasks, findings, stats, pending, activity (every 5s)
   React.useEffect(() => {
     let alive = true;
     const load = async () => {
       try {
-        const [tr, fstat, frecent, sr, sets, pr, act, tok, ctok] = await Promise.all([
+        const [tr, fr, sr, sets, pr, act, tok, ctok] = await Promise.all([
           api.tasks(),
-          api.findingStats(),
-          api.findingsPage({ page: 1, pageSize: 8, sort: "time" }),
+          api.findings(),
           api.stats(),
           api.settings(),
           api.interceptPending(),
-          api.activity(undefined, { latest: 10 }),
+          api.activity(undefined, { limit: 30 }),
           api.tokenStats(),
           api.conversationTokens(),
         ]);
         if (!alive) return;
         setTasks(tr.tasks);
-        setFindings(frecent.items);
-        setFstats(fstat);
+        setFindings(fr);
         setStats(sr);
         setSettings(sets);
         setPending(pr);
@@ -197,7 +190,7 @@ export default function DashboardPage() {
     let alive = true;
     const load = async () => {
       try {
-        const [traf, counts, agentList, mcpList, skillList, toolList, profileList] = await Promise.all([
+        const [traf, counts, agentList, mcpList, skillList, toolList, profileList, usage] = await Promise.all([
           api.traffic(0, 50),
           api.assetCounts(),
           api.agents(),
@@ -205,17 +198,17 @@ export default function DashboardPage() {
           api.skills(),
           api.tools(),
           api.llmProfiles(),
+          api.usageStats(365),
         ]);
         if (!alive) return;
         setTraffic(traf.exchanges ?? []);
-        // 卡片总数用后端全局总数（分页只拉 50 条，不能用数组长度）
-        setTrafficCount(traf.count ?? traf.exchanges?.length ?? 0);
         setAssetCounts(counts ?? {});
         setAgents(agentList);
         setMcpServers(mcpList);
         setSkills(skillList);
         setTools(toolList);
         setLLMProfiles(profileList);
+        setUsageStats(usage);
       } catch {
         /* transient errors */
       }
@@ -236,6 +229,14 @@ export default function DashboardPage() {
     return m;
   }, [tasks]);
 
+  const findingsBySev = React.useMemo(() => {
+    const m = { critical: 0, high: 0, medium: 0, low: 0 };
+    for (const f of findings) {
+      if (f.severity in m) m[f.severity as keyof typeof m]++;
+    }
+    return m;
+  }, [findings]);
+
   const sortedTasks = React.useMemo(
     () =>
       [...tasks]
@@ -254,7 +255,7 @@ export default function DashboardPage() {
       [...activity]
         .filter((a) => a.kind !== "usage")
         .sort((a, b) => b.seq - a.seq)
-        .slice(0, 12),
+        .slice(0, 6),
     [activity],
   );
 
@@ -287,56 +288,87 @@ export default function DashboardPage() {
 
   // system
   const activeProfile = llmProfiles.find((p) => p.is_default);
-  const _enabledTools = tools.filter((t) => t.enabled);
+  const enabledTools = tools.filter((t) => t.enabled);
   const pendingCount = pending.length;
 
   // ── token stats per LLM profile ──────────────────────────────────────────
   // tasks whose llm_profile_id is null/undefined used the active default profile
   const defaultProfileId = activeProfile ? Number(activeProfile.id) : null;
 
-  const tokenByProfile = React.useMemo<
-    Map<number | null, { input: number; output: number; cacheRead: number; cacheWrite: number; taskCount: number }>
-  >(() => {
-    const m = new Map<
-      number | null,
-      { input: number; output: number; cacheRead: number; cacheWrite: number; taskCount: number }
-    >();
-    for (const t of tasks) {
-      // null means "used whatever was active" → bucket under defaultProfileId
-      const key = t.llm_profile_id != null ? t.llm_profile_id : defaultProfileId;
-      const prev = m.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
-      m.set(key, {
-        input: prev.input + (t.tokens?.input_tokens ?? 0),
-        output: prev.output + (t.tokens?.output_tokens ?? 0),
-        cacheRead: prev.cacheRead + (t.tokens?.cache_read_tokens ?? 0),
-        cacheWrite: prev.cacheWrite + (t.tokens?.cache_write_tokens ?? 0),
-        taskCount: prev.taskCount + 1,
-      });
-    }
-    // merge conversation (chat) usage into the same per-profile buckets — token sums
-    // only; taskCount stays a task count.
-    for (const c of convTokens) {
-      const key = c.llm_profile_id != null ? c.llm_profile_id : defaultProfileId;
-      const prev = m.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
-      m.set(key, {
-        input: prev.input + c.input_tokens,
-        output: prev.output + c.output_tokens,
-        cacheRead: prev.cacheRead + c.cache_read_tokens,
-        cacheWrite: prev.cacheWrite + c.cache_write_tokens,
-        taskCount: prev.taskCount,
-      });
-    }
-    return m;
-  }, [tasks, convTokens, defaultProfileId]);
-
+  // 数据源开关：旧版 = activity（task.tokens + 会话），新版 = llm_usage 计量账本。
+  const [tokenVersion, setTokenVersion] = React.useState<"old" | "new">("old");
   // selected profile tab: "all" = 全部; number = specific profile id
   const [tokenTab, setTokenTab] = React.useState<number | null | "all">("all");
   // day range for the daily bar chart
   const [tokenDays, setTokenDays] = React.useState<7 | 30 | 90 | 180 | 365>(30);
 
+  // profile 名 → id，用于把 llm_usage 的 profile_name 映射到现有 profile 分栏。
+  const profileIdByName = React.useMemo(() => {
+    const m = new Map<string, number>();
+    for (const p of llmProfiles) m.set(p.name, Number(p.id));
+    return m;
+  }, [llmProfiles]);
+
+  type Bucket = { input: number; output: number; cacheRead: number; cacheWrite: number; taskCount: number };
+
+  // 旧版：按 profile 归桶（来自 activity 的 task.tokens + 会话用量）。
+  const tokenByProfileOld = React.useMemo<Map<number | null, Bucket>>(() => {
+    const m = new Map<number | null, Bucket>();
+    const fold = (key: number | null, inp: number, out: number, cr: number, cw: number, addTask: boolean) => {
+      const prev = m.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
+      m.set(key, {
+        input: prev.input + inp,
+        output: prev.output + out,
+        cacheRead: prev.cacheRead + cr,
+        cacheWrite: prev.cacheWrite + cw,
+        taskCount: prev.taskCount + (addTask ? 1 : 0),
+      });
+    };
+    for (const t of tasks) {
+      fold(
+        t.llm_profile_id ?? defaultProfileId,
+        t.tokens?.input_tokens ?? 0,
+        t.tokens?.output_tokens ?? 0,
+        t.tokens?.cache_read_tokens ?? 0,
+        t.tokens?.cache_write_tokens ?? 0,
+        true,
+      );
+    }
+    for (const c of convTokens) {
+      fold(
+        c.llm_profile_id ?? defaultProfileId,
+        c.input_tokens,
+        c.output_tokens,
+        c.cache_read_tokens,
+        c.cache_write_tokens,
+        false,
+      );
+    }
+    return m;
+  }, [tasks, convTokens, defaultProfileId]);
+
+  // 新版：按 profile 归桶（来自 llm_usage 全局聚合，逐次调用精确）。
+  const tokenByProfileNew = React.useMemo<Map<number | null, Bucket>>(() => {
+    const m = new Map<number | null, Bucket>();
+    for (const p of usageStats?.by_profile ?? []) {
+      // 未匹配到现有 profile（改名/删除/空名）→ 落到默认桶，仍计入「全部」。
+      const key = profileIdByName.get(p.profile_name) ?? defaultProfileId;
+      const prev = m.get(key) ?? { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
+      m.set(key, {
+        input: prev.input + p.input_tokens,
+        output: prev.output + p.output_tokens,
+        cacheRead: prev.cacheRead + p.cache_read_tokens,
+        cacheWrite: prev.cacheWrite + p.cache_write_tokens,
+        taskCount: prev.taskCount + p.tasks,
+      });
+    }
+    return m;
+  }, [usageStats, profileIdByName, defaultProfileId]);
+
+  const tokenByProfile = tokenVersion === "new" ? tokenByProfileNew : tokenByProfileOld;
+
   const displayedTokens = React.useMemo(() => {
     if (tokenTab === "all") {
-      // sum across all profiles
       let input = 0,
         output = 0,
         cacheRead = 0,
@@ -357,45 +389,53 @@ export default function DashboardPage() {
       : { input: 0, output: 0, cacheRead: 0, cacheWrite: 0, taskCount: 0 };
   }, [tokenTab, tokenByProfile]);
 
-  // daily token data: tasks grouped by date, filtered by day range and selected profile
-  const dailyTokenData = React.useMemo(() => {
+  // 旧版每日：把任务/会话的总量按其创建日期归桶（近似，非真实每日消耗）。
+  const dailyTokenDataOld = React.useMemo(() => {
     const now = new Date();
     now.setDate(now.getDate() - tokenDays);
     const cutoff = now.toISOString().slice(0, 10);
-
     const m = new Map<string, { input: number; output: number; cacheRead: number }>();
+    const fold = (date: string, inp: number, out: number, cr: number) => {
+      if (date < cutoff) return;
+      const prev = m.get(date) ?? { input: 0, output: 0, cacheRead: 0 };
+      m.set(date, { input: prev.input + inp, output: prev.output + out, cacheRead: prev.cacheRead + cr });
+    };
     for (const t of tasks) {
-      // filter by profile tab when not "all"
-      if (tokenTab !== "all") {
-        const taskKey = t.llm_profile_id ?? defaultProfileId;
-        if (taskKey !== tokenTab) continue;
-      }
-      const date = t.created_at.slice(0, 10);
-      if (date < cutoff) continue;
-      const prev = m.get(date) ?? { input: 0, output: 0, cacheRead: 0 };
-      m.set(date, {
-        input: prev.input + (t.tokens?.input_tokens ?? 0),
-        output: prev.output + (t.tokens?.output_tokens ?? 0),
-        cacheRead: prev.cacheRead + (t.tokens?.cache_read_tokens ?? 0),
-      });
+      if (tokenTab !== "all" && (t.llm_profile_id ?? defaultProfileId) !== tokenTab) continue;
+      fold(
+        t.created_at.slice(0, 10),
+        t.tokens?.input_tokens ?? 0,
+        t.tokens?.output_tokens ?? 0,
+        t.tokens?.cache_read_tokens ?? 0,
+      );
     }
-    // merge conversation usage by conversation created_at date, same profile filter.
     for (const c of convTokens) {
-      if (tokenTab !== "all") {
-        const convKey = c.llm_profile_id ?? defaultProfileId;
-        if (convKey !== tokenTab) continue;
-      }
-      const date = c.created_at.slice(0, 10);
-      if (date < cutoff) continue;
-      const prev = m.get(date) ?? { input: 0, output: 0, cacheRead: 0 };
-      m.set(date, {
-        input: prev.input + c.input_tokens,
-        output: prev.output + c.output_tokens,
-        cacheRead: prev.cacheRead + c.cache_read_tokens,
-      });
+      if (tokenTab !== "all" && (c.llm_profile_id ?? defaultProfileId) !== tokenTab) continue;
+      fold(c.created_at.slice(0, 10), c.input_tokens, c.output_tokens, c.cache_read_tokens);
     }
     return [...m.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => ({ date: date.slice(5), ...v }));
   }, [tasks, convTokens, tokenDays, tokenTab, defaultProfileId]);
+
+  // 新版每日：来自 llm_usage 的真实每日消耗（ts 是实际调用时刻）。
+  const dailyTokenDataNew = React.useMemo(() => {
+    const now = new Date();
+    now.setDate(now.getDate() - tokenDays);
+    const cutoff = now.toISOString().slice(0, 10);
+    const m = new Map<string, { input: number; output: number; cacheRead: number }>();
+    for (const d of usageStats?.daily ?? []) {
+      if (d.date < cutoff) continue;
+      if (tokenTab !== "all" && (profileIdByName.get(d.profile_name) ?? defaultProfileId) !== tokenTab) continue;
+      const prev = m.get(d.date) ?? { input: 0, output: 0, cacheRead: 0 };
+      m.set(d.date, {
+        input: prev.input + d.input_tokens,
+        output: prev.output + d.output_tokens,
+        cacheRead: prev.cacheRead + d.cache_read_tokens,
+      });
+    }
+    return [...m.entries()].sort(([a], [b]) => a.localeCompare(b)).map(([date, v]) => ({ date: date.slice(5), ...v }));
+  }, [usageStats, tokenDays, tokenTab, profileIdByName, defaultProfileId]);
+
+  const dailyTokenData = tokenVersion === "new" ? dailyTokenDataNew : dailyTokenDataOld;
 
   // activity kind label
   function kindLabel(a: Activity): string {
@@ -404,7 +444,7 @@ export default function DashboardPage() {
     return a.kind;
   }
 
-  function _workerColor(w: string): string {
+  function workerColor(w: string): string {
     if (w === "planner") return "text-violet-400";
     if (w === "mainagent") return "text-cyan-400";
     return "text-blue-400";
@@ -461,13 +501,13 @@ export default function DashboardPage() {
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
               <BugIcon className="size-3" /> 确认发现
             </div>
-            <div className="text-2xl font-semibold tabular-nums">{fstats.total}</div>
+            <div className="text-2xl font-semibold tabular-nums">{findings.length}</div>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-2.5 text-[10px]">
-            <span className="text-rose-500">严重 {fstats.critical}</span>
-            <span className="text-red-400">高危 {fstats.high}</span>
-            <span className="text-amber-400">中危 {fstats.medium}</span>
-            <span className="text-slate-400">低危 {fstats.low}</span>
+            <span className="text-rose-500">严重 {findingsBySev.critical}</span>
+            <span className="text-red-400">高危 {findingsBySev.high}</span>
+            <span className="text-amber-400">中危 {findingsBySev.medium}</span>
+            <span className="text-slate-400">低危 {findingsBySev.low}</span>
           </CardContent>
         </Card>
 
@@ -488,7 +528,7 @@ export default function DashboardPage() {
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
               <ActivityIcon className="size-3" /> 流量交互
             </div>
-            <div className="text-2xl font-semibold tabular-nums">{trafficCount}</div>
+            <div className="text-2xl font-semibold tabular-nums">{traffic.length}</div>
           </CardHeader>
           <CardContent className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
             {settings?.traffic_capture ? (
@@ -526,7 +566,36 @@ export default function DashboardPage() {
           <div className="flex items-center gap-1.5 text-xs font-semibold">
             <ZapIcon className="size-3.5 text-muted-foreground" />
             LLM Token 消耗
-            <span className="ml-1 text-[10px] font-normal text-muted-foreground">{tasks.length} 个任务累计</span>
+            {/* 数据源开关：旧版=activity 统计（含历史任务），新版=llm_usage 计量账本（更准，仅覆盖启用后） */}
+            <div className="ml-1 flex gap-0.5 rounded-md border bg-muted/30 p-0.5">
+              {(
+                [
+                  { v: "old", label: "旧版" },
+                  { v: "new", label: "新版" },
+                ] as const
+              ).map(({ v, label }) => (
+                <button
+                  key={v}
+                  onClick={() => setTokenVersion(v)}
+                  title={
+                    v === "new"
+                      ? "新版：来自 llm_usage 计量账本，逐次调用精确、含中断消耗；仅覆盖启用后的数据"
+                      : "旧版：来自 activity 统计（含历史任务），中断消耗不计、无法精确到模型"
+                  }
+                  className={cn(
+                    "rounded px-2 py-0.5 text-[9px] font-medium transition-colors",
+                    tokenVersion === v
+                      ? "bg-background text-foreground shadow-sm"
+                      : "text-muted-foreground hover:text-foreground",
+                  )}
+                >
+                  {label}
+                </button>
+              ))}
+            </div>
+            <span className="text-[10px] font-normal text-muted-foreground">
+              {tokenVersion === "new" ? "llm_usage" : "activity"}
+            </span>
           </div>
           {/* Profile tabs */}
           <div className="flex flex-wrap items-center gap-1">
@@ -747,26 +816,43 @@ export default function DashboardPage() {
       {/* ── Row 3: 活动流 | 发现 ── */}
       <div className="grid grid-cols-1 gap-3 lg:grid-cols-2">
         {/* 活动流 */}
-        <Card className="flex flex-col p-4">
+        <Card className="p-4">
           <div className="mb-3 flex items-center justify-between">
             <div className="flex items-center gap-1.5 text-xs font-semibold">
               <ActivityIcon className="size-3.5 text-muted-foreground" />
               活动流
             </div>
-            <Link
-              href="/function/tasks"
-              className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground"
-            >
-              查看任务 <ArrowUpRightIcon className="size-3" />
-            </Link>
+            <div className="flex items-center gap-2">
+              <span className="text-[10px] text-muted-foreground">
+                {activity.filter((a) => a.kind !== "usage").length} 条事件
+              </span>
+              <Link
+                href="/function/tasks"
+                className="flex items-center gap-0.5 text-[10px] text-muted-foreground hover:text-foreground"
+              >
+                查看任务 <ArrowUpRightIcon className="size-3" />
+              </Link>
+            </div>
           </div>
 
-          <div className="flex min-h-[280px] flex-1 flex-col divide-y overflow-hidden">
+          <div className="mb-2.5 flex flex-wrap gap-1.5">
+            {(["tool_use", "tool_result", "text", "thinking", "result"] as const).map((kind) => {
+              const count = activity.filter((a) => a.kind === kind).length;
+              if (count === 0) return null;
+              return (
+                <span key={kind} className="rounded border bg-muted/20 px-1.5 py-0.5 text-[9px] text-muted-foreground">
+                  {kind} <strong className="text-foreground/70">{count}</strong>
+                </span>
+              );
+            })}
+          </div>
+
+          <div className="divide-y">
             {recentActivity.length === 0 ? (
               <div className="py-4 text-center text-xs text-muted-foreground">暂无活动记录</div>
             ) : (
               recentActivity.map((a) => (
-                <div key={a.seq} className="flex max-h-[56px] flex-1 gap-2.5 py-2">
+                <div key={a.seq} className="flex gap-2.5 py-2">
                   <span
                     className={cn(
                       "shrink-0 self-start rounded border px-1.5 py-0.5 font-mono text-[9px]",
@@ -853,77 +939,75 @@ export default function DashboardPage() {
             </Link>
           </div>
         </div>
-        <div className="overflow-x-auto">
-          <table className="w-full border-collapse text-xs">
-            <thead>
-              <tr className="border-b">
-                {["任务", "状态", "引擎", "目标进度", "在途", "最近活动"].map((h) => (
-                  <th
-                    key={h}
-                    className="px-4 py-2 text-left text-[9px] font-semibold uppercase tracking-widest text-muted-foreground first:pl-4"
-                  >
-                    {h}
-                  </th>
-                ))}
+        <table className="w-full border-collapse text-xs">
+          <thead>
+            <tr className="border-b">
+              {["任务", "状态", "引擎", "目标进度", "在途", "最近活动"].map((h) => (
+                <th
+                  key={h}
+                  className="px-4 py-2 text-left text-[9px] font-semibold uppercase tracking-widest text-muted-foreground first:pl-4"
+                >
+                  {h}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody>
+            {sortedTasks.length === 0 ? (
+              <tr>
+                <td colSpan={6} className="px-4 py-6 text-center text-xs text-muted-foreground">
+                  暂无任务
+                </td>
               </tr>
-            </thead>
-            <tbody>
-              {sortedTasks.length === 0 ? (
-                <tr>
-                  <td colSpan={6} className="px-4 py-6 text-center text-xs text-muted-foreground">
-                    暂无任务
-                  </td>
-                </tr>
-              ) : (
-                sortedTasks.map((t) => {
-                  const goalsPct = t.goals_total ? Math.round(((t.goals_met ?? 0) / t.goals_total) * 100) : null;
-                  return (
-                    <tr key={t.id} className="border-b last:border-0 transition-colors hover:bg-muted/30">
-                      <td className="max-w-xs px-4 py-3">
-                        <Link href={`/function/tasks/detail?id=${t.id}`} className="group flex flex-col">
-                          <span className="truncate font-medium group-hover:underline">{t.description}</span>
-                          <span className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">{t.id}</span>
-                        </Link>
-                      </td>
-                      <td className="px-4 py-3">
-                        <StatusBadge domain="task" value={t.status} dot className="px-1.5 py-0 text-[10px]" />
-                      </td>
-                      <td className="px-4 py-3">
-                        <StatusBadge
-                          domain="engine"
-                          value={t.engine_mode ?? "idle"}
-                          className="px-1.5 py-0 text-[10px]"
-                        />
-                      </td>
-                      <td className="px-4 py-3">
-                        {goalsPct !== null ? (
-                          <div className="flex items-center gap-2">
-                            <Progress value={goalsPct} className="h-1 w-14" />
-                            <span className="tabular-nums text-muted-foreground">
-                              {t.goals_met ?? 0}/{t.goals_total}
-                            </span>
-                          </div>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 tabular-nums">
-                        {(t.in_flight ?? 0) > 0 ? (
-                          <span className="font-semibold">{t.in_flight}</span>
-                        ) : (
-                          <span className="text-muted-foreground">—</span>
-                        )}
-                      </td>
-                      <td className="px-4 py-3 tabular-nums text-muted-foreground">
-                        {fmtRel(t.last_activity_unix ?? t.created_unix)}
-                      </td>
-                    </tr>
-                  );
-                })
-              )}
-            </tbody>
-          </table>
-        </div>
+            ) : (
+              sortedTasks.map((t) => {
+                const goalsPct = t.goals_total ? Math.round(((t.goals_met ?? 0) / t.goals_total) * 100) : null;
+                return (
+                  <tr key={t.id} className="border-b last:border-0 transition-colors hover:bg-muted/30">
+                    <td className="max-w-xs px-4 py-3">
+                      <Link href={`/function/tasks/detail?id=${t.id}`} className="group flex flex-col">
+                        <span className="truncate font-medium group-hover:underline">{t.description}</span>
+                        <span className="mt-0.5 truncate font-mono text-[10px] text-muted-foreground">{t.id}</span>
+                      </Link>
+                    </td>
+                    <td className="px-4 py-3">
+                      <StatusBadge domain="task" value={t.status} dot className="px-1.5 py-0 text-[10px]" />
+                    </td>
+                    <td className="px-4 py-3">
+                      <StatusBadge
+                        domain="engine"
+                        value={t.engine_mode ?? "idle"}
+                        className="px-1.5 py-0 text-[10px]"
+                      />
+                    </td>
+                    <td className="px-4 py-3">
+                      {goalsPct !== null ? (
+                        <div className="flex items-center gap-2">
+                          <Progress value={goalsPct} className="h-1 w-14" />
+                          <span className="tabular-nums text-muted-foreground">
+                            {t.goals_met ?? 0}/{t.goals_total}
+                          </span>
+                        </div>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 tabular-nums">
+                      {(t.in_flight ?? 0 > 0) ? (
+                        <span className="font-semibold">{t.in_flight}</span>
+                      ) : (
+                        <span className="text-muted-foreground">—</span>
+                      )}
+                    </td>
+                    <td className="px-4 py-3 tabular-nums text-muted-foreground">
+                      {fmtRel(t.last_activity_unix ?? t.created_unix)}
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </Card>
 
       {/* ── Row 5: 资产分布 | 流量状态码 | 拦截 & 待审批 ── */}
@@ -960,7 +1044,7 @@ export default function DashboardPage() {
 
         {/* 流量状态码 */}
         <Card className="p-4">
-          <SectionTitle icon={ActivityIcon} sub={`近 ${traffic.length} 条请求`}>
+          <SectionTitle icon={ActivityIcon} sub={`${traffic.length} 次请求`}>
             流量状态码
           </SectionTitle>
 

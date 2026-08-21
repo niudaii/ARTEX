@@ -23,6 +23,7 @@ import { Switch } from "@/components/ui/switch";
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { Tooltip, TooltipContent, TooltipTrigger } from "@/components/ui/tooltip";
+import { Markdown } from "@/components/markdown";
 import { api } from "@/lib/api";
 import type {
   Agent,
@@ -467,9 +468,9 @@ export function AgentEditor({ agentKey, onSaved }: { agentKey: string; onSaved?:
                   <DialogTitle>渲染预览</DialogTitle>
                   <DialogDescription>所有 {`{{.Var}}`} 已由后端用示例值替换。</DialogDescription>
                 </DialogHeader>
-                <pre className="bg-muted max-h-[60vh] overflow-auto whitespace-pre-wrap rounded-md p-3 font-mono text-xs">
-                  {preview}
-                </pre>
+                <div className="max-h-[60vh] overflow-auto rounded-md border bg-muted/30 p-3">
+                  <Markdown text={preview} />
+                </div>
               </DialogContent>
             </Dialog>
             <Button size="sm" onClick={savePrompt}>

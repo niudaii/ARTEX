@@ -65,9 +65,6 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 		tkind = kind
 		tbuf.WriteString(text)
 	}
-
-	// breadcrumbs for the terminal message: when a run is aborted or times out,
-	// "which tool was still running, for how long" is the whole diagnosis.
 	lastTool := &runTrace{startedAt: time.Now()}
 
 	var finalText string
@@ -75,7 +72,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 	for ev, err := range s.Prompt(ctx, input) {
 		if err != nil {
 			flush()
-			if ctx.Err() != nil { // ctx cancelled = stopped by the engine, not a failure
+			if ctx.Err() != nil { // engine/user cancellation, not a provider failure
 				sum, detail := terminalText(ctx, &harness.Terminal{Reason: reason, Err: ctx.Err()}, lastTool)
 				rec(db.Activity{Kind: "result", Summary: FirstLine(sum, 400), Detail: detail})
 				return finalText, reason, ctx.Err()
@@ -130,7 +127,7 @@ func captureRunSession(ctx context.Context, s *agentcore.Session, input string, 
 				}
 				flush() // flush any trailing thinking / non-final text
 				sum, detail := ev.Terminal.Text, ev.Terminal.Text
-				if sum == "" {
+				if sum == "" || ev.Terminal.Reason == harness.ReasonAbortedTools || ev.Terminal.Reason == harness.ReasonAbortedStreaming {
 					sum, detail = terminalText(ctx, ev.Terminal, lastTool)
 				}
 				u := ev.Terminal.Usage // cumulative token usage for this session
