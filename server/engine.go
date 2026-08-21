@@ -173,6 +173,26 @@ type workExecution struct {
 // The Server uses it to persist the final report Markdown.
 func (e *Engine) SetOnTaskDone(fn func(taskID string)) { e.onTaskDone = fn }
 
+// FinishTaskGoalMet persists a goal-met terminal state, runs completion side
+// effects once, and stops in-flight planner/worker executions. It is shared by
+// the planner's automatic all-goals-met path and the main agent's human-confirmed
+// goal_met tool call.
+func (e *Engine) FinishTaskGoalMet(t *Task, source, reason string) {
+	won, err := e.m.SetTaskStatusGuarded(t.ID, "done")
+	if err != nil {
+		log.Printf("[%s] task %s 标记完成落库失败: %v", source, t.ID, err)
+		return
+	}
+	if !won {
+		return
+	}
+	log.Printf("[%s] task %s 判定目标达成: %s", source, t.ID, reason)
+	if e.onTaskDone != nil {
+		go e.onTaskDone(t.ID)
+	}
+	e.cancelExec(t.ID, agent.AbortGoalMet)
+}
+
 // nextPlannerRound returns the next planner round number for a task (1-based).
 func (e *Engine) nextPlannerRound(taskID string) int {
 	v, _ := e.plannerRound.LoadOrStore(taskID, 0)
@@ -795,24 +815,11 @@ func (e *Engine) plannerLoop(ctx context.Context, t *Task) {
 		triggers := t.drainTriggers()
 		taskIDInt, _ := strconv.ParseInt(t.ID, 10, 64)
 		met, reason, err := planner.Plan(ectx, taskIDInt, e.m.assets, t.Store, t.Goal, triggers, emit, t.ScopeLocked)
-		e.decInflight(t.ID)
 		switch {
 		case err != nil && ectx.Err() == nil:
 			log.Printf("[planner] task %s 规划出错: %v", t.ID, err)
 		case met:
-			log.Printf("[planner] task %s 判定目标达成: %s", t.ID, reason)
-			// 所有目标达成 → 持久化任务状态为 done（前端 DTO 会优先展示该终态）。
-			if err := e.m.SetTaskStatus(t.ID, "done"); err != nil {
-				log.Printf("[planner] task %s 标记完成落库失败: %v", t.ID, err)
-			}
-			// persist the LLM-filtered report now that the task is done.
-			if e.onTaskDone != nil {
-				go e.onTaskDone(t.ID)
-			}
-			// 任务已判完成 → 立刻取消在跑的 worker：它们手头的意图跑出来也没意义了。
-			// 下一轮 worker 循环撞终态门就不再领新意图;被取消的这批走下方"任务已完成"分支
-			// 归为 stopped(而非 blocked)。
-			e.cancelExec(t.ID, agent.AbortGoalMet)
+			e.FinishTaskGoalMet(t, "planner", reason)
 		default:
 			log.Printf("[planner] task %s 规划完成", t.ID)
 		}

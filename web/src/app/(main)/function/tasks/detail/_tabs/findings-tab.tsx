@@ -1,23 +1,19 @@
 "use client";
 
 import * as React from "react";
+
 import Link from "next/link";
+
 import { ArrowUpRightIcon, ChevronRightIcon } from "lucide-react";
-import { cn } from "@/lib/utils";
-import { Card, CardContent } from "@/components/ui/card";
-import { Badge } from "@/components/ui/badge";
-import { StatusBadge } from "@/components/status-badge";
-import {
-  Select,
-  SelectContent,
-  SelectGroup,
-  SelectItem,
-  SelectTrigger,
-} from "@/components/ui/select";
-import { api } from "@/lib/api";
 import { toast } from "sonner";
+
+import { StatusBadge } from "@/components/status-badge";
+import { Card, CardContent } from "@/components/ui/card";
+import { Select, SelectContent, SelectGroup, SelectItem, SelectTrigger } from "@/components/ui/select";
+import { api } from "@/lib/api";
 import { statusMeta } from "@/lib/status";
 import type { Finding, FindingStatus } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 const FINDING_STATUSES: FindingStatus[] = [
   "pending",
@@ -109,9 +105,7 @@ function Row({
       </div>
       {open && (
         <div className="bg-muted/30 px-4 pb-4 pl-11">
-          <div className="mb-1 text-xs font-medium text-muted-foreground">
-            证据 / PoC
-          </div>
+          <div className="mb-1 text-xs font-medium text-muted-foreground">证据 / PoC</div>
           <pre className="overflow-auto rounded-md border bg-background p-3 font-mono text-xs whitespace-pre-wrap">
             {f.evidence}
           </pre>
@@ -207,7 +201,7 @@ export function FindingsTab({ taskId }: { taskId: string }) {
       toast.success(`已标记为「${statusMeta("finding", next).label}」`);
     } catch (e) {
       setFindings((cur) => cur.map((x) => (x.id === f.id ? { ...x, status: prev } : x)));
-      toast.error("更新失败：" + (e as Error).message);
+      toast.error(`更新失败：${(e as Error).message}`);
     }
   }, []);
 

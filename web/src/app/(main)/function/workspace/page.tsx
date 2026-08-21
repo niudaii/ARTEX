@@ -1,6 +1,5 @@
 "use client";
 
-import { fmtTime } from "@/lib/format";
 import * as React from "react";
 
 import {
@@ -24,6 +23,7 @@ import { Sheet, SheetContent, SheetFooter, SheetHeader, SheetTitle } from "@/com
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { fmtTime } from "@/lib/format";
 import type { WorkspaceEntry, WorkspaceFile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -121,7 +121,7 @@ export default function WorkspacePage() {
       })
       .catch((err) => toast.error(`上传失败：${(err as Error).message}`))
       .finally(() => {
-        if (uploadRef.current) uploadRef.current.value = "";
+        if (uploadRef.current !== null) uploadRef.current.value = "";
       });
   };
 

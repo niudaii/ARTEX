@@ -1,6 +1,5 @@
 "use client";
 
-import { statusTone } from "@/lib/format";
 import * as React from "react";
 
 import {
@@ -51,6 +50,7 @@ import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@
 import { Tabs, TabsContent, TabsList, TabsTrigger } from "@/components/ui/tabs";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { statusTone } from "@/lib/format";
 import type { Asset, Company } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -427,7 +427,7 @@ export default function AssetsPage() {
       setSelected(new Set());
       refresh();
     } catch (e) {
-      toast.error("删除失败：" + String((e as Error)?.message ?? e));
+      toast.error(`删除失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setDeleting(false);
       setDeleteOpen(false);
@@ -446,7 +446,7 @@ export default function AssetsPage() {
       toast.success(msg);
       refresh();
     } catch (e) {
-      toast.error("删除失败：" + String((e as Error)?.message ?? e));
+      toast.error(`删除失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setCompanyDeleting(false);
       setCompanyDeleteTarget(null);
@@ -482,7 +482,7 @@ export default function AssetsPage() {
         setTotal(r.total);
         setDslError("");
       } catch (e) {
-        setDslError(String((e as Error)?.message ?? e));
+        setDslError(e instanceof Error ? e.message : String(e));
         setRows([]);
         setTotal(0);
       } finally {
@@ -580,8 +580,8 @@ export default function AssetsPage() {
                       <TableCell>
                         {c.scope?.length ? (
                           <div className="flex flex-wrap gap-1">
-                            {c.scope.map((s, i) => (
-                              <Badge key={i} variant="secondary" className="font-mono text-[11px]">
+                            {c.scope.map((s) => (
+                              <Badge key={s.raw} variant="secondary" className="font-mono text-[11px]">
                                 {s.raw}
                               </Badge>
                             ))}
@@ -855,11 +855,11 @@ export default function AssetsPage() {
                     {(a.auth ?? []).length === 0 ? (
                       <span className="text-xs text-muted-foreground">—</span>
                     ) : (
-                      (a.auth ?? []).map((authItem, i) => {
+                      (a.auth ?? []).map((authItem) => {
                         const item = authItem as Record<string, string>;
                         const label = item.type || item.username || "认证";
                         return (
-                          <span key={i} className="inline-flex items-center gap-1 text-[11px]">
+                          <span key={JSON.stringify(authItem)} className="inline-flex items-center gap-1 text-[11px]">
                             <KeyRoundIcon className="size-3 text-muted-foreground" />
                             <span className="font-mono">{label}</span>
                           </span>
@@ -974,7 +974,10 @@ export default function AssetsPage() {
             <AlertDialogDescription asChild>
               <div className="space-y-3">
                 <p>此操作将永久删除该企业及其资产范围配置，不可撤销。</p>
-                <label className="flex cursor-pointer items-center gap-2.5 rounded-md border p-3 hover:bg-muted/50">
+                <label
+                  htmlFor="delete-assets-opt"
+                  className="flex cursor-pointer items-center gap-2.5 rounded-md border p-3 hover:bg-muted/50"
+                >
                   <Checkbox
                     id="delete-assets-opt"
                     checked={companyDeleteAssets}
@@ -1049,9 +1052,8 @@ function TabSearchBox({
       const { text: newText, cursor: newCursor } = applyDslSuggestion(query, adjusted);
       onChange(newText);
       requestAnimationFrame(() => {
-        if (!inputRef.current) return;
-        inputRef.current.setSelectionRange(newCursor, newCursor);
-        inputRef.current.focus();
+        inputRef.current?.setSelectionRange(newCursor, newCursor);
+        inputRef.current?.focus();
         refresh(newText, newCursor);
       });
     },
@@ -1078,6 +1080,9 @@ function TabSearchBox({
   };
 
   const cursorPos = () => inputRef.current?.selectionStart ?? query.length;
+  let searchStatus: React.ReactNode = `找到 ${count ?? 0} 条`;
+  if (loading) searchStatus = "搜索中…";
+  else if (error) searchStatus = <span className="text-destructive">{error}</span>;
 
   return (
     <div className="flex flex-col gap-1">
@@ -1097,8 +1102,9 @@ function TabSearchBox({
         {open && suggestions.length > 0 && (
           <div className="absolute top-full left-0 z-50 mt-1 w-max min-w-full max-w-sm rounded-md border bg-popover py-1 shadow-md">
             {suggestions.map((s, i) => (
-              <div
-                key={i}
+              <button
+                type="button"
+                key={`${s.kind}:${s.label}`}
                 className={cn(
                   "flex cursor-pointer items-center gap-3 px-3 py-1.5",
                   i === selIdx ? "bg-accent" : "hover:bg-accent/50",
@@ -1111,16 +1117,12 @@ function TabSearchBox({
               >
                 <span className={cn("shrink-0 font-mono text-xs font-semibold", KIND_STYLE[s.kind])}>{s.label}</span>
                 <span className="text-xs text-muted-foreground">{s.desc}</span>
-              </div>
+              </button>
             ))}
           </div>
         )}
       </div>
-      {query.trim() && !open && (
-        <p className="pl-1 text-[11px] text-muted-foreground">
-          {loading ? "搜索中…" : error ? <span className="text-destructive">{error}</span> : `找到 ${count ?? 0} 条`}
-        </p>
-      )}
+      {query.trim() && !open && <p className="pl-1 text-[11px] text-muted-foreground">{searchStatus}</p>}
     </div>
   );
 }
@@ -1158,6 +1160,11 @@ function AssetCard({
   const pageIds = dataRows?.map((r) => r.id) ?? [];
   const allSelected = pageIds.length > 0 && selected != null && pageIds.every((id) => selected.has(id));
   const someSelected = selected != null && pageIds.some((id) => selected.has(id));
+  const allChecked = (() => {
+    if (allSelected) return true;
+    if (someSelected) return "indeterminate";
+    return false;
+  })();
 
   return (
     <Card className="flex min-h-0 flex-1 flex-col overflow-hidden py-0">
@@ -1167,14 +1174,11 @@ function AssetCard({
             <TableRow>
               {cols.map((c, i) =>
                 c === "" && i === 0 && onToggleAll ? (
-                  <TableHead key={i} className="w-8 pr-0">
-                    <Checkbox
-                      checked={allSelected ? true : someSelected ? "indeterminate" : false}
-                      onCheckedChange={() => onToggleAll(pageIds)}
-                    />
+                  <TableHead key="select-all" className="w-8 pr-0">
+                    <Checkbox checked={allChecked} onCheckedChange={() => onToggleAll(pageIds)} />
                   </TableHead>
                 ) : (
-                  <TableHead key={c + i}>{c}</TableHead>
+                  <TableHead key={c}>{c}</TableHead>
                 ),
               )}
             </TableRow>
@@ -1245,8 +1249,8 @@ function Chips({ items, mono }: { items: string[]; mono?: boolean }) {
   if (clean.length === 0) return <span className="text-xs text-muted-foreground">—</span>;
   return (
     <div className="flex flex-wrap gap-1">
-      {clean.map((s, i) => (
-        <Badge key={i} variant="outline" className={cn("text-[10px]", mono && "font-mono")}>
+      {clean.map((s) => (
+        <Badge key={s} variant="outline" className={cn("text-[10px]", mono && "font-mono")}>
           {s}
         </Badge>
       ))}
@@ -1294,9 +1298,9 @@ function CompanyDialog({ onSaved }: { onSaved: () => void }) {
       setOpen(false);
       onSaved();
     } catch (e) {
-      const msg = String((e as Error)?.message ?? e);
+      const msg = e instanceof Error ? e.message : String(e);
       if (/:\s*409$/.test(msg)) toast.error("企业已存在，请换个名称");
-      else toast.error("保存失败：" + msg);
+      else toast.error(`保存失败：${msg}`);
     } finally {
       setBusy(false);
     }
@@ -1373,7 +1377,7 @@ function EditScopeDialog({ company, onSaved }: { company: Company; onSaved: () =
 
   React.useEffect(() => {
     if (!open) return;
-    setScope(company.scope?.length ? company.scope.map((s) => s.raw).join("\n") : "");
+    setScope(company.scope.length > 0 ? company.scope.map((s) => s.raw).join("\n") : "");
     setReason("");
   }, [open, company]);
 
@@ -1387,7 +1391,7 @@ function EditScopeDialog({ company, onSaved }: { company: Company; onSaved: () =
       setOpen(false);
       onSaved();
     } catch (e) {
-      toast.error("保存失败：" + String((e as Error)?.message ?? e));
+      toast.error(`保存失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(false);
     }
@@ -1467,7 +1471,7 @@ function AppendScopeDialog({ company, onSaved }: { company: Company; onSaved: ()
       setOpen(false);
       onSaved();
     } catch (e) {
-      toast.error("保存失败：" + String((e as Error)?.message ?? e));
+      toast.error(`保存失败：${e instanceof Error ? e.message : String(e)}`);
     } finally {
       setBusy(false);
     }

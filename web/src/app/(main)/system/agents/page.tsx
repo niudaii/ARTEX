@@ -45,7 +45,7 @@ function AgentGridCard({ agent, onOpen, onDeleted }: { agent: Agent; onOpen: () 
       toast.success(`已删除 Agent「${agent.name}」`);
       onDeleted();
     } catch (e) {
-      toast.error("删除失败：" + (e as Error).message);
+      toast.error(`删除失败：${(e as Error).message}`);
     }
   }
   return (
@@ -124,7 +124,7 @@ function CreateAgentDialog({ onCreated }: { onCreated: (key: string) => void }) 
       setDescription("");
       onCreated(a.key);
     } catch (e) {
-      toast.error("创建失败：" + (e as Error).message);
+      toast.error(`创建失败：${(e as Error).message}`);
     } finally {
       setBusy(false);
     }

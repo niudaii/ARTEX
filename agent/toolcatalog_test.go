@@ -37,6 +37,10 @@ func TestBuiltinToolSeeds(t *testing.T) {
 	if ts, ok := byKey["add_task_scope"]; !ok || len(ts.Agents) == 0 {
 		t.Errorf("add_task_scope not seeded / has no agent binding: %v", ts.Agents)
 	}
+	// goal_met is human-gated: only the main agent gets it by default.
+	if gm, ok := byKey["goal_met"]; !ok || len(gm.Agents) != 1 || gm.Agents[0] != "mainagent" {
+		t.Errorf("goal_met agents = %v, want [mainagent]", gm.Agents)
+	}
 	// SDK generic tools (incl. sleep, now part of DefaultTools) are deliberately NOT
 	// seeded — every agent owns them; they flow through ToolResolve untouched.
 	for _, k := range []string{"Bash", "Read", "Write", "Edit", "Grep", "sleep"} {

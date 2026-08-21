@@ -448,6 +448,7 @@ func (s *Server) seedOrchestrationTools() {
 	s.seedAutoDefaultBindings()
 	s.seedPlannerDefaultBindings()
 	s.seedWorkerDefaultBindings()
+	s.seedMainAgentGoalMetBinding()
 	s.unbindGoalMetDefault()
 }
 
@@ -495,6 +496,21 @@ func (s *Server) unbindGoalMetDefault() {
 	}
 	if err := s.m.pg.RemoveAgentFromTool("planner", "goal_met"); err != nil {
 		log.Printf("[tools] goal_met 解绑 planner 失败: %v", err)
+		return
+	}
+	_ = s.m.pg.SetSetting(flag, "true")
+}
+
+// seedMainAgentGoalMetBinding adds mainagent to goal_met once for existing DBs.
+// Fresh DBs seed the binding from defaultToolAgents; this backfills databases
+// where goal_met was previously shipped unbound.
+func (s *Server) seedMainAgentGoalMetBinding() {
+	const flag = "mainagent_goal_met_binding_v1"
+	if v, _, _ := s.m.pg.GetSetting(flag); v == "true" {
+		return
+	}
+	if err := s.m.pg.AddAgentToToolBinding("mainagent", []string{"goal_met"}); err != nil {
+		log.Printf("[mainagent] goal_met 默认绑定失败: %v", err)
 		return
 	}
 	_ = s.m.pg.SetSetting(flag, "true")

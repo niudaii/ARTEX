@@ -19,12 +19,15 @@ export const auth = {
 
   setToken(token: string): void {
     localStorage.setItem(TOKEN_KEY, token);
-    // 同步写 cookie，供 Next.js middleware 服务端读取
+    // 同步写 cookie，供 Next.js proxy 服务端读取。document.cookie 的浏览器
+    // 兼容性比 CookieStore API 更完整，避免登录后代理与客户端守卫状态不一致。
+    // biome-ignore lint/suspicious/noDocumentCookie: Auth cookie must work in all supported browsers.
     document.cookie = `${TOKEN_KEY}=${encodeURIComponent(token)}; path=/; max-age=${COOKIE_MAX_AGE}; SameSite=Lax`;
   },
 
   clearToken(): void {
     localStorage.removeItem(TOKEN_KEY);
+    // biome-ignore lint/suspicious/noDocumentCookie: Auth cookie must work in all supported browsers.
     document.cookie = `${TOKEN_KEY}=; path=/; max-age=0`;
   },
 

@@ -1,6 +1,5 @@
 "use client";
 
-import { fmtTime, fmtBytes, statusTone } from "@/lib/format";
 import * as React from "react";
 
 import {
@@ -42,6 +41,7 @@ import { Popover, PopoverContent, PopoverTrigger } from "@/components/ui/popover
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import { fmtBytes, fmtTime, statusTone } from "@/lib/format";
 import type { TrafficDetail, TrafficExchange, TrafficHost, TrafficResp } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -247,9 +247,11 @@ export default function TrafficPage() {
                 hosts.map((h) => (
                   <label
                     key={h.host}
+                    htmlFor={`traffic-host-${encodeURIComponent(h.host)}`}
                     className="flex cursor-pointer items-center gap-2 px-3 py-1.5 text-xs hover:bg-accent"
                   >
                     <Checkbox
+                      id={`traffic-host-${encodeURIComponent(h.host)}`}
                       checked={selectedHosts.includes(h.host)}
                       onCheckedChange={() =>
                         setSelectedHosts((prev) =>

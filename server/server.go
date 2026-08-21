@@ -166,6 +166,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	// Archive the report when a task reaches terminal state; the POPO completion
 	// notification fires AFTER the archive finishes (see persistTaskReport).
 	s.engine.SetOnTaskDone(func(taskID string) {
+		s.reconcileConcurrency()
 		s.persistTaskReport(taskID)
 	})
 	// Wire DB-stored prompt templates into the agents (新版方案 §3.3 / §5a). With no
@@ -243,7 +244,16 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 	}
 	// reload tasks persisted on disk so the task list survives a restart, and
 	// restore persisted paused state (so a task paused before restart stays paused).
-	for _, t := range m.LoadExisting() {
+	loadedTasks := m.LoadExisting()
+	sort.Slice(loadedTasks, func(i, j int) bool {
+		if loadedTasks[i].CreatedAt != loadedTasks[j].CreatedAt {
+			return loadedTasks[i].CreatedAt < loadedTasks[j].CreatedAt
+		}
+		left, _ := strconv.Atoi(loadedTasks[i].ID)
+		right, _ := strconv.Atoi(loadedTasks[j].ID)
+		return left < right
+	})
+	for _, t := range loadedTasks {
 		// clear stale 'running' intents from a prior crash/restart (no live worker
 		// owns them) so they re-claim instead of spinning forever in the UI.
 		if n, _ := t.Store.ResetRunningIntents(); n > 0 {
@@ -255,7 +265,7 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		// 任务级超时:为每个未终态、带 timeout 的任务起 deadline 协调器,独立于 planner/worker
 		// loop——非活跃任务重启后也能在到点后被收尾(deadline 已过则立即走收尾时序)。
 		// scheduled 态任务尚未开始运行,不起 deadline(到点 launch 后再起)。
-		if !isTerminalStatus(t.Status) && t.Status != "scheduled" {
+		if !isTerminalStatus(t.Status) && t.Status != "scheduled" && t.Paused {
 			s.engine.startDeadlineCoordinator(ctx, t)
 		}
 		// 定时任务:scheduled_start_at 在未来则重排定时器(原 goroutine 随重启消失),到点再
@@ -268,6 +278,10 @@ func New(ctx context.Context, m *Manager, skillDir string, dataDir string, keyDi
 		// Resume),定时任务由上方 scheduleOrLaunch 到点再启,终态任务无需恢复。
 		// 排队中的任务不在此启动——留给 reconcileConcurrency 按空位补位。
 		if !isTerminalStatus(t.Status) && t.Status != "scheduled" && !t.Paused && !t.Queued {
+			if s.queueIfAtCapacity(t) {
+				continue
+			}
+			s.engine.startDeadlineCoordinator(ctx, t)
 			s.engine.Run(ctx, t)
 		}
 	}
@@ -1135,6 +1149,10 @@ func (s *Server) control(w http.ResponseWriter, r *http.Request) {
 		// of task pause (the chat handler no longer rejects on IsPaused).
 		s.cancelTaskChat(t.ID, agent.AbortChatPausedWithTask)
 	case "resume":
+		if s.taskNeedsConcurrencySlot(t) && s.wouldExceedConcurrencyLimit(t) {
+			writeErr(w, 409, "已达到任务并发上限，请等待运行中的任务完成")
+			return
+		}
 		s.engine.Run(s.ctx, t) // ensure loops are alive, then un-pause + nudge
 		s.engine.Resume(t)
 	default:
@@ -2468,7 +2486,23 @@ func (s *Server) explorationGraph(w http.ResponseWriter, r *http.Request) {
 
 // activity returns the worker execution step log (incremental via ?since=seq).
 func (s *Server) activity(w http.ResponseWriter, r *http.Request) {
-	t := s.m.ResolveTask(r.URL.Query().Get("task"))
+	taskParam := r.URL.Query().Get("task")
+	if taskParam == "" {
+		limit := atoiDefault(r.URL.Query().Get("limit"), 300)
+		if s.m.pg == nil {
+			writeErr(w, 503, "database 未启用")
+			return
+		}
+		items, cursor, err := s.m.pg.ActivityLatestGlobal(limit)
+		if err != nil {
+			log.Printf("[activity] global limit=%d: %v", limit, err)
+			writeErr(w, 500, err.Error())
+			return
+		}
+		writeJSON(w, 200, map[string]any{"items": activityDTOs(items), "cursor": cursor})
+		return
+	}
+	t := s.m.ResolveTask(taskParam)
 	if t == nil {
 		writeJSON(w, 200, map[string]any{"items": []any{}, "cursor": 0})
 		return
@@ -3345,8 +3379,12 @@ func (s *Server) chat(w http.ResponseWriter, r *http.Request) {
 			// taskDir = agent 的工作目录(CWD),与 chatUpload 落盘、ensureRunDir 一致。
 			taskDir := filepath.Join(s.m.dir, "tasks", t.ID)
 			agentMsg := composeAgentMessage(req.Message, req.Attachments, taskDir)
-			if _, err := ma.Chat(ctx, maTaskID, s.m.Assets(), t.Store, t.Goal, agentMsg, emit, t.Notify, resume, t.NotifyGoal, t.ScopeLocked); err != nil && ctx.Err() == nil {
+			result, err := ma.Chat(ctx, maTaskID, s.m.Assets(), t.Store, t.Goal, agentMsg, emit, t.Notify, resume, t.NotifyGoal, t.ScopeLocked)
+			if err != nil && ctx.Err() == nil {
 				s.engine.emitActivity(t, db.Activity{Worker: "mainagent", Kind: "text", IsError: true, Summary: "（主 Agent 出错：" + err.Error() + "）"})
+			}
+			if result.GoalMet {
+				s.engine.FinishTaskGoalMet(t, "mainagent", result.GoalMetReason)
 			}
 		}()
 		writeJSON(w, 202, map[string]any{"status": "accepted", "mode": "llm"})

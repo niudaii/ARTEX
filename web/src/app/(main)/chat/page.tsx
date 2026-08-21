@@ -1,6 +1,5 @@
 "use client";
 
-import { fmtBytes, fmtTokens } from "@/lib/format";
 import * as React from "react";
 
 import {
@@ -39,6 +38,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Sheet, SheetContent, SheetDescription, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { fmtBytes, fmtTokens } from "@/lib/format";
 import type { Activity, Agent, ChatAttachment, Conversation, LLMProfile } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -416,7 +416,6 @@ function ChatView({
   const cursorRef = React.useRef(0); // newest loaded id — incremental-tail anchor
   const earliestRef = React.useRef(0); // earliest loaded id — reverse-pagination anchor
   const hasMoreRef = React.useRef(false); // older history remains above the loaded window
-  const loadingMoreRef = React.useRef(false); // guard: one scroll-up load at a time
   const [hasMore, setHasMore] = React.useState(false); // drives the "load earlier" hint
   const agent = agents.find((a) => a.key === conv.agent_key);
   const currentProfileId = conv.llm_profile_id ?? null;
@@ -501,7 +500,8 @@ function ChatView({
 
   // ---- transcript auto-scroll (open → bottom; stick to bottom unless scrolled up) ----
   const contentRef = React.useRef<HTMLDivElement | null>(null);
-  const atBottomRef = React.useRef(true);
+  const [atBottom, setAtBottom] = React.useState(true);
+  const [loadingMore, setLoadingMore] = React.useState(false);
   const viewport = React.useCallback(
     () => (contentRef.current?.closest('[data-slot="scroll-area-viewport"]') as HTMLElement | null) ?? null,
     [],
@@ -509,10 +509,10 @@ function ChatView({
   // Scroll-up loads one older page and prepends it, preserving the visual position
   // so the view doesn't jump (record height/offset before, restore the delta after).
   const loadEarlier = React.useCallback(async () => {
-    if (loadingMoreRef.current || !hasMoreRef.current) return;
+    if (loadingMore || !hasMoreRef.current) return;
     const vp = viewport();
     if (!vp) return;
-    loadingMoreRef.current = true;
+    setLoadingMore(true);
     const prevH = vp.scrollHeight;
     const prevTop = vp.scrollTop;
     try {
@@ -533,14 +533,14 @@ function ChatView({
     } catch {
       /* transient — a later scroll retries */
     } finally {
-      loadingMoreRef.current = false;
+      setLoadingMore(false);
     }
-  }, [conv.id, viewport]);
+  }, [conv.id, loadingMore, viewport]);
   React.useEffect(() => {
     const vp = viewport();
     if (!vp) return;
     const onScroll = () => {
-      atBottomRef.current = vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 60;
+      setAtBottom(vp.scrollTop + vp.clientHeight >= vp.scrollHeight - 60);
       if (vp.scrollTop <= 80) void loadEarlier(); // near top → pull an older page
     };
     vp.addEventListener("scroll", onScroll, { passive: true });
@@ -549,17 +549,14 @@ function ChatView({
   // open/switch a conversation → jump to the latest (bottom)
   React.useLayoutEffect(() => {
     const vp = viewport();
-    if (vp) {
-      vp.scrollTop = vp.scrollHeight;
-      atBottomRef.current = true;
-    }
+    if (vp) vp.scrollTop = vp.scrollHeight;
   }, [viewport]);
   // new activity → stick to bottom only if the user is already pinned there
   React.useLayoutEffect(() => {
-    if (!atBottomRef.current) return;
+    if (!atBottom) return;
     const vp = viewport();
     if (vp) vp.scrollTop = vp.scrollHeight;
-  }, [viewport]);
+  }, [atBottom, viewport]);
 
   // Per-conversation token total, live — same accounting as the main-agent
   // console: completed runs' `result` sum + the in-progress run's latest `usage`.

@@ -2,6 +2,7 @@
 
 import { useEffect, useState } from "react";
 
+import Image from "next/image";
 import { useRouter } from "next/navigation";
 
 import { Button } from "@/components/ui/button";
@@ -38,7 +39,7 @@ export default function LoginPage() {
     setError("");
     try {
       const { token } = await api.login("ARTEX", password);
-      auth.setToken(token);
+      await auth.setToken(token);
       router.replace("/function/tasks");
     } catch {
       setError("用户名或密码错误");
@@ -57,8 +58,7 @@ export default function LoginPage() {
           <div className="absolute size-80 rounded-full border border-primary-foreground/10" />
           <div className="absolute size-60 rounded-full border border-primary-foreground/15" />
           <div className="absolute size-40 rounded-full border border-primary-foreground/20" />
-          {/* eslint-disable-next-line @next/next/no-img-element */}
-          <img src="/logo.png" alt="ATX" width={160} height={160} className="relative brightness-0 invert" />
+          <Image src="/logo.png" alt="ATX" width={160} height={160} className="relative brightness-0 invert" />
         </div>
       </div>
 

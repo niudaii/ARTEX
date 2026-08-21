@@ -55,7 +55,7 @@ export default function SystemSettingsPage() {
         apply(s);
         toast.success(taskUrl.trim() ? "已保存任务链接 URL" : "已清除任务链接 URL");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingTaskUrl(false));
   };
 
@@ -72,7 +72,7 @@ export default function SystemSettingsPage() {
         apply(s);
         toast.success("已保存并发工作 agent 数（对之后启动的任务生效）");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingWorkers(false));
   };
 
@@ -84,7 +84,7 @@ export default function SystemSettingsPage() {
         apply(s);
         toast.success("已保存 Python 解释器配置");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSaving(false));
   };
   const detectPython = () => {
@@ -124,7 +124,7 @@ export default function SystemSettingsPage() {
         toast.success("已保存网络搜索配置");
       })
       .catch((e) => {
-        toast.error("保存失败：" + (e as Error).message);
+        toast.error(`保存失败：${(e as Error).message}`);
         api
           .settings()
           .then(apply)
@@ -142,7 +142,7 @@ export default function SystemSettingsPage() {
         setBraveKeyInput("");
         toast.success("已保存 Brave API Key");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingKey(false));
   };
 
@@ -155,7 +155,7 @@ export default function SystemSettingsPage() {
         setTavilyKeyInput("");
         toast.success("已保存 Tavily API Key");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingTavilyKey(false));
   };
 
@@ -167,7 +167,7 @@ export default function SystemSettingsPage() {
         apply(s);
         toast.success(proxyInput.trim() ? "已保存出口代理" : "已清除出口代理（改为直连）");
       })
-      .catch((e) => toast.error("保存失败：" + (e as Error).message))
+      .catch((e) => toast.error(`保存失败：${(e as Error).message}`))
       .finally(() => setSavingProxy(false));
   };
 
@@ -184,9 +184,9 @@ export default function SystemSettingsPage() {
       })
       .then((r) => {
         if (r.ok) toast.success(`搜索测试成功 · ${r.backend} 返回 ${r.count} 条结果`);
-        else toast.error("搜索测试失败：" + (r.error || "未知错误"));
+        else toast.error(`搜索测试失败：${r.error || "未知错误"}`);
       })
-      .catch((e) => toast.error("搜索测试失败：" + (e as Error).message))
+      .catch((e) => toast.error(`搜索测试失败：${(e as Error).message}`))
       .finally(() => setTesting(false));
   };
 

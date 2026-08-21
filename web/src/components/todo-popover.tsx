@@ -68,9 +68,9 @@ export function TodoPopover({
         {err && <p className="text-destructive px-1 text-xs">{err}</p>}
         {todos && todos.length === 0 && !loading && <p className="text-muted-foreground px-1 text-xs">（空）</p>}
         <ul className="space-y-0.5">
-          {(todos ?? []).map((t, i) => (
+          {(todos ?? []).map((t) => (
             <li
-              key={`${i}:${t.content}`}
+              key={`${t.status}:${t.content}`}
               className={cn(
                 "flex gap-1.5 px-1 text-xs",
                 t.status === "completed" && "text-muted-foreground line-through",

@@ -15,13 +15,12 @@ import {
   TargetIcon,
   ZapIcon,
 } from "lucide-react";
-import { Bar, BarChart, CartesianGrid, Tooltip as RechartsTooltip, XAxis, YAxis } from "recharts";
+import { Bar, BarChart, CartesianGrid, XAxis, YAxis } from "recharts";
 
 import { StatusBadge } from "@/components/status-badge";
 import { Badge } from "@/components/ui/badge";
-import { Card, CardContent, CardHeader, CardTitle } from "@/components/ui/card";
+import { Card, CardContent, CardHeader } from "@/components/ui/card";
 import { type ChartConfig, ChartContainer, ChartTooltip, ChartTooltipContent } from "@/components/ui/chart";
-import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
 import type {
   Activity,
@@ -65,8 +64,8 @@ function fmtRel(ts?: string | number): string {
 }
 
 function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(1) + "M";
-  if (n >= 1000) return (n / 1000).toFixed(1) + "k";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(1)}k`;
   return String(n);
 }
 
@@ -87,6 +86,8 @@ const ASSET_COLORS: Record<string, string> = {
   service: "bg-cyan-500",
   endpoint: "bg-emerald-500",
 };
+
+const TERMINAL_TASK_STATUSES = new Set<Task["status"]>(["done", "failed", "timeout"]);
 
 function statusColor(code: number): string {
   if (code < 300) return "text-emerald-500";
@@ -138,14 +139,16 @@ export default function DashboardPage() {
   const [settings, setSettings] = React.useState<Settings | null>(null);
   const [pending, setPending] = React.useState<InterceptPending[]>([]);
   const [activity, setActivity] = React.useState<Activity[]>([]);
-  const [tokens, setTokens] = React.useState<TokenTotal | null>(null);
+  const [_tokens, setTokens] = React.useState<TokenTotal | null>(null);
   const [convTokens, setConvTokens] = React.useState<ConvTokenSummary[]>([]);
   const [usageStats, setUsageStats] = React.useState<UsageStats | null>(null);
   const [assetCounts, setAssetCounts] = React.useState<Record<string, number>>({});
   const [traffic, setTraffic] = React.useState<TrafficExchange[]>([]);
-  const [agents, setAgents] = React.useState<Agent[]>([]);
-  const [mcpServers, setMcpServers] = React.useState<MCPServer[]>([]);
-  const [skills, setSkills] = React.useState<SkillItem[]>([]);
+  const [trafficCount, setTrafficCount] = React.useState(0);
+  const [trafficCountCapped, setTrafficCountCapped] = React.useState(false);
+  const [_agents, setAgents] = React.useState<Agent[]>([]);
+  const [_mcpServers, setMcpServers] = React.useState<MCPServer[]>([]);
+  const [_skills, setSkills] = React.useState<SkillItem[]>([]);
   const [tools, setTools] = React.useState<Tool[]>([]);
   const [llmProfiles, setLLMProfiles] = React.useState<LLMProfile[]>([]);
 
@@ -202,6 +205,8 @@ export default function DashboardPage() {
         ]);
         if (!alive) return;
         setTraffic(traf.exchanges ?? []);
+        setTrafficCount(traf.count ?? traf.total ?? 0);
+        setTrafficCountCapped(!!traf.total_capped);
         setAssetCounts(counts ?? {});
         setAgents(agentList);
         setMcpServers(mcpList);
@@ -229,6 +234,11 @@ export default function DashboardPage() {
     return m;
   }, [tasks]);
 
+  const activeTaskCount = React.useMemo(
+    () => tasks.filter((task) => !TERMINAL_TASK_STATUSES.has(task.status)).length,
+    [tasks],
+  );
+
   const findingsBySev = React.useMemo(() => {
     const m = { critical: 0, high: 0, medium: 0, low: 0 };
     for (const f of findings) {
@@ -238,10 +248,7 @@ export default function DashboardPage() {
   }, [findings]);
 
   const sortedTasks = React.useMemo(
-    () =>
-      [...tasks]
-        .sort((a, b) => (b.last_activity_unix ?? b.created_unix ?? 0) - (a.last_activity_unix ?? a.created_unix ?? 0))
-        .slice(0, 5),
+    () => [...tasks].sort((a, b) => (b.created_unix ?? 0) - (a.created_unix ?? 0)).slice(0, 5),
     [tasks],
   );
 
@@ -288,7 +295,7 @@ export default function DashboardPage() {
 
   // system
   const activeProfile = llmProfiles.find((p) => p.is_default);
-  const enabledTools = tools.filter((t) => t.enabled);
+  const _enabledTools = tools.filter((t) => t.enabled);
   const pendingCount = pending.length;
 
   // ── token stats per LLM profile ──────────────────────────────────────────
@@ -444,7 +451,7 @@ export default function DashboardPage() {
     return a.kind;
   }
 
-  function workerColor(w: string): string {
+  function _workerColor(w: string): string {
     if (w === "planner") return "text-violet-400";
     if (w === "mainagent") return "text-cyan-400";
     return "text-blue-400";
@@ -467,7 +474,10 @@ export default function DashboardPage() {
           <p className="text-xs text-muted-foreground">系统全局状态 · 实时刷新</p>
         </div>
         <Link href="/function/tasks">
-          <button className="flex items-center gap-1.5 rounded-lg bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-opacity hover:opacity-90">
+          <button
+            type="button"
+            className="flex items-center gap-1.5 rounded-lg bg-foreground px-3 py-1.5 text-xs font-medium text-background transition-opacity hover:opacity-90"
+          >
             <PlusIcon className="size-3.5" />
             新建任务
           </button>
@@ -483,14 +493,18 @@ export default function DashboardPage() {
               <TargetIcon className="size-3" /> 活跃任务
             </div>
             <div className="flex items-baseline gap-1.5">
-              <span className="text-2xl font-semibold tabular-nums">{tasksByStatus.running ?? 0}</span>
+              <span className="text-2xl font-semibold tabular-nums">{activeTaskCount}</span>
               <span className="text-xs text-muted-foreground">/ {tasks.length}</span>
             </div>
           </CardHeader>
           <CardContent className="flex flex-wrap gap-x-2.5 gap-y-0.5 text-[10px]">
-            {(tasksByStatus.running ?? 0) > 0 && <span className="text-blue-400">探索 {tasksByStatus.running}</span>}
-            {(tasksByStatus.paused ?? 0) > 0 && <span className="text-amber-400">暂停 {tasksByStatus.paused}</span>}
-            {(tasksByStatus.done ?? 0) > 0 && <span className="text-emerald-400">完成 {tasksByStatus.done}</span>}
+            {tasksByStatus.running > 0 && <span className="text-blue-400">探索 {tasksByStatus.running}</span>}
+            {tasksByStatus.queued > 0 && <span className="text-amber-400">排队 {tasksByStatus.queued}</span>}
+            {tasksByStatus.paused > 0 && <span className="text-amber-400">暂停 {tasksByStatus.paused}</span>}
+            {(tasksByStatus.created > 0 || tasksByStatus.scheduled > 0) && (
+              <span className="text-violet-400">待启动 {tasksByStatus.created + tasksByStatus.scheduled}</span>
+            )}
+            {tasksByStatus.done > 0 && <span className="text-emerald-400">完成 {tasksByStatus.done}</span>}
             {tasks.length === 0 && <span className="text-muted-foreground">暂无任务</span>}
           </CardContent>
         </Card>
@@ -528,7 +542,10 @@ export default function DashboardPage() {
             <div className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
               <ActivityIcon className="size-3" /> 流量交互
             </div>
-            <div className="text-2xl font-semibold tabular-nums">{traffic.length}</div>
+            <div className="text-2xl font-semibold tabular-nums">
+              {trafficCount}
+              {trafficCountCapped && "+"}
+            </div>
           </CardHeader>
           <CardContent className="flex items-center gap-1.5 text-[10px] text-muted-foreground">
             {settings?.traffic_capture ? (
@@ -576,6 +593,7 @@ export default function DashboardPage() {
               ).map(({ v, label }) => (
                 <button
                   key={v}
+                  type="button"
                   onClick={() => setTokenVersion(v)}
                   title={
                     v === "new"
@@ -600,6 +618,7 @@ export default function DashboardPage() {
           {/* Profile tabs */}
           <div className="flex flex-wrap items-center gap-1">
             <button
+              type="button"
               onClick={() => setTokenTab("all")}
               className={cn(
                 "rounded-md px-2.5 py-1 text-[10px] font-medium transition-colors",
@@ -613,10 +632,11 @@ export default function DashboardPage() {
             {llmProfiles.map((p) => {
               const key = Number(p.id);
               const hasData = tokenByProfile.has(key) || (p.is_default && tokenByProfile.has(defaultProfileId));
-              const resolvedKey = tokenByProfile.has(key) ? key : p.is_default ? defaultProfileId : key;
+              const resolvedKey = tokenByProfile.has(key) || !p.is_default ? key : defaultProfileId;
               return (
                 <button
                   key={p.id}
+                  type="button"
                   onClick={() => setTokenTab(resolvedKey)}
                   className={cn(
                     "flex items-center gap-1 rounded-md px-2.5 py-1 text-[10px] font-medium transition-colors",
@@ -667,19 +687,19 @@ export default function DashboardPage() {
                   {
                     label: "输入(未命中)",
                     value: displayedTokens.input - displayedTokens.cacheRead,
-                    barColor: dailyTrendConfig.input.color!,
+                    barColor: dailyTrendConfig.input.color,
                     text: "text-blue-400",
                   },
                   {
                     label: "缓存命中",
                     value: displayedTokens.cacheRead,
-                    barColor: dailyTrendConfig.cacheRead.color!,
+                    barColor: dailyTrendConfig.cacheRead.color,
                     text: "text-emerald-400",
                   },
                   {
                     label: "输出",
                     value: displayedTokens.output,
-                    barColor: dailyTrendConfig.output.color!,
+                    barColor: dailyTrendConfig.output.color,
                     text: "text-violet-400",
                   },
                 ].map(({ label, value, barColor, text }) => {
@@ -746,6 +766,7 @@ export default function DashboardPage() {
                 ).map(({ days, label }) => (
                   <button
                     key={days}
+                    type="button"
                     onClick={() => setTokenDays(days)}
                     className={cn(
                       "rounded px-2.5 py-0.5 text-[9px] font-medium transition-colors",
@@ -942,7 +963,7 @@ export default function DashboardPage() {
         <table className="w-full border-collapse text-xs">
           <thead>
             <tr className="border-b">
-              {["任务", "状态", "引擎", "目标进度", "在途", "最近活动"].map((h) => (
+              {["任务", "状态", "引擎", "模型", "在途", "最近活动"].map((h) => (
                 <th
                   key={h}
                   className="px-4 py-2 text-left text-[9px] font-semibold uppercase tracking-widest text-muted-foreground first:pl-4"
@@ -961,7 +982,6 @@ export default function DashboardPage() {
               </tr>
             ) : (
               sortedTasks.map((t) => {
-                const goalsPct = t.goals_total ? Math.round(((t.goals_met ?? 0) / t.goals_total) * 100) : null;
                 return (
                   <tr key={t.id} className="border-b last:border-0 transition-colors hover:bg-muted/30">
                     <td className="max-w-xs px-4 py-3">
@@ -981,19 +1001,16 @@ export default function DashboardPage() {
                       />
                     </td>
                     <td className="px-4 py-3">
-                      {goalsPct !== null ? (
-                        <div className="flex items-center gap-2">
-                          <Progress value={goalsPct} className="h-1 w-14" />
-                          <span className="tabular-nums text-muted-foreground">
-                            {t.goals_met ?? 0}/{t.goals_total}
-                          </span>
-                        </div>
+                      {t.llm_model ? (
+                        <span className="block max-w-40 truncate font-mono text-[10px]" title={t.llm_model}>
+                          {t.llm_model}
+                        </span>
                       ) : (
                         <span className="text-muted-foreground">—</span>
                       )}
                     </td>
                     <td className="px-4 py-3 tabular-nums">
-                      {(t.in_flight ?? 0 > 0) ? (
+                      {(t.in_flight ?? 0) > 0 ? (
                         <span className="font-semibold">{t.in_flight}</span>
                       ) : (
                         <span className="text-muted-foreground">—</span>

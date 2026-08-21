@@ -1,7 +1,5 @@
 "use client";
 
-import * as React from "react";
-
 import ReactMarkdown, { type Components } from "react-markdown";
 import remarkGfm from "remark-gfm";
 
@@ -29,7 +27,7 @@ const components: Components = {
   code: ({ node, className, children, ...rest }) => {
     const block = /language-/.test(className || "");
     return block ? (
-      <code className={"font-mono text-xs " + (className || "")} {...rest}>
+      <code className={`font-mono text-xs ${className || ""}`} {...rest}>
         {children}
       </code>
     ) : (

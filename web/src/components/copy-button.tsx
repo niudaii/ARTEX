@@ -34,7 +34,7 @@ export function CopyButton({
 
   React.useEffect(() => {
     return () => {
-      if (timer.current) clearTimeout(timer.current);
+      clearTimeout(timer.current ?? undefined);
     };
   }, []);
 
@@ -44,7 +44,7 @@ export function CopyButton({
     if (ok) {
       setCopied(true);
       toast.success(successMessage);
-      if (timer.current) clearTimeout(timer.current);
+      clearTimeout(timer.current ?? undefined);
       timer.current = setTimeout(() => setCopied(false), 1500);
     } else {
       toast.error("复制失败，请手动选择文本复制");
@@ -52,14 +52,7 @@ export function CopyButton({
   }
 
   return (
-    <Button
-      type="button"
-      size={size}
-      variant={variant}
-      className={cn(className)}
-      disabled={!text}
-      onClick={handleCopy}
-    >
+    <Button type="button" size={size} variant={variant} className={cn(className)} disabled={!text} onClick={handleCopy}>
       {copied ? <CheckIcon /> : <CopyIcon />}
       {label}
     </Button>

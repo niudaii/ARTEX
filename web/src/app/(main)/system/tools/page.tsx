@@ -38,37 +38,41 @@ type ParamRow = {
   parentKey?: string; // set when this is a sub-field of an array param's items
 };
 
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function toRows(schema: Record<string, any>): ParamRow[] {
-  const props = (schema?.properties ?? {}) as Record<string, Record<string, unknown>>;
-  const required = new Set<string>((schema?.required as string[]) ?? []);
+type JsonSchema = Record<string, unknown>;
+
+function stringArray(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === "string") : [];
+}
+
+function toRows(schema: JsonSchema): ParamRow[] {
+  const props = (schema.properties ?? {}) as Record<string, JsonSchema>;
+  const required = new Set<string>(stringArray(schema.required));
   const rows: ParamRow[] = [];
   for (const [name, p] of Object.entries(props)) {
-    const type = String(p?.type ?? "");
-    const hasDefault = p != null && "default" in p && (p as Record<string, unknown>).default != null;
+    const type = typeof p.type === "string" ? p.type : "";
+    const hasDefault = "default" in p && p.default != null;
     rows.push({
       name,
       type,
       required: required.has(name),
-      description: String(p?.description ?? ""),
-      defaultStr: hasDefault ? String((p as Record<string, unknown>).default) : "",
+      description: typeof p.description === "string" ? p.description : String(p.description ?? ""),
+      defaultStr: hasDefault ? String(p.default) : "",
       scalar: ["string", "integer", "number", "boolean"].includes(type),
     });
     // Expand items.properties for array params so sub-fields are editable.
     if (type === "array") {
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const itemProps = (p as any)?.items?.properties as Record<string, Record<string, unknown>> | undefined;
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const itemRequired = new Set<string>(((p as any)?.items?.required as string[]) ?? []);
+      const items = p.items as JsonSchema | undefined;
+      const itemProps = items?.properties as Record<string, JsonSchema> | undefined;
+      const itemRequired = new Set<string>(stringArray(items?.required));
       if (itemProps) {
         for (const [subName, subP] of Object.entries(itemProps)) {
-          const subType = String((subP as Record<string, unknown>)?.type ?? "");
-          const subHasDefault = subP != null && "default" in subP && subP.default != null;
+          const subType = typeof subP.type === "string" ? subP.type : "";
+          const subHasDefault = "default" in subP && subP.default != null;
           rows.push({
             name: subName,
             type: subType,
             required: itemRequired.has(subName),
-            description: String(subP?.description ?? ""),
+            description: typeof subP.description === "string" ? subP.description : String(subP.description ?? ""),
             defaultStr: subHasDefault ? String(subP.default) : "",
             scalar: ["string", "integer", "number", "boolean"].includes(subType),
             parentKey: name,
@@ -94,16 +98,16 @@ function coerceDefault(type: string, raw: string): unknown {
 }
 
 // applyRows writes edited rows back into a deep-copied schema (structure untouched).
-// eslint-disable-next-line @typescript-eslint/no-explicit-any
-function applyRows(schema: Record<string, any>, rows: ParamRow[]): Record<string, any> {
-  const next = structuredClone(schema ?? {});
-  const props = (next.properties ?? {}) as Record<string, Record<string, unknown>>;
+function applyRows(schema: JsonSchema, rows: ParamRow[]): JsonSchema {
+  const next = structuredClone(schema) as JsonSchema;
+  const props = (next.properties ?? {}) as Record<string, JsonSchema>;
   for (const r of rows) {
     if (r.parentKey) {
       // Sub-field of an array param's items.properties
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      const parent = props[r.parentKey] as any;
-      const subP = parent?.items?.properties?.[r.name] as Record<string, unknown> | undefined;
+      const parent = props[r.parentKey];
+      const items = parent?.items as JsonSchema | undefined;
+      const itemProps = items?.properties as Record<string, JsonSchema> | undefined;
+      const subP = itemProps?.[r.name];
       if (!subP) continue;
       subP.description = r.description;
       if (r.scalar) {
@@ -164,7 +168,7 @@ function ToolEditor({
       onSaved();
       onClose();
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setSaving(false);
     }
@@ -176,7 +180,7 @@ function ToolEditor({
       onSaved();
       onClose();
     } catch (e) {
-      toast.error("恢复失败：" + (e as Error).message);
+      toast.error(`恢复失败：${(e as Error).message}`);
     }
   }
 
@@ -194,8 +198,9 @@ function ToolEditor({
             <Label className="text-muted-foreground text-xs">绑定 Agent（决定该工具给哪些 Agent）</Label>
             <div className="flex flex-wrap gap-3">
               {agents.map((ag) => (
-                <label key={ag.key} className="flex items-center gap-2 text-sm">
+                <label key={ag.key} htmlFor={`tool-agent-${ag.key}`} className="flex items-center gap-2 text-sm">
                   <Checkbox
+                    id={`tool-agent-${ag.key}`}
                     checked={bound.includes(ag.key)}
                     disabled={trafficGated}
                     onCheckedChange={() => toggleAgent(ag.key)}
@@ -232,7 +237,7 @@ function ToolEditor({
           {rows.length === 0 && <span className="text-muted-foreground text-xs">（无参数）</span>}
           {rows.map((r, i) => (
             <div
-              key={(r.parentKey ?? "") + "." + r.name}
+              key={`${r.parentKey ?? ""}.${r.name}`}
               className={
                 r.parentKey ? "border-l-2 border-muted ml-3 pl-3 grid gap-2 py-2" : "grid gap-2 rounded-md border p-3"
               }
@@ -292,6 +297,7 @@ function ToolEditor({
 function ToolGridCard({ tool, onClick }: { tool: Tool; onClick: () => void }) {
   return (
     <button
+      type="button"
       onClick={onClick}
       className="hover:border-primary/50 hover:bg-muted/40 focus-visible:ring-ring flex flex-col gap-2 rounded-lg border p-4 text-left transition-colors focus-visible:ring-2 focus-visible:outline-none"
     >
@@ -579,7 +585,7 @@ function CustomToolDialog({
     const e = (t.exec ?? {}) as Record<string, unknown>;
     setKey(t.key);
     setDescription(t.description);
-    setKind((t.kind as "shell" | "command" | "script" | "http") ?? "shell");
+    setKind(t.kind as "shell" | "command" | "script" | "http");
     setEx({
       command: String(e.command ?? ""),
       code: String(e.code ?? ""),
@@ -591,8 +597,8 @@ function CustomToolDialog({
       proxy: String(e.proxy ?? ""),
       use_recording_proxy: !!e.use_recording_proxy,
     });
-    setSchemaText(t.schema && Object.keys(t.schema).length ? JSON.stringify(t.schema, null, 2) : "");
-    setBound(t.agents ?? []);
+    setSchemaText(Object.keys(t.schema).length > 0 ? JSON.stringify(t.schema, null, 2) : "");
+    setBound(t.agents);
     setDeferred(!!t.deferred);
     setEnabled(t.enabled);
   }, [edit]);
@@ -664,11 +670,11 @@ function CustomToolDialog({
     };
     try {
       if (isNew) await api.createCustomTool({ key: key.trim(), ...payload });
-      else await api.updateCustomTool(tool!.key, payload);
+      else if (tool) await api.updateCustomTool(tool.key, payload);
       toast.success(isNew ? "已创建自定义工具" : "已保存");
       onSaved();
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setSaving(false);
     }
@@ -680,7 +686,7 @@ function CustomToolDialog({
       toast.success("已删除");
       onSaved();
     } catch (e) {
-      toast.error("删除失败：" + (e as Error).message);
+      toast.error(`删除失败：${(e as Error).message}`);
     }
   }
   // runTest dry-runs the CURRENT form (unsaved) with the sample params, so a
@@ -838,8 +844,9 @@ function CustomToolDialog({
                     onChange={(e) => setEx({ ...ex, proxy: e.target.value })}
                   />
                 </div>
-                <label className="mt-4 flex items-center gap-2 text-sm">
+                <label htmlFor="tool-recording-proxy" className="mt-4 flex items-center gap-2 text-sm">
                   <Checkbox
+                    id="tool-recording-proxy"
                     checked={ex.use_recording_proxy}
                     onCheckedChange={(v) => setEx({ ...ex, use_recording_proxy: !!v })}
                   />
@@ -883,8 +890,12 @@ function CustomToolDialog({
             <Label className="text-muted-foreground text-xs">绑定 Agent</Label>
             <div className="flex flex-wrap gap-3">
               {agents.map((a) => (
-                <label key={a.key} className="flex items-center gap-2 text-sm">
-                  <Checkbox checked={bound.includes(a.key)} onCheckedChange={() => toggleAgent(a.key)} />
+                <label key={a.key} htmlFor={`tool-editor-agent-${a.key}`} className="flex items-center gap-2 text-sm">
+                  <Checkbox
+                    id={`tool-editor-agent-${a.key}`}
+                    checked={bound.includes(a.key)}
+                    onCheckedChange={() => toggleAgent(a.key)}
+                  />
                   {a.name}
                   <span className="text-muted-foreground font-mono text-xs">{a.key}</span>
                 </label>
@@ -893,12 +904,13 @@ function CustomToolDialog({
           </div>
 
           <div className="flex items-center gap-6">
-            <label className="flex items-center gap-2 text-sm">
-              <Switch checked={enabled} onCheckedChange={setEnabled} /> 启用
+            <label htmlFor="tool-enabled" className="flex items-center gap-2 text-sm">
+              <Switch id="tool-enabled" checked={enabled} onCheckedChange={setEnabled} /> 启用
             </label>
             {kind !== "shell" && (
-              <label className="flex items-center gap-2 text-sm">
-                <Switch checked={deferred} onCheckedChange={setDeferred} /> deferred（大量不常用工具才开）
+              <label htmlFor="tool-deferred" className="flex items-center gap-2 text-sm">
+                <Switch id="tool-deferred" checked={deferred} onCheckedChange={setDeferred} />{" "}
+                deferred（大量不常用工具才开）
               </label>
             )}
           </div>

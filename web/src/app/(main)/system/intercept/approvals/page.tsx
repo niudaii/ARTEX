@@ -1,6 +1,5 @@
 "use client";
 
-import { fmtTime } from "@/lib/format";
 import * as React from "react";
 
 import { CheckIcon, ClipboardListIcon, RefreshCwIcon, ShieldAlertIcon, XIcon } from "lucide-react";
@@ -11,6 +10,7 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import { fmtTime } from "@/lib/format";
 import type { InterceptApprovalRow } from "@/lib/types";
 
 // ---- helpers ----------------------------------------------------------------
@@ -80,7 +80,7 @@ export default function ApprovalsPage() {
     });
   }
 
-  async function load() {
+  const load = React.useCallback(async () => {
     try {
       const items = await api.interceptHistory();
       setRows(items);
@@ -89,13 +89,13 @@ export default function ApprovalsPage() {
     } finally {
       setLoading(false);
     }
-  }
+  }, []);
 
   React.useEffect(() => {
     load();
     const t = setInterval(load, 5000);
     return () => clearInterval(t);
-  }, []);
+  }, [load]);
 
   async function decide(id: number, decision: "allowed" | "denied") {
     if (deciding !== null) return;
@@ -114,7 +114,7 @@ export default function ApprovalsPage() {
   }
 
   const pending = rows.filter((r) => r.status === "pending");
-  const decided = rows.filter((r) => r.status !== "pending");
+  const _decided = rows.filter((r) => r.status !== "pending");
 
   return (
     <div className="flex flex-1 flex-col gap-6 p-6">

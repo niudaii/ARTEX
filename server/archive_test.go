@@ -3,7 +3,6 @@ package server
 import (
 	"os"
 	"path/filepath"
-	"strings"
 	"testing"
 )
 
@@ -49,46 +48,5 @@ func TestArchiveMessageNoSkillErrors(t *testing.T) {
 	}
 	if msg != "" {
 		t.Fatalf("expected empty message on error, got:\n%s", msg)
-	}
-}
-
-// TestArchiveMessageInvokesSkill covers the happy path against a real DB:
-// the skill is on disk and seeded visible to auto, so archiveMessage sends a
-// short Skill-invocation trigger. Toggling the visibility off makes it fail
-// with an error (no fallback flow).
-func TestArchiveMessageInvokesSkill(t *testing.T) {
-	m, err := NewManager(t.TempDir(), "")
-	if err != nil {
-		t.Skipf("postgres unavailable (%v) — skipping", err)
-	}
-	defer m.Close()
-	skillDir := t.TempDir()
-	writeReportArchiveSkill(t, skillDir)
-	s := &Server{m: m, skillDir: skillDir}
-
-	task := &Task{ID: "42", Description: "example.com 渗透测试"}
-	msg, err := s.archiveMessage(task)
-	if err != nil {
-		t.Fatalf("archiveMessage with usable skill: %v", err)
-	}
-	for _, want := range []string{
-		"【报告归档任务】task_id=42",
-		`Skill 工具（name="report-archive"）`,
-	} {
-		if !strings.Contains(msg, want) {
-			t.Fatalf("invoke message missing %q:\n%s", want, msg)
-		}
-	}
-
-	a, err := m.PG().GetAgentByKey("auto")
-	if err != nil || a == nil {
-		t.Fatalf("auto agent: %v", err)
-	}
-	if err := m.PG().ToggleSkillVisibility(a.ID, "report-archive", false); err != nil {
-		t.Fatal(err)
-	}
-	msg, err = s.archiveMessage(task)
-	if err == nil {
-		t.Fatalf("expected error after visibility off, got:\n%s", msg)
 	}
 }

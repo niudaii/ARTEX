@@ -1,7 +1,5 @@
 "use client";
 
-import * as React from "react";
-
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 
 import { Button } from "@/components/ui/button";
@@ -87,9 +85,9 @@ export function TablePagination({
                 <ChevronLeftIcon className="size-4" />
               </Button>
             </PaginationItem>
-            {pageWindows(page, totalPages).map((p, i) =>
+            {pageWindows(page, totalPages).map((p) =>
               p === "..." ? (
-                <PaginationItem key={`el-${i}`}>
+                <PaginationItem key={page > 3 ? "ellipsis-start" : "ellipsis-end"}>
                   <PaginationEllipsis />
                 </PaginationItem>
               ) : (

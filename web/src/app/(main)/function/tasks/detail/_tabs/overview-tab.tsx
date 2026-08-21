@@ -6,6 +6,8 @@ import {
   ActivityIcon,
   AlertTriangleIcon,
   BugIcon,
+  ChevronDownIcon,
+  ChevronRightIcon,
   ClockIcon,
   CoinsIcon,
   PlusIcon,
@@ -26,15 +28,30 @@ import type { Finding, ModelTokenStat, Stats, Task, TaskNode, TaskScopeRow } fro
 
 // 紧凑格式化 token 数（12345 → 12.3k，2000000 → 2M）。
 function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return (n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1) + "M";
-  if (n >= 1000) return (n / 1000).toFixed(n >= 10000 ? 0 : 1) + "k";
+  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
+  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
   return String(n);
 }
 
 // 缓存命中率 = 缓存读 / 输入（InputTokens 已含 cache_read 子集，故比值在 0–100%）。
 function cacheHitRate(cacheRead: number, input: number): string {
   if (input <= 0) return "—";
-  return Math.round((cacheRead / input) * 100) + "%";
+  return `${Math.round((cacheRead / input) * 100)}%`;
+}
+
+// intent payload 通常是 JSON 串（{"summary":…, "asset_ids":…}）；展开时美化显示
+// 便于阅读，解析失败则原样输出。
+function prettyPayload(payload?: string): string {
+  const value = (payload ?? "").trim();
+  if (!value) return "（空）";
+  if (value.startsWith("{") || value.startsWith("[")) {
+    try {
+      return JSON.stringify(JSON.parse(value), null, 2);
+    } catch {
+      // fall through — 原样展示
+    }
+  }
+  return value;
 }
 
 // 测试范围一条的显示值：域名 / 网段 / 公司。
@@ -58,6 +75,12 @@ const SCOPE_SOURCE_LABELS: Record<TaskScopeRow["source"], string> = {
   agent: "Agent",
   manual: "手动",
 };
+
+function scopePlaceholder(kind: TaskScopeRow["kind"]): string {
+  if (kind === "company") return "公司名或 id";
+  if (kind === "ip" || kind === "cidr") return "如 10.0.0.1 或 10.0.0.0/24";
+  return "如 example.com";
+}
 
 function StatCard({
   label,
@@ -97,6 +120,18 @@ export function OverviewTab({ taskId }: { taskId: string }) {
   } | null>(null);
   // 正在重跑的意图 id（含 "__all__" 表示批量），用于禁用按钮 + 转圈。
   const [rerunning, setRerunning] = React.useState<Set<string>>(new Set());
+  // 被拦意图默认只列前 20 条；showAllBlocked 展开全部，expandedBlocked 记录
+  // 哪些条目展开了完整 payload。
+  const [showAllBlocked, setShowAllBlocked] = React.useState(false);
+  const [expandedBlocked, setExpandedBlocked] = React.useState<Set<string>>(new Set());
+
+  const toggleBlockedExpand = (id: string) =>
+    setExpandedBlocked((prev) => {
+      const next = new Set(prev);
+      if (next.has(id)) next.delete(id);
+      else next.add(id);
+      return next;
+    });
   // 测试范围列表 + 新增表单状态。
   const [scope, setScope] = React.useState<TaskScopeRow[]>([]);
   const [scopeKind, setScopeKind] = React.useState<TaskScopeRow["kind"]>("root_domain");
@@ -206,7 +241,9 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           .then((c) => {
             if (!cancelled) setCoverage(c);
           })
-          .catch(() => {});
+          .catch(() => {
+            // Coverage is refreshed by polling; retain the last successful view.
+          });
       } catch {
         // transient errors are ignored; the next poll will retry
       }
@@ -274,7 +311,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
           <CardContent className="flex flex-col gap-3">
             <div className="flex items-baseline gap-3">
               <span className="text-2xl font-semibold tabular-nums">
-                {coverage.pct != null ? Math.round(coverage.pct * 100) + "%" : "—"}
+                {coverage.pct != null ? `${Math.round(coverage.pct * 100)}%` : "—"}
               </span>
               <span className="text-muted-foreground text-sm">
                 已测 {coverage.tested} / 范围内 {coverage.denominator}
@@ -393,13 +430,7 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             </NativeSelect>
             <Input
               className="h-7 w-56 text-sm"
-              placeholder={
-                scopeKind === "company"
-                  ? "公司名或 id"
-                  : scopeKind === "ip" || scopeKind === "cidr"
-                    ? "如 10.0.0.1 或 10.0.0.0/24"
-                    : "如 example.com"
-              }
+              placeholder={scopePlaceholder(scopeKind)}
               value={scopeValueInput}
               onChange={(e) => setScopeValueInput(e.target.value)}
               onKeyDown={(e) => {
@@ -571,26 +602,58 @@ export function OverviewTab({ taskId }: { taskId: string }) {
             </Button>
           </CardHeader>
           <CardContent className="flex flex-col gap-2">
-            {blocked.slice(0, 20).map((i) => (
-              <div key={i.id} className="flex items-center gap-2 text-sm">
-                <StatusBadge domain="intent" value={i.state} />
-                <span className="min-w-0 flex-1 truncate">{i.payload}</span>
-                <Button
-                  size="sm"
-                  variant="ghost"
-                  className="h-7 shrink-0 px-2 text-xs"
-                  disabled={rerunning.has(i.id)}
-                  onClick={() => void rerunOne(i.id)}
-                >
-                  <RefreshCwIcon className={`size-3 ${rerunning.has(i.id) ? "animate-spin" : ""}`} />
-                  重跑
-                </Button>
+            {(showAllBlocked ? blocked : blocked.slice(0, 20)).map((i) => (
+              <div key={i.id} className="text-sm">
+                <div className="flex items-center gap-2">
+                  <StatusBadge domain="intent" value={i.state} />
+                  <button
+                    type="button"
+                    onClick={() => toggleBlockedExpand(i.id)}
+                    title={expandedBlocked.has(i.id) ? "收起" : "展开完整内容"}
+                    className="flex min-w-0 flex-1 items-center gap-1 text-left"
+                  >
+                    {expandedBlocked.has(i.id) ? (
+                      <ChevronDownIcon className="size-3 shrink-0 text-muted-foreground" />
+                    ) : (
+                      <ChevronRightIcon className="size-3 shrink-0 text-muted-foreground" />
+                    )}
+                    <span className="min-w-0 flex-1 truncate">{i.payload}</span>
+                  </button>
+                  <Button
+                    size="sm"
+                    variant="ghost"
+                    className="h-7 shrink-0 px-2 text-xs"
+                    disabled={rerunning.has(i.id)}
+                    onClick={() => void rerunOne(i.id)}
+                  >
+                    <RefreshCwIcon className={`size-3 ${rerunning.has(i.id) ? "animate-spin" : ""}`} />
+                    重跑
+                  </Button>
+                </div>
+                {expandedBlocked.has(i.id) && (
+                  <div className="mt-1 space-y-1">
+                    {i.last_error && (
+                      <div className="max-h-72 overflow-auto rounded border border-red-500/30 bg-red-500/5 p-2 text-xs break-all whitespace-pre-wrap">
+                        <span className="font-medium text-red-600 dark:text-red-400">原因：</span>
+                        {i.last_error}
+                      </div>
+                    )}
+                    <pre className="max-h-72 overflow-auto rounded bg-muted/50 p-2 font-mono text-xs leading-relaxed break-all whitespace-pre-wrap">
+                      {prettyPayload(i.payload)}
+                    </pre>
+                  </div>
+                )}
               </div>
             ))}
             {blocked.length > 20 && (
-              <p className="text-xs text-muted-foreground">
-                仅显示前 20 条，点「全部重跑」处理剩余 {blocked.length - 20} 条。
-              </p>
+              <Button
+                size="sm"
+                variant="ghost"
+                className="self-start px-2 text-xs text-muted-foreground"
+                onClick={() => setShowAllBlocked((value) => !value)}
+              >
+                {showAllBlocked ? "收起" : `查看全部 ${blocked.length} 条`}
+              </Button>
             )}
           </CardContent>
         </Card>

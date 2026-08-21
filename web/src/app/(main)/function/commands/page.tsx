@@ -1,6 +1,5 @@
 "use client";
 
-import { fmtTime } from "@/lib/format";
 import * as React from "react";
 
 import { ChevronLeftIcon, ChevronRightIcon, Loader2Icon, SearchIcon, TerminalIcon, XIcon } from "lucide-react";
@@ -12,6 +11,7 @@ import { Input } from "@/components/ui/input";
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import { fmtTime } from "@/lib/format";
 import type { CommandRecord } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -32,7 +32,7 @@ function toolInput(raw: string): string {
 function truncate(s: string, maxLen: number): string {
   const first = s.split("\n")[0]; // single-line preview
   if (first.length <= maxLen) return first;
-  return first.slice(0, maxLen) + "…";
+  return `${first.slice(0, maxLen)}…`;
 }
 
 const PAGE_SIZES = [25, 50, 100];
@@ -86,6 +86,60 @@ export default function CommandsPage() {
   const totalPages = Math.max(1, Math.ceil(total / size));
   const rangeStart = total === 0 ? 0 : page * size + 1;
   const rangeEnd = page * size + commands.length;
+  const renderTableBody = () => {
+    if (loading && commands.length === 0) {
+      return (
+        <TableRow>
+          <TableCell colSpan={6} className="py-12 text-center">
+            <Loader2Icon className="mx-auto h-5 w-5 animate-spin text-muted-foreground" />
+          </TableCell>
+        </TableRow>
+      );
+    }
+    if (commands.length === 0) {
+      return (
+        <TableRow>
+          <TableCell colSpan={6} className="py-12 text-center text-sm text-muted-foreground">
+            暂无工具执行记录
+          </TableCell>
+        </TableRow>
+      );
+    }
+    return commands.map((cmd) => (
+      <TableRow
+        key={cmd.id}
+        className={cn("cursor-pointer", selected?.id === cmd.id && "bg-accent hover:bg-accent")}
+        onClick={() => setSelected(cmd)}
+      >
+        <TableCell className="text-xs text-muted-foreground tabular-nums">{fmtTime(cmd.created_at)}</TableCell>
+        <TableCell className="text-xs font-mono text-muted-foreground">#{cmd.exploration_id}</TableCell>
+        <TableCell>
+          <Badge variant="outline" className="text-xs font-mono">
+            {cmd.worker || "-"}
+          </Badge>
+        </TableCell>
+        <TableCell>
+          <Badge variant="secondary" className="text-xs font-mono">
+            {cmd.tool || "-"}
+          </Badge>
+        </TableCell>
+        <TableCell className="max-w-0">
+          <code className="block truncate font-mono text-xs">{truncate(toolInput(cmd.command), CMD_MAX_LEN)}</code>
+        </TableCell>
+        <TableCell>
+          {cmd.is_error ? (
+            <Badge variant="destructive" className="text-xs">
+              失败
+            </Badge>
+          ) : (
+            <Badge variant="secondary" className="text-xs text-emerald-600">
+              成功
+            </Badge>
+          )}
+        </TableCell>
+      </TableRow>
+    ));
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -171,60 +225,7 @@ export default function CommandsPage() {
                   <TableHead className="w-[60px]">状态</TableHead>
                 </TableRow>
               </TableHeader>
-              <TableBody>
-                {loading && commands.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={6} className="py-12 text-center">
-                      <Loader2Icon className="mx-auto h-5 w-5 animate-spin text-muted-foreground" />
-                    </TableCell>
-                  </TableRow>
-                ) : commands.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={6} className="py-12 text-center text-sm text-muted-foreground">
-                      暂无工具执行记录
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  commands.map((cmd) => (
-                    <TableRow
-                      key={cmd.id}
-                      className={cn("cursor-pointer", selected?.id === cmd.id && "bg-accent hover:bg-accent")}
-                      onClick={() => setSelected(cmd)}
-                    >
-                      <TableCell className="text-xs text-muted-foreground tabular-nums">
-                        {fmtTime(cmd.created_at)}
-                      </TableCell>
-                      <TableCell className="text-xs font-mono text-muted-foreground">#{cmd.exploration_id}</TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className="text-xs font-mono">
-                          {cmd.worker || "-"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="secondary" className="text-xs font-mono">
-                          {cmd.tool || "-"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell className="max-w-0">
-                        <code className="block truncate font-mono text-xs">
-                          {truncate(toolInput(cmd.command), CMD_MAX_LEN)}
-                        </code>
-                      </TableCell>
-                      <TableCell>
-                        {cmd.is_error ? (
-                          <Badge variant="destructive" className="text-xs">
-                            失败
-                          </Badge>
-                        ) : (
-                          <Badge variant="secondary" className="text-xs text-emerald-600">
-                            成功
-                          </Badge>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
+              <TableBody>{renderTableBody()}</TableBody>
             </Table>
           </div>
         </Card>

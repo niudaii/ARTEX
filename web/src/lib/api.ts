@@ -3,6 +3,7 @@
 // a few fields the backend serializes differently (e.g. created_at as a unix int)
 // are passed through and formatted at the call site.
 
+import { auth } from "@/lib/auth";
 import { MOCK } from "@/lib/mock/enabled";
 import { mockHandle } from "@/lib/mock/handler";
 import type {
@@ -11,7 +12,6 @@ import type {
   AgentDetail,
   AgentTrigger,
   Asset,
-  AssetNode,
   Audit,
   ChatAttachment,
   CommandRecord,
@@ -39,6 +39,7 @@ import type {
   LLMTask,
   MCPServer,
   MCPTool,
+  MissingSkill,
   ModelTokenStat,
   PromptVar,
   PromptVersion,
@@ -46,12 +47,10 @@ import type {
   Severity,
   SkillCall,
   SkillItem,
-  MissingSkill,
   SSProject,
   SSTask,
   Stats,
   Task,
-  TaskAssetView,
   TaskNode,
   TaskScopeRow,
   TokenTotal,
@@ -83,8 +82,7 @@ async function http<T>(path: string, init?: RequestInit): Promise<T> {
   });
   if (r.status === 401) {
     if (typeof window !== "undefined") {
-      localStorage.removeItem("artex_token");
-      document.cookie = "artex_token=; path=/; max-age=0";
+      await auth.clearToken();
       window.location.href = "/login";
     }
     throw new Error("未授权");
@@ -182,6 +180,9 @@ export const api = {
     timeoutSeconds?: number;
     seedFirstIntent?: boolean;
     planHeartbeatSeconds?: number;
+    scheduledStartAt?: string;
+    skipIntercept?: boolean;
+    scopeLocked?: boolean;
   }) =>
     post<Task>("/tasks", {
       description: input.description,
@@ -191,6 +192,9 @@ export const api = {
       timeout_seconds: input.timeoutSeconds ?? 0,
       seed_first_intent: input.seedFirstIntent ?? false,
       plan_heartbeat_seconds: input.planHeartbeatSeconds ?? 0, // 0 = 后端归一到默认 600(10min)
+      scheduled_start_at: input.scheduledStartAt ?? null,
+      skip_intercept: input.skipIntercept ?? false,
+      scope_locked: input.scopeLocked ?? false,
     }),
   updateTaskLLMProfiles: (id: string, llmProfileIds: number[], activeLLMProfileId?: number) =>
     put<{

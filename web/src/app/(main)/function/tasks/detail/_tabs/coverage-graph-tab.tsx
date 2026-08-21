@@ -1,29 +1,15 @@
 "use client";
 
 import * as React from "react";
+
 import type { Graph as G6Graph } from "@antv/g6";
-import {
-  AppWindow,
-  Building2,
-  Globe,
-  Link2,
-  type LucideIcon,
-  Radio,
-  RefreshCw,
-  Server,
-  Waypoints,
-} from "lucide-react";
+import { AppWindow, Building2, Globe, Link2, type LucideIcon, Radio, RefreshCw, Server, Waypoints } from "lucide-react";
 
 import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Card, CardContent } from "@/components/ui/card";
 import { ScrollArea } from "@/components/ui/scroll-area";
-import {
-  Sheet,
-  SheetContent,
-  SheetHeader,
-  SheetTitle,
-} from "@/components/ui/sheet";
+import { Sheet, SheetContent, SheetHeader, SheetTitle } from "@/components/ui/sheet";
 import { api } from "@/lib/api";
 import type { CoverageAssetRef, CoverageAssetRefs, CoverageGraphEdge, CoverageGraphNode } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -103,6 +89,11 @@ type RenderNode = AssetRenderNode | FoldNode;
 function sortChildren(a: CoverageGraphNode, b: CoverageGraphNode): number {
   if (a.tested !== b.tested) return a.tested ? -1 : 1;
   return (a.label || "").localeCompare(b.label || "");
+}
+
+function renderNodeSignature(node: RenderNode): string {
+  if (node.fold) return `${node.key}:f`;
+  return `${node.key}:${node.node.tested ? "t" : "u"}`;
 }
 
 function computeVisible(
@@ -306,6 +297,11 @@ function AssetSheet({
   const meta = node ? kindMeta[node.kind] : null;
   const Icon = meta?.icon;
   const raw = node ? JSON.stringify(node, null, 2) : "";
+  const testedStatus = (() => {
+    if (!node?.in_scope) return <span className="text-neutral-400">范围外（连接节点）</span>;
+    if (node.tested) return <span className="text-emerald-600 dark:text-emerald-400">已测试</span>;
+    return <span className="text-neutral-500">未测试</span>;
+  })();
   const [refs, setRefs] = React.useState<CoverageAssetRefs | null>(null);
 
   React.useEffect(() => {
@@ -331,7 +327,9 @@ function AssetSheet({
           <>
             <SheetHeader className="border-b p-4">
               <div className="flex items-center gap-2.5 pr-8">
-                <span className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg shadow-sm", meta.iconBg)}>
+                <span
+                  className={cn("flex size-8 shrink-0 items-center justify-center rounded-lg shadow-sm", meta.iconBg)}
+                >
                   <Icon className="size-4 text-white" />
                 </span>
                 <div className="min-w-0">
@@ -347,17 +345,7 @@ function AssetSheet({
                 <section>
                   <h4 className="text-muted-foreground mb-1 text-xs font-medium">属性</h4>
                   <DetailRow label="类型">{meta.label}</DetailRow>
-                  <DetailRow label="测试状态">
-                    {node.in_scope ? (
-                      node.tested ? (
-                        <span className="text-emerald-600 dark:text-emerald-400">已测试</span>
-                      ) : (
-                        <span className="text-neutral-500">未测试</span>
-                      )
-                    ) : (
-                      <span className="text-neutral-400">范围外（连接节点）</span>
-                    )}
-                  </DetailRow>
+                  <DetailRow label="测试状态">{testedStatus}</DetailRow>
                   <DetailRow label="域名">{node.domain}</DetailRow>
                   <DetailRow label="根域名">{node.root_domain}</DetailRow>
                   <DetailRow label="IP">{node.ip}</DetailRow>
@@ -500,8 +488,7 @@ function GraphInner({ taskId }: { taskId: string }) {
 
   // 结构签名：只在可见节点/边集合变化时重建图 + 重跑布局，避免无谓抖动。
   const sig = React.useMemo(
-    () =>
-      `${renderNodes.map((n) => `${n.key}:${n.fold ? "f" : n.node.tested ? "t" : "u"}`).sort().join(",")}|${renderEdges.length}`,
+    () => `${renderNodes.map(renderNodeSignature).sort().join(",")}|${renderEdges.length}`,
     [renderNodes, renderEdges],
   );
 
@@ -516,7 +503,7 @@ function GraphInner({ taskId }: { taskId: string }) {
 
   const applyData = React.useCallback(() => {
     const graph = graphRef.current;
-    if (!graph || graph.destroyed) return;
+    if (graph === null || graph.destroyed) return;
     graph.setData(gDataRef.current);
     // render() 异步跑 d3-force 布局;若组件在布局落地前被卸载/销毁,g6 会在已清空的
     // context 上访问 transform 抛错(见 runtime/layout transformDataAfterLayout)。这是纯
@@ -568,7 +555,7 @@ function GraphInner({ taskId }: { taskId: string }) {
             distance: (edge: unknown) => {
               // 顶层（公司/根域名）离子节点远一点，叶子近一点。edge.source 可能是 id 或已解析节点。
               const s = (edge as { source: string | { id?: string } }).source;
-              const srcId = typeof s === "string" ? s : (s?.id ?? "");
+              const srcId = typeof s === "string" ? s : (s.id ?? "");
               const src = renderMapRef.current.get(srcId);
               const k = src && !src.fold ? src.kind : "endpoint";
               return k === "company" || k === "root_domain" ? 120 : 60;
@@ -605,7 +592,6 @@ function GraphInner({ taskId }: { taskId: string }) {
   }, [applyData]);
 
   // 可见集合变化 → 重新灌数据 + 布局。sig 只作为重排触发器（applyData 读 gDataRef）。
-  // biome-ignore lint/correctness/useExhaustiveDependencies: sig 是刻意的重排触发依赖
   React.useEffect(() => {
     applyData();
   }, [sig, applyData]);

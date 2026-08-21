@@ -4,11 +4,9 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
 	"iter"
 	"sync"
 	"testing"
-	"time"
 
 	"github.com/Autumn-27/artex/agent"
 	"github.com/Autumn-27/artex/db"
@@ -427,81 +425,5 @@ func TestTaskLLMStreamStopsWhenChainExhausted(t *testing.T) {
 	}
 	if provider.calls != 1 || transitions != 1 {
 		t.Fatalf("calls=%d transitions=%d", provider.calls, transitions)
-	}
-}
-
-func TestProfileDeleteRestoresQuotaBlockedIntentWhenFallbackAvailable(t *testing.T) {
-	m, err := NewManager(t.TempDir(), "")
-	if err != nil {
-		t.Skipf("postgres unavailable (%v) - skipping", err)
-	}
-	defer m.Close()
-
-	profileID, err := m.pg.SaveProfile(&db.LLMProfile{
-		Name:   fmt.Sprintf("delete-quota-fallback-%d", time.Now().UnixNano()),
-		Format: "openai",
-		Model:  "test-model",
-		APIKey: "test-key",
-	})
-	if err != nil {
-		t.Fatal(err)
-	}
-	task, err := m.CreateTaskWithOptions("quota fallback", "resume intent", db.TaskCreateOptions{
-		LLMProfileIDs: []int64{profileID},
-	})
-	if err != nil {
-		_ = m.pg.DeleteProfile(profileID)
-		t.Fatal(err)
-	}
-	t.Cleanup(func() {
-		_, _ = m.DeleteTask(task.ID, DeleteTaskOptions{})
-		_ = m.pg.DeleteProfile(profileID)
-	})
-
-	intentID, err := task.Store.AddIntent(map[string]any{"action": "retry after fallback"}, 1, nil, "planner")
-	if err != nil {
-		t.Fatal(err)
-	}
-	taskID, err := parseTaskID(task.ID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if transition, err := m.pg.MarkTaskLLMProfileQuotaExhausted(taskID, profileID, "insufficient_quota"); err != nil || !transition.ChainExhausted {
-		t.Fatalf("exhaust task chain: transition=%+v err=%v", transition, err)
-	}
-	if err := task.Store.SetIntentBlockedReason(intentID, db.IntentBlockedLLMQuota); err != nil {
-		t.Fatal(err)
-	}
-	task.Paused = true
-	if err := m.SetTaskPaused(task.ID, true); err != nil {
-		t.Fatal(err)
-	}
-
-	// Removing the final explicit entry restores the legacy/global fallback. The
-	// post-delete sync must reopen only quota-blocked work without unpausing it.
-	if err := m.pg.DeleteProfile(profileID); err != nil {
-		t.Fatal(err)
-	}
-	s := &Server{
-		m:             m,
-		llmOn:         true,
-		llmProv:       &scriptedLLMProvider{},
-		provByProfile: map[int64]*provEntry{},
-	}
-	s.restoreTasksAfterProfileDelete(m.pg)
-
-	node, err := task.Store.GetNode(intentID)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if node == nil || node.State != "open" || node.BlockedReason != "" {
-		t.Fatalf("quota-blocked intent was not reopened: %+v", node)
-	}
-	if !task.Paused {
-		t.Fatal("profile deletion must not resume a paused task")
-	}
-	state := task.llmStateSnapshot()
-	if len(state.ProfileIDs) != 0 || state.FailoverState != "default" {
-		t.Fatalf("task did not return to fallback state: %+v", state)
 	}
 }

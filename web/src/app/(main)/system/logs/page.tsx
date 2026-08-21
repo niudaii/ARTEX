@@ -1,11 +1,11 @@
 "use client";
 
-import { fmtTime } from "@/lib/format";
 import * as React from "react";
 
 import { Button } from "@/components/ui/button";
 import { Input } from "@/components/ui/input";
 import { sseUrl } from "@/lib/api";
+import { fmtTime } from "@/lib/format";
 import { MOCK } from "@/lib/mock/enabled";
 import type { LogLine } from "@/lib/types";
 import { cn } from "@/lib/utils";
@@ -75,9 +75,9 @@ export default function LogsPage() {
   const [loadingHistory, setLoadingHistory] = React.useState(false);
   const [hasMore, setHasMore] = React.useState(false);
   const bottom = React.useRef<HTMLDivElement>(null);
-  const stick = React.useRef(true);
-  const pausedRef = React.useRef(false);
-  pausedRef.current = paused;
+  const [stick, setStick] = React.useState(true);
+  const pausedRef = React.useRef<"paused" | "live">("live");
+  pausedRef.current = paused ? "paused" : "live";
 
   // Minimum db_id seen — used as the cursor for loading older history.
   const minDbId = React.useMemo(() => {
@@ -97,7 +97,7 @@ export default function LogsPage() {
     }
     const es = new EventSource(sseUrl("/api/logs/stream?since=0"));
     es.onmessage = (e) => {
-      if (pausedRef.current) return;
+      if (pausedRef.current === "paused") return;
       try {
         const l = JSON.parse(e.data) as LogLine;
         setLines((prev) => (prev.some((x) => x.seq === l.seq) ? prev : [...prev, l].slice(-3000)));
@@ -121,7 +121,7 @@ export default function LogsPage() {
       const res = await fetch(`/api/logs/history${params}`);
       if (!res.ok) return;
       const data = (await res.json()) as { items: LogLine[]; has_more: boolean };
-      if (data.items?.length) {
+      if (data.items.length > 0) {
         // Assign synthetic seq numbers below current minimum to keep dedup working.
         setLines((prev) => {
           const minSeq = prev.reduce((m, l) => Math.min(m, l.seq ?? 0), 0);
@@ -141,7 +141,7 @@ export default function LogsPage() {
           return deduped.slice(-5000);
         });
       }
-      setHasMore(data.has_more ?? false);
+      setHasMore(data.has_more);
     } finally {
       setLoadingHistory(false);
     }
@@ -157,7 +157,7 @@ export default function LogsPage() {
   }, [lines, q, level]);
 
   React.useEffect(() => {
-    if (stick.current && !paused) bottom.current?.scrollIntoView();
+    if (stick && !paused) bottom.current?.scrollIntoView();
   }, [filtered, paused]);
 
   const counts = React.useMemo(() => {
@@ -217,7 +217,7 @@ export default function LogsPage() {
         <div
           onScroll={(e) => {
             const el = e.currentTarget;
-            stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
+            setStick(el.scrollHeight - el.scrollTop - el.clientHeight < 40);
           }}
           className="h-[calc(100vh-14rem)] overflow-auto rounded-lg border bg-card p-2 font-mono text-xs leading-relaxed"
         >
@@ -239,7 +239,7 @@ export default function LogsPage() {
           ) : (
             filtered.map((l) => {
               const body =
-                l.tag && l.text.startsWith("[" + l.tag + "]") ? l.text.slice(l.tag.length + 2).trimStart() : l.text;
+                l.tag && l.text.startsWith(`[${l.tag}]`) ? l.text.slice(l.tag.length + 2).trimStart() : l.text;
               return (
                 <div key={l.seq} className="flex items-start gap-2 px-1 py-0.5 hover:bg-muted/40">
                   <span className={cn("mt-1.5 size-1.5 shrink-0 rounded-full", levelDot[l.level])} />

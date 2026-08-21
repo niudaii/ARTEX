@@ -1,6 +1,5 @@
 "use client";
 
-import { fmtBytes } from "@/lib/format";
 import * as React from "react";
 
 import {
@@ -20,9 +19,9 @@ import {
 import { toast } from "sonner";
 
 import { Markdown } from "@/components/markdown";
-import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { api } from "@/lib/api";
+import { fmtBytes } from "@/lib/format";
 import type { Activity } from "@/lib/types";
 
 // ---- per-agent lane color (planner + work#1/#2/#3 …) ---------------------------
@@ -36,7 +35,7 @@ function workerColor(name: string): string {
 }
 
 const chip = (worker: string) =>
-  "mt-0.5 shrink-0 rounded px-1 text-[9px] font-medium text-white " + workerColor(worker);
+  `mt-0.5 shrink-0 rounded px-1 text-[9px] font-medium text-white ${workerColor(worker)}`;
 
 // useInView latches true when the ref'd element first comes within `rootMargin` of
 // the enclosing scroll viewport. Blocks that always show their full body (user
@@ -50,7 +49,7 @@ function useInView(rootMargin = "400px"): [React.RefObject<HTMLDivElement | null
   React.useEffect(() => {
     if (inView) return; // latch: once seen, stop observing
     const el = ref.current;
-    if (!el) return;
+    if (el === null) return;
     if (typeof IntersectionObserver === "undefined") {
       setInView(true);
       return;
@@ -124,7 +123,17 @@ function groupSteps(steps: Activity[], chat: boolean): Group[] {
   return out;
 }
 
-const kindLabel = (k: string) => (k === "thinking" ? "推理" : k === "result" ? "总结" : "说明");
+const kindLabels: Record<string, string> = {
+  thinking: "推理",
+  result: "总结",
+};
+const kindLabel = (k: string) => kindLabels[k] ?? "说明";
+
+const escapeReplacements: Record<string, string> = {
+  n: "\n",
+  r: "\r",
+  t: "\t",
+};
 
 // toolInputText renders a tool_use input for display. For Bash it pulls the shell
 // command out of the raw input JSON ({"command":…,"description":…}) so the UI shows
@@ -144,10 +153,10 @@ function toolInputText(tool: string, raw: string): string {
   if (m) {
     try {
       // re-wrap the captured body and parse to unescape \n, \", \\, etc.
-      return JSON.parse('"' + m[1] + '"');
+      return JSON.parse(`"${m[1]}"`);
     } catch {
       // truncated mid-escape — unescape the common sequences best-effort.
-      return m[1].replace(/\\(["\\/nrt])/g, (_s, c) => (c === "n" ? "\n" : c === "r" ? "\r" : c === "t" ? "\t" : c));
+      return m[1].replace(/\\(["\\/nrt])/g, (_s, c: string) => escapeReplacements[c] ?? c);
     }
   }
   return raw;
@@ -227,6 +236,14 @@ function InterceptCard({ step, getDetail }: { step: Activity; getDetail: (seq: n
 
   const inputJson = detail?.input ? JSON.stringify(detail.input) : null;
   const inputStr = inputJson && (inputJson.length > 200 ? `${inputJson.slice(0, 200)}…` : inputJson);
+  const decisionTones: Record<string, string> = {
+    allowed: "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400",
+    timeout: "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400",
+  };
+  const decisionLabels: Record<string, string> = {
+    allowed: "已允许",
+    timeout: "已超时",
+  };
 
   return (
     <div className="my-2 rounded-lg border border-amber-400/50 bg-amber-50/40 dark:bg-amber-950/15 p-3 text-xs">
@@ -270,14 +287,10 @@ function InterceptCard({ step, getDetail }: { step: Activity; getDetail: (seq: n
           <span
             className={
               "shrink-0 rounded px-2 py-0.5 text-[11px] font-medium " +
-              (decided === "allowed"
-                ? "bg-emerald-100 text-emerald-700 dark:bg-emerald-900/40 dark:text-emerald-400"
-                : decided === "timeout"
-                  ? "bg-zinc-100 text-zinc-600 dark:bg-zinc-800 dark:text-zinc-400"
-                  : "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400")
+              (decisionTones[decided] ?? "bg-red-100 text-red-700 dark:bg-red-900/40 dark:text-red-400")
             }
           >
-            {decided === "allowed" ? "已允许" : decided === "timeout" ? "已超时" : "已拒绝"}
+            {decisionLabels[decided] ?? "已拒绝"}
           </span>
         ) : (
           <div className="flex shrink-0 gap-1.5">
@@ -330,16 +343,21 @@ function ToolBlock({
   const ToolIcon = toolName === "Bash" ? Terminal : Wrench;
   const running = !result;
   const ok = !!result && !result.is_error;
-  const statusTone = running
-    ? "text-muted-foreground"
-    : ok
-      ? "text-emerald-600 dark:text-emerald-400"
-      : "text-red-600 dark:text-red-400";
-  const rawCmd =
-    use && use.summary.startsWith(toolName) ? use.summary.slice(toolName.length).trimStart() : (use?.summary ?? "");
+  const statusTone = (() => {
+    if (running) return "text-muted-foreground";
+    if (ok) return "text-emerald-600 dark:text-emerald-400";
+    return "text-red-600 dark:text-red-400";
+  })();
+  const rawCmd = use?.summary.startsWith(toolName)
+    ? use.summary.slice(toolName.length).trimStart()
+    : (use?.summary ?? "");
   const cmd = toolInputText(toolName, rawCmd);
   // status only — the full result lives behind the expand (【输出】), not previewed inline
-  const statusText = running ? "执行中…" : ok ? "✓" : "✕ 失败";
+  const statusText = (() => {
+    if (running) return "执行中…";
+    if (ok) return "✓";
+    return "✕ 失败";
+  })();
 
   // key over the seqs we'd load; changes when the result (or command) arrives.
   const detailKey = `${use?.seq ?? ""}:${result?.seq ?? ""}`;
@@ -348,7 +366,7 @@ function ToolBlock({
     let live = true;
     const segs: { label: string; seq: number }[] = [];
     if (use) segs.push({ label: "命令", seq: use.seq });
-    if (result) segs.push({ label: "输出" + (result.is_error ? " ✕" : " ✓"), seq: result.seq });
+    if (result) segs.push({ label: `输出${result.is_error ? " ✕" : " ✓"}`, seq: result.seq });
     Promise.all(
       segs.map((x) =>
         getDetail(x.seq)
@@ -367,7 +385,7 @@ function ToolBlock({
     return () => {
       live = false;
     };
-  }, [open, detailKey, use, result, getDetail]);
+  }, [open, detailKey, use, result, getDetail, toolName]);
 
   function toggle() {
     setOpen((o) => !o);
@@ -375,15 +393,15 @@ function ToolBlock({
 
   return (
     <div className="text-xs">
-      <button onClick={toggle} className="flex w-full items-start gap-2 py-1 text-left hover:bg-muted/40">
+      <button type="button" onClick={toggle} className="flex w-full items-start gap-2 py-1 text-left hover:bg-muted/40">
         <span className="mt-0.5 text-muted-foreground">
           {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         </span>
-        <ToolIcon className={"mt-0.5 size-3.5 shrink-0 " + (running ? "text-sky-600 dark:text-sky-400" : statusTone)} />
+        <ToolIcon className={`mt-0.5 size-3.5 shrink-0 ${running ? "text-sky-600 dark:text-sky-400" : statusTone}`} />
         {showWorker && <span className={chip(group.worker)}>{group.worker}</span>}
         <span className="shrink-0 font-medium text-sky-600 dark:text-sky-400">{toolName}</span>
         {cmd && <span className="min-w-0 flex-1 truncate font-mono text-muted-foreground">{cmd}</span>}
-        <span className={"ml-auto shrink-0 font-medium " + statusTone}>{statusText}</span>
+        <span className={`ml-auto shrink-0 font-medium ${statusTone}`}>{statusText}</span>
       </button>
       {open && (
         <pre className="ml-7 mb-1 max-h-72 overflow-auto whitespace-pre-wrap break-all rounded bg-muted/50 p-2 font-mono text-[11px] leading-relaxed">
@@ -443,13 +461,13 @@ function MessageBlock({
 
   return (
     <div className="text-xs">
-      <button onClick={toggle} className="flex w-full items-start gap-2 py-1 text-left hover:bg-muted/40">
+      <button type="button" onClick={toggle} className="flex w-full items-start gap-2 py-1 text-left hover:bg-muted/40">
         <span className="mt-0.5 text-muted-foreground">
           {open ? <ChevronDown className="size-3" /> : <ChevronRight className="size-3" />}
         </span>
-        <Icon className={"mt-0.5 size-3.5 shrink-0 " + tone} />
+        <Icon className={`mt-0.5 size-3.5 shrink-0 ${tone}`} />
         {showWorker && <span className={chip(group.worker)}>{group.worker}</span>}
-        <span className={"min-w-0 flex-1 truncate " + tone}>
+        <span className={`min-w-0 flex-1 truncate ${tone}`}>
           {body}
           {hasThinking && <span className="ml-1 text-[10px] text-muted-foreground">· 含推理</span>}
         </span>
@@ -609,29 +627,30 @@ function ExecView({
     (seq: number) => (fetchDetail ? fetchDetail(seq) : api.activityDetail(seq, taskId).then((r) => r.detail ?? "")),
     [fetchDetail, taskId],
   );
-  return (
-    <div className="flex flex-col">
-      {groupSteps(activity, !!chat).map((g) =>
-        g.type === "round" ? (
-          <div key={"r" + g.key} className="my-2 flex items-center gap-2 text-[10px] font-medium text-muted-foreground">
+  const renderGroup = (g: Group) => {
+    switch (g.type) {
+      case "round":
+        return (
+          <div key={`r${g.key}`} className="my-2 flex items-center gap-2 text-[10px] font-medium text-muted-foreground">
             <span className="h-px flex-1 bg-border" />
             {g.label}
             <span className="h-px flex-1 bg-border" />
           </div>
-        ) : g.type === "user" ? (
-          <UserRow key={"u" + g.key} step={g.step} intent={g.intent} getDetail={getDetail} />
-        ) : g.type === "answer" ? (
-          <AnswerBlock key={"a" + g.key} step={g.step} getDetail={getDetail} />
-        ) : g.type === "tool" ? (
-          <ToolBlock key={"t" + g.key} group={g} getDetail={getDetail} showWorker={showWorker} />
-        ) : g.type === "intercept" ? (
-          <InterceptCard key={"ic" + g.key} step={g.step} getDetail={getDetail} />
-        ) : (
-          <MessageBlock key={"m" + g.key} group={g} getDetail={getDetail} showWorker={showWorker} />
-        ),
-      )}
-    </div>
-  );
+        );
+      case "user":
+        return <UserRow key={`u${g.key}`} step={g.step} intent={g.intent} getDetail={getDetail} />;
+      case "answer":
+        return <AnswerBlock key={`a${g.key}`} step={g.step} getDetail={getDetail} />;
+      case "tool":
+        return <ToolBlock key={`t${g.key}`} group={g} getDetail={getDetail} showWorker={showWorker} />;
+      case "intercept":
+        return <InterceptCard key={`ic${g.key}`} step={g.step} getDetail={getDetail} />;
+      default:
+        return <MessageBlock key={`m${g.key}`} group={g} getDetail={getDetail} showWorker={showWorker} />;
+    }
+  };
+
+  return <div className="flex flex-col">{groupSteps(activity, !!chat).map(renderGroup)}</div>;
 }
 
 // Transcript renders a session's activity as a compact grouped execution replay:

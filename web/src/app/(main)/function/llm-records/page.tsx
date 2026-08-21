@@ -1,6 +1,5 @@
 "use client";
 
-import { fmtTime, fmtTokens } from "@/lib/format";
 import * as React from "react";
 
 import { ChevronLeftIcon, ChevronRightIcon, Loader2Icon, RadioIcon, SearchIcon, Trash2Icon, XIcon } from "lucide-react";
@@ -23,6 +22,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@
 import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import { fmtTime, fmtTokens } from "@/lib/format";
 import type { LLMRecordDetail, LLMRecordItem, LLMTask } from "@/lib/types";
 import { cn } from "@/lib/utils";
 
@@ -190,6 +190,70 @@ export default function LLMRecordsPage() {
   const totalPages = Math.max(1, Math.ceil(total / size));
   const rangeStart = total === 0 ? 0 : page * size + 1;
   const rangeEnd = page * size + records.length;
+  const renderTableBody = () => {
+    if (loading && records.length === 0) {
+      return (
+        <TableRow>
+          <TableCell colSpan={8} className="py-12 text-center">
+            <Loader2Icon className="mx-auto h-5 w-5 animate-spin text-muted-foreground" />
+          </TableCell>
+        </TableRow>
+      );
+    }
+    if (records.length === 0) {
+      return (
+        <TableRow>
+          <TableCell colSpan={8} className="py-12 text-center text-sm text-muted-foreground">
+            暂无 LLM 调用记录
+          </TableCell>
+        </TableRow>
+      );
+    }
+    return records.map((rec) => (
+      <TableRow
+        key={rec.id}
+        className={cn("cursor-pointer", selected?.id === rec.id && "bg-accent hover:bg-accent")}
+        onClick={() => setSelected(rec)}
+      >
+        <TableCell className="text-xs text-muted-foreground tabular-nums">{fmtTime(rec.ts)}</TableCell>
+        <TableCell className="text-xs font-mono text-muted-foreground">
+          {rec.task_id ? `#${rec.task_id}` : "-"}
+        </TableCell>
+        <TableCell>
+          <Badge variant="outline" className="text-xs font-mono">
+            {rec.worker || "-"}
+          </Badge>
+        </TableCell>
+        <TableCell>
+          <span className="text-xs">{rec.profile_name || "-"}</span>
+        </TableCell>
+        <TableCell>
+          <span className="text-xs font-mono">{rec.model || "-"}</span>
+        </TableCell>
+        <TableCell>
+          <span className={cn("text-xs", rec.latency_ms > 30000 && "text-amber-500")}>
+            {fmtLatency(rec.latency_ms)}
+          </span>
+        </TableCell>
+        <TableCell>
+          <span className="text-xs">
+            {fmtTokens(rec.input_tokens)} / {fmtTokens(rec.output_tokens)}
+          </span>
+        </TableCell>
+        <TableCell>
+          {rec.status === "ok" ? (
+            <Badge variant="secondary" className="text-xs text-emerald-600">
+              OK
+            </Badge>
+          ) : (
+            <Badge variant="destructive" className="text-xs">
+              Error
+            </Badge>
+          )}
+        </TableCell>
+      </TableRow>
+    ));
+  };
 
   return (
     <div className="flex min-h-0 flex-1 flex-col gap-4">
@@ -322,66 +386,7 @@ export default function LLMRecordsPage() {
                   <TableHead className="w-[60px]">状态</TableHead>
                 </TableRow>
               </TableHeader>
-              <TableBody>
-                {loading && records.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="py-12 text-center">
-                      <Loader2Icon className="mx-auto h-5 w-5 animate-spin text-muted-foreground" />
-                    </TableCell>
-                  </TableRow>
-                ) : records.length === 0 ? (
-                  <TableRow>
-                    <TableCell colSpan={8} className="py-12 text-center text-sm text-muted-foreground">
-                      暂无 LLM 调用记录
-                    </TableCell>
-                  </TableRow>
-                ) : (
-                  records.map((rec) => (
-                    <TableRow
-                      key={rec.id}
-                      className={cn("cursor-pointer", selected?.id === rec.id && "bg-accent hover:bg-accent")}
-                      onClick={() => setSelected(rec)}
-                    >
-                      <TableCell className="text-xs text-muted-foreground tabular-nums">{fmtTime(rec.ts)}</TableCell>
-                      <TableCell className="text-xs font-mono text-muted-foreground">
-                        {rec.task_id ? `#${rec.task_id}` : "-"}
-                      </TableCell>
-                      <TableCell>
-                        <Badge variant="outline" className="text-xs font-mono">
-                          {rec.worker || "-"}
-                        </Badge>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-xs">{rec.profile_name || "-"}</span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-xs font-mono">{rec.model || "-"}</span>
-                      </TableCell>
-                      <TableCell>
-                        <span className={cn("text-xs", rec.latency_ms > 30000 && "text-amber-500")}>
-                          {fmtLatency(rec.latency_ms)}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        <span className="text-xs">
-                          {fmtTokens(rec.input_tokens)} / {fmtTokens(rec.output_tokens)}
-                        </span>
-                      </TableCell>
-                      <TableCell>
-                        {rec.status === "ok" ? (
-                          <Badge variant="secondary" className="text-xs text-emerald-600">
-                            OK
-                          </Badge>
-                        ) : (
-                          <Badge variant="destructive" className="text-xs">
-                            Error
-                          </Badge>
-                        )}
-                      </TableCell>
-                    </TableRow>
-                  ))
-                )}
-              </TableBody>
+              <TableBody>{renderTableBody()}</TableBody>
             </Table>
           </div>
         </Card>

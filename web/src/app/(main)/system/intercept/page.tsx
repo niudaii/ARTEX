@@ -261,7 +261,7 @@ export default function InterceptPage() {
       setAllTools(tools);
       setEnabledTools(new Set(cfg.enabled_tools));
     } catch (e) {
-      toast.error("加载失败: " + (e as Error).message);
+      toast.error(`加载失败: ${(e as Error).message}`);
     } finally {
       setScopeLoading(false);
     }
@@ -283,7 +283,7 @@ export default function InterceptPage() {
       toast.success("拦截范围已保存");
       setScopeOpen(false);
     } catch (e) {
-      toast.error("保存失败: " + (e as Error).message);
+      toast.error(`保存失败: ${(e as Error).message}`);
     } finally {
       setScopeSaving(false);
     }
@@ -321,79 +321,83 @@ export default function InterceptPage() {
       {/* ---- rules table ---- */}
       <Card>
         <CardContent className="p-0">
-          {loading ? (
-            <p className="p-6 text-sm text-muted-foreground">加载中…</p>
-          ) : rules.length === 0 ? (
-            <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
-              <ShieldAlertIcon className="h-8 w-8 text-muted-foreground/40" />
-              <p className="text-sm text-muted-foreground">暂无规则</p>
-              <Button size="sm" variant="outline" onClick={openNew}>
-                <PlusIcon className="h-4 w-4" />
-                新建第一条规则
-              </Button>
-            </div>
-          ) : (
-            <Table>
-              <TableHeader>
-                <TableRow className="hover:bg-transparent">
-                  <TableHead className="w-[72px]">优先级</TableHead>
-                  <TableHead>名称</TableHead>
-                  <TableHead className="w-[90px]">目标</TableHead>
-                  <TableHead className="w-[80px]">类型</TableHead>
-                  <TableHead>模式</TableHead>
-                  <TableHead className="w-[72px]">策略</TableHead>
-                  <TableHead className="w-[64px] text-center">启用</TableHead>
-                  <TableHead className="w-[80px]" />
-                </TableRow>
-              </TableHeader>
-              <TableBody>
-                {rules.map((rule) => (
-                  <TableRow key={rule.id} className={!rule.enabled ? "opacity-40" : ""}>
-                    <TableCell>
-                      <span className="font-mono text-xs tabular-nums">{rule.priority}</span>
-                    </TableCell>
-                    <TableCell className="font-medium text-sm">{rule.name}</TableCell>
-                    <TableCell>
-                      <span className="text-xs text-muted-foreground">
-                        {rule.match_target === "tool_name" ? "工具名" : "输入内容"}
-                      </span>
-                    </TableCell>
-                    <TableCell>
-                      <span className="text-xs text-muted-foreground">
-                        {rule.match_type === "regex" ? "正则" : "字符串"}
-                      </span>
-                    </TableCell>
-                    <TableCell className="max-w-[220px]">
-                      <code className="block truncate rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
-                        {rule.pattern}
-                      </code>
-                    </TableCell>
-                    <TableCell>
-                      <ActionBadge action={rule.action} />
-                    </TableCell>
-                    <TableCell className="text-center">
-                      <Switch checked={rule.enabled} onCheckedChange={() => handleToggle(rule)} />
-                    </TableCell>
-                    <TableCell>
-                      <div className="flex items-center justify-end gap-0.5">
-                        <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEdit(rule)}>
-                          <PencilIcon className="h-3.5 w-3.5" />
-                        </Button>
-                        <Button
-                          size="icon"
-                          variant="ghost"
-                          className="h-7 w-7 text-destructive hover:text-destructive"
-                          onClick={() => handleDelete(rule.id)}
-                        >
-                          <Trash2Icon className="h-3.5 w-3.5" />
-                        </Button>
-                      </div>
-                    </TableCell>
+          {(() => {
+            if (loading) return <p className="p-6 text-sm text-muted-foreground">加载中…</p>;
+            if (rules.length === 0) {
+              return (
+                <div className="flex flex-col items-center justify-center gap-2 py-16 text-center">
+                  <ShieldAlertIcon className="h-8 w-8 text-muted-foreground/40" />
+                  <p className="text-sm text-muted-foreground">暂无规则</p>
+                  <Button size="sm" variant="outline" onClick={openNew}>
+                    <PlusIcon className="h-4 w-4" />
+                    新建第一条规则
+                  </Button>
+                </div>
+              );
+            }
+            return (
+              <Table>
+                <TableHeader>
+                  <TableRow className="hover:bg-transparent">
+                    <TableHead className="w-[72px]">优先级</TableHead>
+                    <TableHead>名称</TableHead>
+                    <TableHead className="w-[90px]">目标</TableHead>
+                    <TableHead className="w-[80px]">类型</TableHead>
+                    <TableHead>模式</TableHead>
+                    <TableHead className="w-[72px]">策略</TableHead>
+                    <TableHead className="w-[64px] text-center">启用</TableHead>
+                    <TableHead className="w-[80px]" />
                   </TableRow>
-                ))}
-              </TableBody>
-            </Table>
-          )}
+                </TableHeader>
+                <TableBody>
+                  {rules.map((rule) => (
+                    <TableRow key={rule.id} className={!rule.enabled ? "opacity-40" : ""}>
+                      <TableCell>
+                        <span className="font-mono text-xs tabular-nums">{rule.priority}</span>
+                      </TableCell>
+                      <TableCell className="font-medium text-sm">{rule.name}</TableCell>
+                      <TableCell>
+                        <span className="text-xs text-muted-foreground">
+                          {rule.match_target === "tool_name" ? "工具名" : "输入内容"}
+                        </span>
+                      </TableCell>
+                      <TableCell>
+                        <span className="text-xs text-muted-foreground">
+                          {rule.match_type === "regex" ? "正则" : "字符串"}
+                        </span>
+                      </TableCell>
+                      <TableCell className="max-w-[220px]">
+                        <code className="block truncate rounded bg-muted px-1.5 py-0.5 text-xs font-mono">
+                          {rule.pattern}
+                        </code>
+                      </TableCell>
+                      <TableCell>
+                        <ActionBadge action={rule.action} />
+                      </TableCell>
+                      <TableCell className="text-center">
+                        <Switch checked={rule.enabled} onCheckedChange={() => handleToggle(rule)} />
+                      </TableCell>
+                      <TableCell>
+                        <div className="flex items-center justify-end gap-0.5">
+                          <Button size="icon" variant="ghost" className="h-7 w-7" onClick={() => openEdit(rule)}>
+                            <PencilIcon className="h-3.5 w-3.5" />
+                          </Button>
+                          <Button
+                            size="icon"
+                            variant="ghost"
+                            className="h-7 w-7 text-destructive hover:text-destructive"
+                            onClick={() => handleDelete(rule.id)}
+                          >
+                            <Trash2Icon className="h-3.5 w-3.5" />
+                          </Button>
+                        </div>
+                      </TableCell>
+                    </TableRow>
+                  ))}
+                </TableBody>
+              </Table>
+            );
+          })()}
         </CardContent>
       </Card>
 
@@ -414,7 +418,7 @@ export default function InterceptPage() {
               <Input
                 type="number"
                 value={form.priority}
-                onChange={(e) => set({ priority: parseInt(e.target.value) || 0 })}
+                onChange={(e) => set({ priority: parseInt(e.target.value, 10) || 0 })}
               />
             </Field>
 

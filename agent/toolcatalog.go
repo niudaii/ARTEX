@@ -46,14 +46,17 @@ func builtinToolsByAgent() map[string][]actool.CoreTool {
 	}
 }
 
-// defaultUnbound：这些 system 工具会照常入目录（web 端可见、可手动按 agent 勾选），但
-// 默认【不绑任何 agent】——ToolResolve 对空绑定的工具对所有 agent 一律丢弃,须显式 opt-in。
-// 之所以仍留在某个 agent 的 base 工具集里(如 goal_met 在 PlannerTools):一是让 seed 能
-// 构造它拿到 desc/schema,二是用户手动绑回后运行时 base 里有它、ToolResolve 才留得住。
+// defaultUnbound lists system tools that stay cataloged but bind to no agent by
+// default. Tools can still be manually bound in the UI.
 //
-// goal_met：绕过逐个 prove_goal、直接从全局宣布【整个任务完成】,权重大且有误判风险,又与
-// 「prove_goal 标记最后一个目标 → 自动收官」重复,故默认不给任何 agent,需要时再手动绑。
-var defaultUnbound = map[string]bool{"goal_met": true}
+// goal_met：默认只给 mainagent（人在环路明确确认后收官）；planner 仍不默认绑定，避免
+// 绕过逐个 prove_goal 的误判路径回流到自动规划。
+var defaultUnbound = map[string]bool{}
+
+// defaultToolAgents overrides a tool's union-of-base-tools default binding.
+var defaultToolAgents = map[string][]string{
+	"goal_met": {"mainagent"},
+}
 
 // BuiltinToolSeeds 把各 agent 的内置工具集去重合并成 seed 列表：同名工具（如 list_assets
 // 多个 agent 都有）合成一条，Agents 取并集；defaultUnbound 里的工具则强制绑定为空。
@@ -85,6 +88,9 @@ func BuiltinToolSeeds() []ToolSeed {
 		agents := a.agents
 		if defaultUnbound[k] {
 			agents = []string{} // 入目录、可手动绑，但默认不给任何 agent（存 [] 而非 null，与其它工具一致）
+		}
+		if override, ok := defaultToolAgents[k]; ok {
+			agents = override
 		}
 		out = append(out, ToolSeed{
 			Key:    k,

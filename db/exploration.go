@@ -870,7 +870,7 @@ func (s *ExplorationStore) TokenStatsByWorker() ([]TokenUsage, error) {
 	return out, rows.Err()
 }
 
-const activityCols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens`
+const activityCols = `id, node_id, COALESCE(worker,''), COALESCE(kind,''), COALESCE(tool,''), COALESCE(tool_use_id,''), is_error, COALESCE(summary,''), metadata, created_at, input_tokens, output_tokens, cache_read_tokens, cache_write_tokens`
 
 // ActivityList returns steps after sinceID (exclusive), optionally filtered by node.
 // Returns items and the new cursor (max id seen).
@@ -975,7 +975,42 @@ FROM activity WHERE exploration_id=$1 ORDER BY id DESC LIMIT $2`, s.expID, limit
 	var cursor int64
 	for rows.Next() {
 		var a Activity
-		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
+			return nil, 0, err
+		}
+		if a.ID > cursor {
+			cursor = a.ID
+		}
+		out = append(out, a)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, 0, err
+	}
+	for i, j := 0, len(out)-1; i < j; i, j = i+1, j-1 {
+		out[i], out[j] = out[j], out[i]
+	}
+	return out, cursor, nil
+}
+
+// ActivityLatestGlobal returns the most recent activity rows across all tasks,
+// ordered oldest-first within the returned window. The dashboard uses this for
+// its global activity feed instead of following whichever task is active.
+func (d *DB) ActivityLatestGlobal(limit int) ([]Activity, int64, error) {
+	if limit <= 0 {
+		limit = 100
+	}
+	rows, err := d.Query(`SELECT `+activityCols+`
+FROM activity ORDER BY id DESC LIMIT $1`, limit)
+	if err != nil {
+		return nil, 0, err
+	}
+	defer rows.Close()
+	out := []Activity{}
+	var cursor int64
+	for rows.Next() {
+		var a Activity
+		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
 			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
 			return nil, 0, err
 		}

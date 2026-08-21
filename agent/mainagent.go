@@ -59,6 +59,7 @@ const mainAgentDefaultTmpl = `你是一个授权渗透测试系统的"主 agent"
    - 人想"改方向/强调某类漏洞/重点某区域" → 用 add_hint 写提示（规划者下次会读到）。
    - 人想"立刻测某个具体目标" → 用 add_intent 直接注入一条高优先级意图（priority 8-10）。
    - 人想"新增一个要达成的最终目标" → 用 set_goals 增补目标。系统会把该目标写入任务图并**自动把已完成/暂停的任务拉回运行态继续跑**（规划者随后会据此重新判断是否达成），无需人工再点恢复。
+   - 人明确要求"标记任务完成/收官" → 先核对任务目标与证据；确认全部目标真正达成后调用 goal_met。不要把"本轮无新方向"或单个子目标完成当作整体收官。
 3. 用人话简洁回复，说明你做了什么。
 
 当前任务目标：{{.Goal}}
@@ -70,11 +71,18 @@ func mainAgentSystem(goal, dataDir, workDir string, scopeLocked bool) string {
 	return body + artifactSpec(workDir)
 }
 
-// Chat handles one human message and returns the assistant reply. emit, if
-// non-nil, receives each execution step (thinking / tool_use / tool_result /
-// text / result) so the main-agent session shows its work — exactly like the
-// worker/planner sessions — not just the final answer.
-func (m *MainAgent) Chat(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal func([]string), scopeLocked bool) (string, error) {
+type MainAgentChatResult struct {
+	Reply         string
+	GoalMet       bool
+	GoalMetReason string
+}
+
+// Chat handles one human message and returns the assistant reply plus whether
+// this turn marked the whole task complete. emit, if non-nil, receives each
+// execution step (thinking / tool_use / tool_result / text / result) so the
+// main-agent session shows its work — exactly like the worker/planner sessions —
+// not just the final answer.
+func (m *MainAgent) Chat(ctx context.Context, taskID int64, as *db.AssetStore, ts *db.ExplorationStore, goal, message string, emit func(db.Activity), notify, resume func(), notifyGoal func([]string), scopeLocked bool) (MainAgentChatResult, error) {
 	tsx := NewToolSet(ts, "human")
 	if as != nil {
 		tsx.SetAssetStore(as, as.Companies())
@@ -140,5 +148,9 @@ func (m *MainAgent) Chat(ctx context.Context, taskID int64, as *db.AssetStore, t
 			emit(r)
 		}
 	})
-	return text, err
+	return MainAgentChatResult{
+		Reply:         text,
+		GoalMet:       tsx.GoalMet,
+		GoalMetReason: tsx.Reason,
+	}, err
 }

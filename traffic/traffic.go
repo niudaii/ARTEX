@@ -938,12 +938,18 @@ func (s *HostDeleteStage) Commit() error {
 			errs = append(errs, fmt.Errorf("remove staged traffic trees: %w", err))
 		}
 	}
-	if err := s.traffic.gcBlobs(); err != nil {
-		errs = append(errs, fmt.Errorf("garbage collect traffic blobs: %w", err))
-	}
+	s.traffic.gcBlobsAsync()
 	s.done = true
 	s.traffic.wmu.Unlock()
 	return errors.Join(errs...)
+}
+
+func (t *Traffic) gcBlobsAsync() {
+	go func() {
+		t.wmu.Lock()
+		defer t.wmu.Unlock()
+		_ = t.gcBlobs()
+	}()
 }
 
 func (s *HostDeleteStage) restoreTreesLocked() error {
@@ -1017,9 +1023,7 @@ func (t *Traffic) DeleteHostsExactAsync(hosts []string) (int64, error) {
 			for _, h := range hostsToRemove {
 				os.RemoveAll(filepath.Join(t.dir, sanitize(h)))
 			}
-			t.wmu.Lock()
-			_ = t.gcBlobs()
-			t.wmu.Unlock()
+			t.gcBlobsAsync()
 		}()
 	}
 	return deleted, nil

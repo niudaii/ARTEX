@@ -6,6 +6,25 @@ const isExport = process.env.NEXT_EXPORT === "1";
 // Vercel demo：整站走 mock，无后端，无需 /api 反代。
 const isMock = process.env.NEXT_PUBLIC_MOCK === "1";
 
+function runtimeConfig() {
+  if (isExport) {
+    return {
+      output: "export",
+      images: { unoptimized: true },
+      trailingSlash: true,
+    };
+  }
+  if (isMock) {
+    return { images: { unoptimized: true } };
+  }
+  return {
+    async rewrites() {
+      const backend = process.env.AUTOPENTEST_API ?? "http://localhost:8787";
+      return [{ source: "/api/:path*", destination: `${backend}/api/:path*` }];
+    },
+  };
+}
+
 const nextConfig = {
   reactCompiler: true,
   // @antv/g6 v5 ESM（esm/index.js）在 Turbopack 下需 SWC 转译以正确解析
@@ -18,25 +37,7 @@ const nextConfig = {
   compiler: {
     removeConsole: process.env.NODE_ENV === "production",
   },
-  ...(isExport
-    ? {
-        // 纯静态导出：无 Node 运行时；图片不经优化；每个路由产出 <route>/index.html。
-        output: "export",
-        images: { unoptimized: true },
-        trailingSlash: true,
-      }
-    : isMock
-      ? {
-          // Vercel mock demo：无后端，不需要 /api 反代。
-          images: { unoptimized: true },
-        }
-      : {
-          // 开发：把 /api/* 反代到 Go 后端（默认 :8787，可用 AUTOPENTEST_API 覆盖）。
-          async rewrites() {
-            const backend = process.env.AUTOPENTEST_API ?? "http://localhost:8787";
-            return [{ source: "/api/:path*", destination: `${backend}/api/:path*` }];
-          },
-        }),
+  ...runtimeConfig(),
 };
 
 export default nextConfig;

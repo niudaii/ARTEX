@@ -4,7 +4,7 @@
 export function fmtTime(input: string | number | null | undefined): string {
   if (input === null || input === undefined || input === "") return "—";
   const d = new Date(input);
-  if (isNaN(d.getTime())) return "—";
+  if (Number.isNaN(d.getTime())) return "—";
   return d.toLocaleString("zh-CN", {
     year: "2-digit",
     month: "2-digit",

@@ -602,6 +602,8 @@ func (t *ToolSet) MainAgentTools() []actool.CoreTool {
 		t.getWorkerOutput(), t.getWorkerTrace(), t.searchAllWorkerTraces(), t.addHint(), t.addIntent(),
 		// set_goals：人可在运行时给本任务补一个新的最终目标（规划者据此重判是否达成）。
 		t.setGoals(),
+		// goal_met：人明确确认整体目标达成时，主 Agent 可直接收官任务。
+		t.goalMet(),
 		// asset management (handlers guard nil store internally)
 		t.insertAssets(), t.addCompanyScope(), t.listAssets(),
 		t.addFinding(), t.recordFact(),

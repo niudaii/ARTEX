@@ -1,6 +1,5 @@
 "use client";
 
-import { fmtTime } from "@/lib/format";
 import * as React from "react";
 
 import { CheckIcon, RefreshCwIcon, ShieldAlertIcon, XIcon } from "lucide-react";
@@ -11,11 +10,16 @@ import { Badge } from "@/components/ui/badge";
 import { Button } from "@/components/ui/button";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
+import { fmtTime } from "@/lib/format";
 import type { InterceptApprovalRow } from "@/lib/types";
 
 function AgentChip({ name }: { name: string }) {
   if (!name) return <span className="text-muted-foreground text-xs">—</span>;
-  const color = name === "planner" ? "bg-amber-500" : name === "mainagent" ? "bg-primary" : "bg-sky-600";
+  const colors: Record<string, string> = {
+    planner: "bg-amber-500",
+    mainagent: "bg-primary",
+  };
+  const color = colors[name] ?? "bg-sky-600";
   return (
     <span className={`inline-block rounded px-1.5 py-0.5 text-[10px] font-medium text-white ${color}`}>{name}</span>
   );

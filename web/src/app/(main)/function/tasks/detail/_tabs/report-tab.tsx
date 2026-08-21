@@ -32,59 +32,35 @@ export function ReportTab({ taskId }: { taskId: string }) {
   const [view, setView] = React.useState<"rendered" | "source">("rendered");
   const pollRef = React.useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  const loadReport = React.useCallback(
-    (nofilter: boolean) => {
-      setLoading(true);
-      api
-        .reportWithStatus(taskId, nofilter)
-        .then(({ text, filtering: stillFiltering, filtered: isFiltered }) => {
-          setReport(text);
-          setFiltered(isFiltered);
-          if (stillFiltering) {
-            setFiltering(true);
-            pollArchived();
-          }
-        })
-        .catch(() => setReport(""))
-        .finally(() => setLoading(false));
-    },
-    [taskId],
-  );
-
-  React.useEffect(() => {
-    loadReport(false);
-    return () => {
-      if (pollRef.current) clearTimeout(pollRef.current);
-    };
-  }, [loadReport]);
-
-  async function copy() {
-    if (!report) return;
-    const ok = await copyToClipboard(report);
-    if (ok) {
-      setCopied(true);
-      toast.success("已复制 Markdown");
-      setTimeout(() => setCopied(false), 1500);
-    } else {
-      toast.error("复制失败，请手动选择文本复制");
+  const reportBody = () => {
+    if (loading) {
+      return (
+        <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed py-16 text-sm text-muted-foreground">
+          <FileTextIcon className="size-8 opacity-40" />
+          加载中…
+        </div>
+      );
     }
-  }
-
-  async function runArchive() {
-    setFiltering(true);
-    try {
-      const { conversation_id: convId } = await api.archiveReport(taskId);
-      toast.success("报告归档已启动，agent 正在处理…", {
-        action: convId ? { label: "查看进度", onClick: () => router.push(`/chat?c=${convId}`) } : undefined,
-      });
-      pollArchived();
-    } catch (e) {
-      toast.error(e instanceof Error ? e.message : "归档失败");
-      setFiltering(false);
+    if (!report) {
+      return (
+        <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed py-16 text-sm text-muted-foreground">
+          <FileTextIcon className="size-8 opacity-40" />
+          暂无报告
+        </div>
+      );
     }
-  }
+    return (
+      <div className="max-h-[60vh] overflow-auto rounded-md border bg-muted/40 p-4">
+        {view === "rendered" ? (
+          <Markdown text={report} />
+        ) : (
+          <pre className="font-mono text-xs whitespace-pre-wrap">{report}</pre>
+        )}
+      </div>
+    );
+  };
 
-  function pollArchived() {
+  const pollArchived = React.useCallback(() => {
     let elapsed = 0;
     const interval = 3000;
     // agent 归档 run 的墙钟上限约 10 分钟（auto agent run_seconds 默认 600）
@@ -117,6 +93,58 @@ export function ReportTab({ taskId }: { taskId: string }) {
       }
     };
     pollRef.current = setTimeout(poll, interval);
+  }, [taskId]);
+
+  const loadReport = React.useCallback(
+    (nofilter: boolean) => {
+      setLoading(true);
+      api
+        .reportWithStatus(taskId, nofilter)
+        .then(({ text, filtering: stillFiltering, filtered: isFiltered }) => {
+          setReport(text);
+          setFiltered(isFiltered);
+          if (stillFiltering) {
+            setFiltering(true);
+            pollArchived();
+          }
+        })
+        .catch(() => setReport(""))
+        .finally(() => setLoading(false));
+    },
+    [taskId, pollArchived],
+  );
+
+  React.useEffect(() => {
+    loadReport(false);
+    return () => {
+      clearTimeout(pollRef.current ?? undefined);
+    };
+  }, [loadReport]);
+
+  async function copy() {
+    if (!report) return;
+    const ok = await copyToClipboard(report);
+    if (ok) {
+      setCopied(true);
+      toast.success("已复制 Markdown");
+      setTimeout(() => setCopied(false), 1500);
+    } else {
+      toast.error("复制失败，请手动选择文本复制");
+    }
+  }
+
+  async function runArchive() {
+    setFiltering(true);
+    try {
+      const { conversation_id: convId } = await api.archiveReport(taskId);
+      toast.success("报告归档已启动，agent 正在处理…", {
+        action: convId ? { label: "查看进度", onClick: () => router.push(`/chat?c=${convId}`) } : undefined,
+      });
+      pollArchived();
+    } catch (e) {
+      toast.error(e instanceof Error ? e.message : "归档失败");
+      setFiltering(false);
+    }
   }
 
   async function showAll() {
@@ -163,27 +191,7 @@ export function ReportTab({ taskId }: { taskId: string }) {
           )}
         </div>
       </CardHeader>
-      <CardContent>
-        {loading ? (
-          <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed py-16 text-sm text-muted-foreground">
-            <FileTextIcon className="size-8 opacity-40" />
-            加载中…
-          </div>
-        ) : report ? (
-          <div className="max-h-[60vh] overflow-auto rounded-md border bg-muted/40 p-4">
-            {view === "rendered" ? (
-              <Markdown text={report} />
-            ) : (
-              <pre className="font-mono text-xs whitespace-pre-wrap">{report}</pre>
-            )}
-          </div>
-        ) : (
-          <div className="flex flex-col items-center justify-center gap-2 rounded-md border border-dashed py-16 text-sm text-muted-foreground">
-            <FileTextIcon className="size-8 opacity-40" />
-            暂无报告
-          </div>
-        )}
-      </CardContent>
+      <CardContent>{reportBody()}</CardContent>
     </Card>
   );
 }

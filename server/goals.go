@@ -71,7 +71,8 @@ func (s *Server) startTaskEngine(t *Task) {
 }
 
 func (s *Server) occupiesConcurrencySlot(t *Task) bool {
-	return t != nil && !t.Queued && !t.Paused && !s.engine.IsPaused(t.ID) && !isTerminalStatus(t.Status)
+	return t != nil && !t.Queued && !t.Paused && !s.engine.IsPaused(t.ID) &&
+		!isTerminalStatus(t.Status) && t.Status != "scheduled"
 }
 
 func (s *Server) runningTaskCount(excludeID string) int {
@@ -98,6 +99,20 @@ func (s *Server) queueIfAtCapacity(t *Task) bool {
 	s.engine.emitActivity(t, db.Activity{Worker: "system", Kind: "text",
 		Summary: fmt.Sprintf("已排队：达到并发上限 %d，等待空位后自动开始", limit)})
 	return true
+}
+
+func (s *Server) wouldExceedConcurrencyLimit(t *Task) bool {
+	s.concMu.Lock()
+	defer s.concMu.Unlock()
+	enabled, limit := s.m.ConcurrencyLimit()
+	return enabled && s.runningTaskCount(t.ID) >= limit
+}
+
+func (s *Server) taskNeedsConcurrencySlot(t *Task) bool {
+	if t == nil || t.Queued {
+		return false
+	}
+	return t.Paused || s.engine.IsPaused(t.ID) || isTerminalStatus(t.Status)
 }
 
 func (s *Server) reconcileConcurrency() {
@@ -193,6 +208,9 @@ func (s *Server) reviveTask(t *Task) {
 		return
 	}
 	if t.Queued {
+		return
+	}
+	if s.taskNeedsConcurrencySlot(t) && s.wouldExceedConcurrencyLimit(t) {
 		return
 	}
 	// 终态 → 拉回 running(SetTaskStatus 会清 completed_at 并同步内存 handle 的 Status,

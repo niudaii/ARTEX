@@ -112,7 +112,7 @@ export default function MCPPage() {
       name: s.name,
       transport: s.transport,
       command: s.command ?? "",
-      args: (s.args ?? []).join(" "),
+      args: s.args.join(" "),
       url: s.url ?? "",
       env: envToText(s.env),
     });
@@ -172,7 +172,7 @@ export default function MCPPage() {
       if (!editing) setOpen(false);
       load();
     } catch (e) {
-      toast.error("保存失败：" + (e as Error).message);
+      toast.error(`保存失败：${(e as Error).message}`);
     } finally {
       setSaving(false);
     }
@@ -187,7 +187,7 @@ export default function MCPPage() {
       toast.success(`发现 ${t.length} 个工具`);
       load();
     } catch (e) {
-      toast.error("刷新失败：" + (e as Error).message);
+      toast.error(`刷新失败：${(e as Error).message}`);
     } finally {
       setRefreshing(false);
     }
@@ -200,7 +200,7 @@ export default function MCPPage() {
       setOpen(false);
       load();
     } catch (e) {
-      toast.error("删除失败：" + (e as Error).message);
+      toast.error(`删除失败：${(e as Error).message}`);
     }
   }
 
@@ -209,7 +209,7 @@ export default function MCPPage() {
       await api.saveMcpServer({ ...s, enabled: !s.enabled });
       load();
     } catch (e) {
-      toast.error("操作失败：" + (e as Error).message);
+      toast.error(`操作失败：${(e as Error).message}`);
     }
   }
 
@@ -220,7 +220,7 @@ export default function MCPPage() {
       toast.success(`${on ? "取消" : "授予"}「${agentName}」可见`);
       load();
     } catch (e) {
-      toast.error("操作失败：" + (e as Error).message);
+      toast.error(`操作失败：${(e as Error).message}`);
     }
   }
 
@@ -309,6 +309,21 @@ export default function MCPPage() {
   }
 
   function renderTools() {
+    const toolsBody = () => {
+      if (toolsLoading) return <p className="text-muted-foreground text-sm">加载中…</p>;
+      if (tools.length === 0) return <p className="text-muted-foreground text-sm">尚未发现工具，点击刷新重新获取。</p>;
+      return (
+        <div className="flex flex-col divide-y">
+          {tools.map((t) => (
+            <div key={t.name} className="py-2.5">
+              <code className="font-mono text-sm">{t.name}</code>
+              {t.description && <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">{t.description}</p>}
+            </div>
+          ))}
+        </div>
+      );
+    };
+
     return (
       <div className="flex flex-col gap-3 py-4">
         <div className="flex items-center justify-between">
@@ -317,22 +332,7 @@ export default function MCPPage() {
             <RefreshCwIcon className={refreshing ? "animate-spin" : ""} /> 刷新
           </Button>
         </div>
-        {toolsLoading ? (
-          <p className="text-muted-foreground text-sm">加载中…</p>
-        ) : tools.length === 0 ? (
-          <p className="text-muted-foreground text-sm">尚未发现工具，点击刷新重新获取。</p>
-        ) : (
-          <div className="flex flex-col divide-y">
-            {tools.map((t) => (
-              <div key={t.name} className="py-2.5">
-                <code className="font-mono text-sm">{t.name}</code>
-                {t.description && (
-                  <p className="text-muted-foreground mt-0.5 text-xs leading-relaxed">{t.description}</p>
-                )}
-              </div>
-            ))}
-          </div>
-        )}
+        {toolsBody()}
       </div>
     );
   }
@@ -357,7 +357,10 @@ export default function MCPPage() {
         {servers.map((s) => (
           <Card
             key={s.id}
-            onClick={() => openEdit(s)}
+            onClick={(event) => {
+              if ((event.target as HTMLElement).closest("button, label")) return;
+              openEdit(s);
+            }}
             className="hover:border-primary/60 cursor-pointer gap-3 transition hover:shadow-sm"
           >
             <CardHeader>
@@ -367,7 +370,7 @@ export default function MCPPage() {
                 <Badge variant="outline" className="uppercase">
                   {s.transport}
                 </Badge>
-                <div className="ml-auto flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+                <div className="ml-auto flex items-center gap-2">
                   <Switch checked={s.enabled} onCheckedChange={() => toggleEnabled(s)} aria-label="启用" />
                   <Button size="icon" variant="outline" aria-label="删除" onClick={() => removeServer(s)}>
                     <Trash2Icon className="text-destructive" />
@@ -379,12 +382,13 @@ export default function MCPPage() {
               <p className="text-muted-foreground text-sm">
                 {s.tools && s.tools.length > 0 ? `${s.tools.length} 个工具` : "尚未发现工具"}
               </p>
-              <div className="grid gap-2" onClick={(e) => e.stopPropagation()}>
+              <div className="grid gap-2">
                 <span className="text-muted-foreground text-xs">可见性（按 Agent 授权）</span>
                 <div className="flex flex-wrap gap-x-4 gap-y-2">
                   {agents.map((a) => (
-                    <label key={a.key} className="flex items-center gap-2 text-sm">
+                    <label key={a.key} htmlFor={`mcp-agent-${a.key}`} className="flex items-center gap-2 text-sm">
                       <Checkbox
+                        id={`mcp-agent-${a.key}`}
                         checked={(visibility[s.id] ?? []).includes(a.id)}
                         onCheckedChange={() => toggleVisibility(s.id, a.id, a.name)}
                       />

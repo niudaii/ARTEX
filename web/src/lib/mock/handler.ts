@@ -42,7 +42,12 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   if (path === "/auth/change-password") return { ok: true };
 
   // ── tasks ──
-  if (path === "/tasks" && m === "GET") return { tasks: mockTasks, active: mockActiveTask };
+  if (path === "/tasks" && m === "GET") {
+    // 与后端一致：按创建时间倒序（最新在前）。
+    const createdSec = (t: Task) => t.created_unix ?? (Date.parse(t.created_at) / 1000 || 0);
+    const tasks = [...mockTasks].sort((a, b) => createdSec(b) - createdSec(a));
+    return { tasks, active: mockActiveTask };
+  }
   if (path === "/tasks" && m === "POST") {
     let suffix = 1;
     while (mockTasks.some((item) => item.id === `t-new-${suffix}`)) suffix++;
@@ -235,7 +240,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
     const offset = Number(q.get("offset") ?? 0);
     return { count: list.length, total: list.length, assets: list.slice(offset, offset + limit) };
   }
-  if (path === "/assets" && m === "DELETE") return { deleted: (b.ids as unknown[])?.length ?? 0 };
+  if (path === "/assets" && m === "DELETE") return { deleted: (b.ids as unknown[]).length };
 
   // ── companies ──
   if (path === "/companies" && m === "GET") return D.companies;
@@ -365,7 +370,7 @@ function route(m: string, path: string, seg: string[], q: URLSearchParams, b: Re
   // ── traffic / audit / settings ──
   if (path === "/audit") return D.audit;
   if (path === "/traffic" && m === "DELETE") return { deleted: 0 };
-  if (path === "/traffic/hosts" && m === "DELETE") return { deleted: (b.hosts as unknown[])?.length ?? 0 };
+  if (path === "/traffic/hosts" && m === "DELETE") return { deleted: (b.hosts as unknown[]).length };
   if (path === "/traffic/hosts") return { hosts: D.trafficHosts };
   if (path === "/traffic") return D.traffic;
   if (path === "/traffic/exchange") return D.trafficDetail;

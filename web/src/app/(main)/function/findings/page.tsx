@@ -1,30 +1,23 @@
 "use client";
 
-import { fmtTime } from "@/lib/format";
 import * as React from "react";
-import Link from "next/link";
-import {
-  ChevronRightIcon,
-  ShieldAlertIcon,
-  ArrowUpRightIcon,
-  FileTextIcon,
-  Trash2Icon,
-  DownloadIcon,
-} from "lucide-react";
 
-import { StatusBadge } from "@/components/status-badge";
+import Link from "next/link";
+
+import {
+  ArrowUpRightIcon,
+  ChevronRightIcon,
+  DownloadIcon,
+  FileTextIcon,
+  ShieldAlertIcon,
+  Trash2Icon,
+} from "lucide-react";
+import { toast } from "sonner";
+
 import { CopyButton } from "@/components/copy-button";
 import { Markdown } from "@/components/markdown";
-import { Checkbox } from "@/components/ui/checkbox";
-import {
-  Dialog,
-  DialogContent,
-  DialogDescription,
-  DialogFooter,
-  DialogHeader,
-  DialogTitle,
-} from "@/components/ui/dialog";
-import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { StatusBadge } from "@/components/status-badge";
+import { TablePagination } from "@/components/table-pagination";
 import {
   AlertDialog,
   AlertDialogAction,
@@ -37,36 +30,26 @@ import {
   AlertDialogTrigger,
 } from "@/components/ui/alert-dialog";
 import { Button } from "@/components/ui/button";
+import { Card, CardContent, CardDescription, CardHeader, CardTitle } from "@/components/ui/card";
+import { Checkbox } from "@/components/ui/checkbox";
+import {
+  Dialog,
+  DialogContent,
+  DialogDescription,
+  DialogFooter,
+  DialogHeader,
+  DialogTitle,
+} from "@/components/ui/dialog";
 import { Input } from "@/components/ui/input";
 import { Label } from "@/components/ui/label";
-import {
-  Card,
-  CardContent,
-  CardDescription,
-  CardHeader,
-  CardTitle,
-} from "@/components/ui/card";
-import {
-  Table,
-  TableBody,
-  TableCell,
-  TableHead,
-  TableHeader,
-  TableRow,
-} from "@/components/ui/table";
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue,
-} from "@/components/ui/select";
-import { TablePagination } from "@/components/table-pagination";
-import { cn } from "@/lib/utils";
+import { RadioGroup, RadioGroupItem } from "@/components/ui/radio-group";
+import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from "@/components/ui/select";
+import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { api } from "@/lib/api";
-import { toast } from "sonner";
+import { fmtTime } from "@/lib/format";
 import { statusMeta } from "@/lib/status";
 import type { Finding, FindingStats, FindingStatus, Severity } from "@/lib/types";
+import { cn } from "@/lib/utils";
 
 const SEVERITIES: Severity[] = ["critical", "high", "medium", "low"];
 
@@ -166,7 +149,7 @@ export default function FindingsPage() {
       setExportOpen(false);
       toast.success("已开始下载导出文件");
     } catch (e) {
-      toast.error("导出失败：" + (e as Error).message);
+      toast.error(`导出失败：${(e as Error).message}`);
     } finally {
       setExporting(false);
     }
@@ -189,7 +172,9 @@ export default function FindingsPage() {
           setFindings(res.items);
           setTotal(res.total);
         })
-        .catch(() => {});
+        .catch(() => {
+          // Keep the previous page while the next poll retries.
+        });
     };
     load();
     const t = setInterval(load, 5000);
@@ -209,7 +194,9 @@ export default function FindingsPage() {
         .then((s) => {
           if (alive) setStats(s);
         })
-        .catch(() => {});
+        .catch(() => {
+          // Stats are optional; keep the previous values on failure.
+        });
     };
     load();
     const t = setInterval(load, 5000);
@@ -224,23 +211,24 @@ export default function FindingsPage() {
     async (f: Finding, next: FindingStatus) => {
       if (!f.finding_id || next === f.status) return;
       const prev = f.status;
-      setFindings((cur) =>
-        cur.map((x) => (x.id === f.id ? { ...x, status: next } : x)),
-      );
+      setFindings((cur) => cur.map((x) => (x.id === f.id ? { ...x, status: next } : x)));
       try {
         await api.setFindingStatus(f.finding_id, next);
         toast.success(`已标记为「${statusMeta("finding", next).label}」`);
         // refresh stat cards (pending count) and drop the row if it no longer matches the status filter
-        api.findingStats().then(setStats).catch(() => {});
+        api
+          .findingStats()
+          .then(setStats)
+          .catch(() => {
+            // Stats are optional; keep the previous values on failure.
+          });
         if (status !== "all" && next !== status) {
           setFindings((cur) => cur.filter((x) => x.id !== f.id));
           setTotal((t) => Math.max(0, t - 1));
         }
       } catch (e) {
-        setFindings((cur) =>
-          cur.map((x) => (x.id === f.id ? { ...x, status: prev } : x)),
-        );
-        toast.error("更新失败：" + (e as Error).message);
+        setFindings((cur) => cur.map((x) => (x.id === f.id ? { ...x, status: prev } : x)));
+        toast.error(`更新失败：${(e as Error).message}`);
       }
     },
     [status],
@@ -248,15 +236,13 @@ export default function FindingsPage() {
 
   // 行内展开的详细报告缓存,按行 key(f.id)存。report 是大段 Markdown,列表查询不带它,
   // 故展开时才按 finding_id 单独拉取一次;done 且文本为空 = 该漏洞暂无报告。
-  const [reports, setReports] = React.useState<
-    Record<string, { status: "loading" | "done" | "error"; text: string }>
-  >({});
+  const [reports, setReports] = React.useState<Record<string, { status: "loading" | "done" | "error"; text: string }>>(
+    {},
+  );
 
   // 行内可编辑缓冲:当前展开行的名称/类别/严重等级,展开时用该行数据初始化,收起清空。
   // 单行展开,故一份缓冲即可。
-  const [edit, setEdit] = React.useState<
-    { name: string; vulnclass: string; severity: Severity } | null
-  >(null);
+  const [edit, setEdit] = React.useState<{ name: string; vulnclass: string; severity: Severity } | null>(null);
   const [saving, setSaving] = React.useState(false);
 
   // toggle 展开/收起一行;新展开时初始化编辑缓冲,并(尚未取过时)按 finding_id 拉一次报告缓存。
@@ -268,19 +254,15 @@ export default function FindingsPage() {
         setEdit(null);
         return;
       }
-      setEdit({ name: f.name ?? "", vulnclass: f.vulnclass ?? "", severity: f.severity });
+      setEdit({ name: f.name ?? "", vulnclass: f.vulnclass, severity: f.severity });
       if (!f.finding_id || reports[f.id]) return;
       const fid = f.finding_id;
       const key = f.id;
       setReports((r) => ({ ...r, [key]: { status: "loading", text: "" } }));
       api
         .getFinding(fid)
-        .then((full) =>
-          setReports((r) => ({ ...r, [key]: { status: "done", text: full.report ?? "" } })),
-        )
-        .catch(() =>
-          setReports((r) => ({ ...r, [key]: { status: "error", text: "" } })),
-        );
+        .then((full) => setReports((r) => ({ ...r, [key]: { status: "done", text: full.report ?? "" } })))
+        .catch(() => setReports((r) => ({ ...r, [key]: { status: "error", text: "" } })));
     },
     [expanded, reports],
   );
@@ -298,15 +280,18 @@ export default function FindingsPage() {
         });
         setFindings((cur) =>
           cur.map((x) =>
-            x.id === f.id
-              ? { ...x, name: updated.name, vulnclass: updated.vulnclass, severity: updated.severity }
-              : x,
+            x.id === f.id ? { ...x, name: updated.name, vulnclass: updated.vulnclass, severity: updated.severity } : x,
           ),
         );
         toast.success("已保存");
-        api.findingStats().then(setStats).catch(() => {});
+        api
+          .findingStats()
+          .then(setStats)
+          .catch(() => {
+            // Stats are optional; keep the previous values on failure.
+          });
       } catch (e) {
-        toast.error("保存失败：" + (e as Error).message);
+        toast.error(`保存失败：${(e as Error).message}`);
       } finally {
         setSaving(false);
       }
@@ -315,22 +300,24 @@ export default function FindingsPage() {
   );
 
   // deleteFinding 删除一个漏洞(需二次确认):删成功后从列表移除、收起行、刷新统计。
-  const deleteFinding = React.useCallback(
-    async (f: Finding) => {
-      if (!f.finding_id) return;
-      try {
-        await api.deleteFinding(f.finding_id);
-        setFindings((cur) => cur.filter((x) => x.id !== f.id));
-        setTotal((t) => Math.max(0, t - 1));
-        setExpanded((cur) => (cur === f.id ? null : cur));
-        toast.success("已删除漏洞");
-        api.findingStats().then(setStats).catch(() => {});
-      } catch (e) {
-        toast.error("删除失败：" + (e as Error).message);
-      }
-    },
-    [],
-  );
+  const deleteFinding = React.useCallback(async (f: Finding) => {
+    if (!f.finding_id) return;
+    try {
+      await api.deleteFinding(f.finding_id);
+      setFindings((cur) => cur.filter((x) => x.id !== f.id));
+      setTotal((t) => Math.max(0, t - 1));
+      setExpanded((cur) => (cur === f.id ? null : cur));
+      toast.success("已删除漏洞");
+      api
+        .findingStats()
+        .then(setStats)
+        .catch(() => {
+          // Stats are optional; keep the previous values on failure.
+        });
+    } catch (e) {
+      toast.error(`删除失败：${(e as Error).message}`);
+    }
+  }, []);
 
   const statCards: { label: string; value: number; tone?: string }[] = [
     { label: "发现总数", value: stats.total },
@@ -353,9 +340,7 @@ export default function FindingsPage() {
             <Card key={s.label} className="gap-1 py-4">
               <CardHeader className="px-4">
                 <CardDescription>{s.label}</CardDescription>
-                <CardTitle className={cn("text-2xl tabular-nums", s.tone)}>
-                  {s.value}
-                </CardTitle>
+                <CardTitle className={cn("text-2xl tabular-nums", s.tone)}>{s.value}</CardTitle>
               </CardHeader>
             </Card>
           ))}
@@ -378,9 +363,7 @@ export default function FindingsPage() {
                 onClick={() => setSeverity(val)}
                 className={cn(
                   "rounded px-2.5 py-1 text-xs font-medium transition-colors",
-                  severity === val
-                    ? "bg-primary text-primary-foreground"
-                    : "text-muted-foreground hover:bg-muted",
+                  severity === val ? "bg-primary text-primary-foreground" : "text-muted-foreground hover:bg-muted",
                 )}
               >
                 {label}
@@ -388,10 +371,7 @@ export default function FindingsPage() {
             ))}
           </div>
 
-          <Select
-            value={status}
-            onValueChange={(v) => setStatus(v as "all" | FindingStatus)}
-          >
+          <Select value={status} onValueChange={(v) => setStatus(v as "all" | FindingStatus)}>
             <SelectTrigger size="sm" className="w-32">
               <SelectValue placeholder="状态" />
             </SelectTrigger>
@@ -434,9 +414,7 @@ export default function FindingsPage() {
                       <span className="max-w-[14rem] truncate" title={label}>
                         {label}
                       </span>
-                      <span className="text-muted-foreground tabular-nums">
-                        {t.count}
-                      </span>
+                      <span className="text-muted-foreground tabular-nums">{t.count}</span>
                     </span>
                   </SelectItem>
                 );
@@ -444,10 +422,7 @@ export default function FindingsPage() {
             </SelectContent>
           </Select>
 
-          <Select
-            value={sort}
-            onValueChange={(v) => setSort(v as "severity" | "time")}
-          >
+          <Select value={sort} onValueChange={(v) => setSort(v as "severity" | "time")}>
             <SelectTrigger size="sm" className="w-36">
               <SelectValue />
             </SelectTrigger>
@@ -459,13 +434,9 @@ export default function FindingsPage() {
 
           <div className="ml-auto flex items-center gap-3">
             {selectedIds.size > 0 && (
-              <span className="text-xs text-muted-foreground tabular-nums">
-                已选 {selectedIds.size} 条
-              </span>
+              <span className="text-xs text-muted-foreground tabular-nums">已选 {selectedIds.size} 条</span>
             )}
-            <span className="text-xs text-muted-foreground tabular-nums">
-              共 {total} 条
-            </span>
+            <span className="text-xs text-muted-foreground tabular-nums">共 {total} 条</span>
             <Button size="sm" variant="outline" onClick={openExport}>
               <DownloadIcon /> 导出
             </Button>
@@ -501,27 +472,19 @@ export default function FindingsPage() {
                   const open = expanded === f.id;
                   return (
                     <React.Fragment key={f.id}>
-                      <TableRow
-                        className="cursor-pointer"
-                        onClick={() => toggleRow(f)}
-                      >
+                      <TableRow className="cursor-pointer" onClick={() => toggleRow(f)}>
                         <TableCell onClick={(e) => e.stopPropagation()}>
                           {f.finding_id && (
                             <Checkbox
                               checked={selectedIds.has(f.finding_id)}
-                              onCheckedChange={(c) =>
-                                toggleSelected(f.finding_id as string, c === true)
-                              }
+                              onCheckedChange={(c) => toggleSelected(f.finding_id as string, c === true)}
                               aria-label="选择该漏洞"
                             />
                           )}
                         </TableCell>
                         <TableCell>
                           <ChevronRightIcon
-                            className={cn(
-                              "size-4 text-muted-foreground transition-transform",
-                              open && "rotate-90",
-                            )}
+                            className={cn("size-4 text-muted-foreground transition-transform", open && "rotate-90")}
                           />
                         </TableCell>
                         <TableCell>
@@ -539,13 +502,9 @@ export default function FindingsPage() {
                                 {f.name || f.vulnclass || "未分类"}
                               </Link>
                             ) : (
-                              <span className="truncate font-medium">
-                                {f.name || f.vulnclass || "未分类"}
-                              </span>
+                              <span className="truncate font-medium">{f.name || f.vulnclass || "未分类"}</span>
                             )}
-                            <span className="truncate text-xs text-muted-foreground">
-                              {f.summary}
-                            </span>
+                            <span className="truncate text-xs text-muted-foreground">{f.summary}</span>
                           </div>
                         </TableCell>
                         <TableCell className="w-52">
@@ -561,9 +520,7 @@ export default function FindingsPage() {
                                 </code>
                               ))}
                               {f.assets.length > 3 && (
-                                <span className="text-xs text-muted-foreground">
-                                  +{f.assets.length - 3}
-                                </span>
+                                <span className="text-xs text-muted-foreground">+{f.assets.length - 3}</span>
                               )}
                             </div>
                           ) : (
@@ -572,21 +529,12 @@ export default function FindingsPage() {
                         </TableCell>
                         <TableCell onClick={(e) => e.stopPropagation()}>
                           {f.finding_id ? (
-                            <Select
-                              value={f.status}
-                              onValueChange={(v) =>
-                                updateStatus(f, v as FindingStatus)
-                              }
-                            >
+                            <Select value={f.status} onValueChange={(v) => updateStatus(f, v as FindingStatus)}>
                               <SelectTrigger
                                 size="sm"
                                 className="h-7 w-full border-none px-1 shadow-none focus-visible:ring-0"
                               >
-                                <StatusBadge
-                                  domain="finding"
-                                  value={f.status}
-                                  dot
-                                />
+                                <StatusBadge domain="finding" value={f.status} dot />
                               </SelectTrigger>
                               <SelectContent position="popper" align="end">
                                 {FINDING_STATUSES.map((st) => (
@@ -608,18 +556,14 @@ export default function FindingsPage() {
                               className="inline-flex max-w-full items-center gap-1 text-primary hover:underline"
                               title={f.task_description}
                             >
-                              <span className="truncate">
-                                {f.task_description}
-                              </span>
+                              <span className="truncate">{f.task_description}</span>
                               <ArrowUpRightIcon className="size-3 shrink-0" />
                             </Link>
                           ) : (
                             <span className="text-muted-foreground">—</span>
                           )}
                         </TableCell>
-                        <TableCell className="text-xs text-muted-foreground tabular-nums">
-                          {fmtTime(f.ts)}
-                        </TableCell>
+                        <TableCell className="text-xs text-muted-foreground tabular-nums">{fmtTime(f.ts)}</TableCell>
                         <TableCell className="text-right" onClick={(e) => e.stopPropagation()}>
                           {f.finding_id && (
                             <AlertDialog>
@@ -637,8 +581,11 @@ export default function FindingsPage() {
                                 <AlertDialogHeader>
                                   <AlertDialogTitle>确认删除该漏洞？</AlertDialogTitle>
                                   <AlertDialogDescription className="break-words">
-                                    「<span className="break-all">{f.name || f.vulnclass || f.summary || `#${f.finding_id}`}</span>」将被永久删除，
-                                    同时从发现列表、任务发现 Tab 与探索图中移除，此操作不可撤销。
+                                    「
+                                    <span className="break-all">
+                                      {f.name || f.vulnclass || f.summary || `#${f.finding_id}`}
+                                    </span>
+                                    」将被永久删除， 同时从发现列表、任务发现 Tab 与探索图中移除，此操作不可撤销。
                                   </AlertDialogDescription>
                                 </AlertDialogHeader>
                                 <AlertDialogFooter>
@@ -663,9 +610,7 @@ export default function FindingsPage() {
                                     <Label className="text-xs text-muted-foreground">漏洞名称</Label>
                                     <Input
                                       value={edit.name}
-                                      onChange={(e) =>
-                                        setEdit((s) => (s ? { ...s, name: e.target.value } : s))
-                                      }
+                                      onChange={(e) => setEdit((s) => (s ? { ...s, name: e.target.value } : s))}
                                       placeholder="可读标题，留空回退类别"
                                     />
                                   </div>
@@ -673,9 +618,7 @@ export default function FindingsPage() {
                                     <Label className="text-xs text-muted-foreground">类别</Label>
                                     <Input
                                       value={edit.vulnclass}
-                                      onChange={(e) =>
-                                        setEdit((s) => (s ? { ...s, vulnclass: e.target.value } : s))
-                                      }
+                                      onChange={(e) => setEdit((s) => (s ? { ...s, vulnclass: e.target.value } : s))}
                                       placeholder="如 SQL Injection"
                                     />
                                   </div>
@@ -683,9 +626,7 @@ export default function FindingsPage() {
                                     <Label className="text-xs text-muted-foreground">严重等级</Label>
                                     <Select
                                       value={edit.severity}
-                                      onValueChange={(v) =>
-                                        setEdit((s) => (s ? { ...s, severity: v as Severity } : s))
-                                      }
+                                      onValueChange={(v) => setEdit((s) => (s ? { ...s, severity: v as Severity } : s))}
                                     >
                                       <SelectTrigger size="sm" className="w-28">
                                         <SelectValue />
@@ -710,15 +651,11 @@ export default function FindingsPage() {
                                 {f.vulnclass && (
                                   <span>
                                     · 类型：
-                                    <code className="rounded bg-muted px-1.5 py-0.5 font-mono">
-                                      {f.vulnclass}
-                                    </code>
+                                    <code className="rounded bg-muted px-1.5 py-0.5 font-mono">{f.vulnclass}</code>
                                   </span>
                                 )}
                                 {f.param_id && (
-                                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono">
-                                    {f.param_id}
-                                  </code>
+                                  <code className="rounded bg-muted px-1.5 py-0.5 font-mono">{f.param_id}</code>
                                 )}
                                 {f.assets && f.assets.length > 0 && (
                                   <span className="flex flex-wrap items-center gap-1">
@@ -735,9 +672,9 @@ export default function FindingsPage() {
                                   </span>
                                 )}
                               </div>
-                             <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap">
-                               {f.evidence}
-                             </pre>
+                              <pre className="overflow-x-auto rounded-md bg-muted px-3 py-2 font-mono text-xs whitespace-pre-wrap">
+                                {f.evidence}
+                              </pre>
                               {f.source_file && (
                                 <div className="mt-1">
                                   <span className="text-xs font-medium text-muted-foreground">泄露源文件：</span>
@@ -783,7 +720,7 @@ export default function FindingsPage() {
                                 </div>
                               )}
 
-                             {/* 详细报告(Markdown):展开时按 finding_id 懒加载,免进详情页即可查看。 */}
+                              {/* 详细报告(Markdown):展开时按 finding_id 懒加载,免进详情页即可查看。 */}
                               {f.finding_id && (
                                 <div className="flex flex-col gap-1.5">
                                   <div className="flex items-center justify-between gap-2 text-xs text-muted-foreground">
@@ -791,34 +728,23 @@ export default function FindingsPage() {
                                       <FileTextIcon className="size-3.5" />
                                       详细报告
                                     </span>
-                                    {reports[f.id]?.status === "done" &&
-                                      reports[f.id]?.text.trim() && (
-                                        <CopyButton
-                                          text={reports[f.id]?.text}
-                                          successMessage="已复制详细报告"
-                                          variant="ghost"
-                                          className="h-6 px-2 text-xs"
-                                        />
-                                      )}
+                                    {reports[f.id]?.status === "done" && reports[f.id]?.text.trim() && (
+                                      <CopyButton
+                                        text={reports[f.id]?.text}
+                                        successMessage="已复制详细报告"
+                                        variant="ghost"
+                                        className="h-6 px-2 text-xs"
+                                      />
+                                    )}
                                   </div>
                                   {(() => {
                                     const rep = reports[f.id];
                                     if (!rep || rep.status === "loading")
-                                      return (
-                                        <p className="text-xs text-muted-foreground">加载中…</p>
-                                      );
+                                      return <p className="text-xs text-muted-foreground">加载中…</p>;
                                     if (rep.status === "error")
-                                      return (
-                                        <p className="text-xs text-muted-foreground">
-                                          报告加载失败。
-                                        </p>
-                                      );
+                                      return <p className="text-xs text-muted-foreground">报告加载失败。</p>;
                                     if (!rep.text.trim())
-                                      return (
-                                        <p className="text-xs text-muted-foreground">
-                                          暂无详细报告。
-                                        </p>
-                                      );
+                                      return <p className="text-xs text-muted-foreground">暂无详细报告。</p>;
                                     return (
                                       // break-words 会继承到段落/列表,pre 另加
                                       // whitespace-pre-wrap 让代码块也换行——否则长代码行/长 URL
@@ -839,10 +765,7 @@ export default function FindingsPage() {
                 })}
                 {findings.length === 0 && (
                   <TableRow>
-                    <TableCell
-                      colSpan={9}
-                      className="py-12 text-center text-sm text-muted-foreground"
-                    >
+                    <TableCell colSpan={9} className="py-12 text-center text-sm text-muted-foreground">
                       没有匹配的发现。
                     </TableCell>
                   </TableRow>
@@ -864,31 +787,24 @@ export default function FindingsPage() {
         <DialogContent>
           <DialogHeader>
             <DialogTitle>导出发现</DialogTitle>
-            <DialogDescription>
-              选择导出范围与格式,生成后浏览器会自动下载。
-            </DialogDescription>
+            <DialogDescription>选择导出范围与格式,生成后浏览器会自动下载。</DialogDescription>
           </DialogHeader>
 
           <div className="flex flex-col gap-5 py-1">
             <div className="flex flex-col gap-2">
               <Label className="text-xs text-muted-foreground">导出范围</Label>
-              <RadioGroup
-                value={exportScope}
-                onValueChange={(v) => setExportScope(v as typeof exportScope)}
-              >
-                <label className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem value="filtered" /> 导出当前筛选结果（共 {total} 条）
+              <RadioGroup value={exportScope} onValueChange={(v) => setExportScope(v as typeof exportScope)}>
+                <label htmlFor="export-scope-filtered" className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem id="export-scope-filtered" value="filtered" /> 导出当前筛选结果（共 {total} 条）
                 </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem value="all" /> 导出全部
+                <label htmlFor="export-scope-all" className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem id="export-scope-all" value="all" /> 导出全部
                 </label>
                 <label
-                  className={cn(
-                    "flex items-center gap-2 text-sm",
-                    selectedIds.size === 0 && "text-muted-foreground",
-                  )}
+                  htmlFor="export-scope-selected"
+                  className={cn("flex items-center gap-2 text-sm", selectedIds.size === 0 && "text-muted-foreground")}
                 >
-                  <RadioGroupItem value="selected" disabled={selectedIds.size === 0} />
+                  <RadioGroupItem id="export-scope-selected" value="selected" disabled={selectedIds.size === 0} />
                   导出勾选的 {selectedIds.size} 条
                 </label>
               </RadioGroup>
@@ -896,21 +812,18 @@ export default function FindingsPage() {
 
             <div className="flex flex-col gap-2">
               <Label className="text-xs text-muted-foreground">导出格式</Label>
-              <RadioGroup
-                value={exportFormat}
-                onValueChange={(v) => setExportFormat(v as typeof exportFormat)}
-              >
-                <label className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem value="md-single" /> Markdown 汇总报告（单个 .md 文件）
+              <RadioGroup value={exportFormat} onValueChange={(v) => setExportFormat(v as typeof exportFormat)}>
+                <label htmlFor="export-format-md-single" className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem id="export-format-md-single" value="md-single" /> Markdown 汇总报告（单个 .md 文件）
                 </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem value="md-zip" /> Markdown 分文件（一漏洞一 .md,打包 .zip）
+                <label htmlFor="export-format-md-zip" className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem id="export-format-md-zip" value="md-zip" /> Markdown 分文件（一漏洞一 .md,打包 .zip）
                 </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem value="csv" /> CSV 表格（.csv）
+                <label htmlFor="export-format-csv" className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem id="export-format-csv" value="csv" /> CSV 表格（.csv）
                 </label>
-                <label className="flex items-center gap-2 text-sm">
-                  <RadioGroupItem value="json" /> JSON（.json）
+                <label htmlFor="export-format-json" className="flex items-center gap-2 text-sm">
+                  <RadioGroupItem id="export-format-json" value="json" /> JSON（.json）
                 </label>
               </RadioGroup>
             </div>
@@ -920,10 +833,7 @@ export default function FindingsPage() {
             <Button variant="outline" onClick={() => setExportOpen(false)} disabled={exporting}>
               取消
             </Button>
-            <Button
-              onClick={doExport}
-              disabled={exporting || (exportScope === "selected" && selectedIds.size === 0)}
-            >
+            <Button onClick={doExport} disabled={exporting || (exportScope === "selected" && selectedIds.size === 0)}>
               <DownloadIcon /> {exporting ? "导出中…" : "导出"}
             </Button>
           </DialogFooter>
