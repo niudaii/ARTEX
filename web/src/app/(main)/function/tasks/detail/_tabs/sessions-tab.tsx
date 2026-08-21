@@ -44,6 +44,7 @@ import { InputGroup, InputGroupAddon, InputGroupButton, InputGroupTextarea } fro
 import { ScrollArea } from "@/components/ui/scroll-area";
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from "@/components/ui/tooltip";
 import { api, sseUrl } from "@/lib/api";
+import { fmtTokens } from "@/lib/format";
 import { MOCK } from "@/lib/mock/enabled";
 import type {
   Activity,
@@ -149,13 +150,6 @@ function statusIcon(status: SessionStatus) {
     case "exhausted": // 步数耗尽(撞 max_turns)
       return <ZapOffIcon className="size-3.5 text-violet-500" />;
   }
-}
-
-// fmtTokens renders a compact token count (1234 → 1.2k, 2_000_000 → 2M).
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
-  return String(n);
 }
 
 // fmtDuration renders an elapsed milliseconds span compactly (90s → 1m30s).

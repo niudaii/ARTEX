@@ -24,14 +24,8 @@ import { Input } from "@/components/ui/input";
 import { NativeSelect, NativeSelectOption } from "@/components/ui/native-select";
 import { Progress } from "@/components/ui/progress";
 import { api } from "@/lib/api";
+import { fmtTokens } from "@/lib/format";
 import type { Finding, ModelTokenStat, Stats, Task, TaskNode, TaskScopeRow } from "@/lib/types";
-
-// 紧凑格式化 token 数（12345 → 12.3k，2000000 → 2M）。
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
-  return String(n);
-}
 
 // 缓存命中率 = 缓存读 / 输入（InputTokens 已含 cache_read 子集，故比值在 0–100%）。
 function cacheHitRate(cacheRead: number, input: number): string {

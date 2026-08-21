@@ -84,6 +84,7 @@ import { Switch } from "@/components/ui/switch";
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from "@/components/ui/table";
 import { Textarea } from "@/components/ui/textarea";
 import { api } from "@/lib/api";
+import { fmtTokens } from "@/lib/format";
 import type { ChatAttachment, DeleteTaskOptions, DeleteTaskResult, LLMProfile, Task, TaskStatus } from "@/lib/types";
 
 // fmtBytes renders a human file size for the upload manifest.
@@ -123,13 +124,6 @@ function appendUploads(desc: string, atts: ChatAttachment[]): string {
 // worker), so the list has to be pulled; 10s is plenty for status / 进度 / token 变化.
 const POLL_MS = 10_000;
 const MAX_SOURCE_TASKS = 8;
-
-// fmtTokens renders a compact token count (1234 → 1.2k, 2_000_000 → 2M).
-function fmtTokens(n: number): string {
-  if (n >= 1_000_000) return `${(n / 1_000_000).toFixed(n >= 10_000_000 ? 0 : 1)}M`;
-  if (n >= 1000) return `${(n / 1000).toFixed(n >= 10000 ? 0 : 1)}k`;
-  return String(n);
-}
 
 // fmtDuration renders a run duration in seconds as a compact human string.
 function fmtDuration(sec: number): string {

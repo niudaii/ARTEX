@@ -228,6 +228,9 @@ func (s *AssetStore) UpsertRootDomain(req UpsertRootDomainReq) (int64, error) {
 	if domain == "" {
 		return 0, fmt.Errorf("domain is required")
 	}
+	if net.ParseIP(domain) != nil {
+		return 0, fmt.Errorf("root domain cannot be an IP: %s", domain)
+	}
 	companyID, err := s.company.ResolveCompany(domain, "")
 	if err != nil {
 		return 0, err
@@ -383,9 +386,6 @@ func (s *AssetStore) UpsertSubdomain(req UpsertSubdomainReq) (id int64, err erro
 	}
 
 	rootDomain, _ := RootDomain(domain)
-	if rootDomain == "" {
-		rootDomain = domain
-	}
 
 	// resolve company by root domain
 	companyID, err := s.company.ResolveCompany(rootDomain, "")
@@ -566,9 +566,6 @@ func (s *AssetStore) UpsertHTTPService(req UpsertHTTPServiceReq) (int64, error) 
 	normURL := normalizeURL(req.URL)
 	domain, port, serviceName := parseURL(normURL)
 	rootDomain, _ := RootDomain(domain)
-	if rootDomain == "" {
-		rootDomain = domain
-	}
 
 	cseg := calcCSegment(req.IP)
 	companyID, err := s.company.ResolveCompany(rootDomain, req.IP)
@@ -699,9 +696,6 @@ func (s *AssetStore) UpsertOtherService(req UpsertOtherServiceReq) (int64, error
 	var rootDomain string
 	if domain != "" {
 		rootDomain, _ = RootDomain(domain)
-		if rootDomain == "" {
-			rootDomain = domain
-		}
 	}
 
 	cseg := calcCSegment(req.IP)
@@ -820,9 +814,6 @@ func (s *AssetStore) UpsertEndpoint(req UpsertEndpointReq) (int64, error) {
 	normURL := normalizeURL(req.URL)
 	domain, port, _ := parseURL(normURL)
 	rootDomain, _ := RootDomain(domain)
-	if rootDomain == "" {
-		rootDomain = domain
-	}
 
 	cseg := calcCSegment(req.IP)
 	companyID, err := s.company.ResolveCompany(rootDomain, req.IP)

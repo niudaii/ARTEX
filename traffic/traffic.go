@@ -992,43 +992,6 @@ func (t *Traffic) DeleteHostsExact(hosts []string) (int64, error) {
 	return deleted, nil
 }
 
-// DeleteHostsExactAsync is the same as DeleteHostsExact but defers the file-tree
-// removal and blob GC to a background goroutine. The SQLite index rows are
-// deleted synchronously (fast) so the caller sees the traffic as gone
-// immediately; the potentially slow file walk (gcBlobs scans every exchange
-// tree) runs without blocking the HTTP request. Used by task deletion where a
-// large traffic volume would otherwise time out the DELETE response.
-func (t *Traffic) DeleteHostsExactAsync(hosts []string) (int64, error) {
-	t.wmu.Lock()
-	var deleted int64
-	removed := make(map[string]bool)
-	for _, h := range hosts {
-		res, err := t.db.Exec(`DELETE FROM exchanges WHERE host=?`, h)
-		if err != nil {
-			t.wmu.Unlock()
-			return deleted, err
-		}
-		n, _ := res.RowsAffected()
-		deleted += n
-		removed[h] = true
-	}
-	t.wmu.Unlock()
-
-	if deleted > 0 {
-		hostsToRemove := make([]string, 0, len(removed))
-		for h := range removed {
-			hostsToRemove = append(hostsToRemove, h)
-		}
-		go func() {
-			for _, h := range hostsToRemove {
-				os.RemoveAll(filepath.Join(t.dir, sanitize(h)))
-			}
-			t.gcBlobsAsync()
-		}()
-	}
-	return deleted, nil
-}
-
 // gcBlobs removes content-addressed blobs in _blobs that no remaining exchange
 // tree references. References appear as "@blob sha256:<hex>" lines inside the
 // tree's request.http/response.http files (see bodyOrBlob). Best-effort: walk

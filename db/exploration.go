@@ -1061,28 +1061,10 @@ ORDER BY id DESC LIMIT $%d`, cond, beforeArg, beforeArg, limitArg)
 		return nil, false, err
 	}
 	defer rows.Close()
-	desc := []Activity{}
-	for rows.Next() {
-		var a Activity
-		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
-			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
-			return nil, false, err
-		}
-		desc = append(desc, a)
-	}
-	if err := rows.Err(); err != nil {
-		return nil, false, err
-	}
-	hasMore := len(desc) > limit
-	if hasMore {
-		desc = desc[:limit]
-	}
-	// reverse the newest-first window into ascending id order for display.
-	out := make([]Activity, len(desc))
-	for i, a := range desc {
-		out[len(desc)-1-i] = a
-	}
-	return out, hasMore, nil
+	return activityPageFromRows(rows, limit, func(a *Activity) error {
+		return rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.Metadata, &a.CreatedAt,
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens)
+	})
 }
 
 // ActivityPageForTerminalIntent is the inherited session-history boundary. It
@@ -1106,11 +1088,17 @@ func (s *ExplorationStore) ActivityPageForTerminalIntent(nodeID, before int64, l
 		return nil, false, err
 	}
 	defer rows.Close()
+	return activityPageFromRows(rows, limit, func(a *Activity) error {
+		return rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
+			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens)
+	})
+}
+
+func activityPageFromRows(rows *sql.Rows, limit int, scan func(*Activity) error) ([]Activity, bool, error) {
 	desc := []Activity{}
 	for rows.Next() {
 		var a Activity
-		if err := rows.Scan(&a.ID, &a.NodeID, &a.Worker, &a.Kind, &a.Tool, &a.ToolUseID, &a.IsError, &a.Summary, &a.CreatedAt,
-			&a.InputTokens, &a.OutputTokens, &a.CacheReadTokens, &a.CacheWriteTokens); err != nil {
+		if err := scan(&a); err != nil {
 			return nil, false, err
 		}
 		desc = append(desc, a)

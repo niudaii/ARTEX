@@ -85,7 +85,7 @@ func (s *AssetStore) AddAutoScope(taskID int64, assetType, domain, rawURL, ip st
 	}
 	switch assetType {
 	case "root_domain":
-		if d := DomainKey(domain); d != "" {
+		if d := DomainKey(domain); d != "" && net.ParseIP(d) == nil {
 			return s.upsertTaskScope(TaskScope{TaskID: taskID, Kind: "root_domain", Domain: d})
 		}
 	case "subdomain":
@@ -151,9 +151,6 @@ func (s *AssetStore) AddAgentScope(taskID int64, kind, value, reason, source str
 	case "root_domain":
 		d := DomainKey(stripHostPort(value))
 		root, _ := RootDomain(d)
-		if root == "" {
-			root = d
-		}
 		if root == "" {
 			return ts, fmt.Errorf("无效根域: %s", value)
 		}
