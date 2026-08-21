@@ -93,7 +93,7 @@ func (s *Server) pgDeleteTask(w http.ResponseWriter, r *http.Request) {
 	if opts.Traffic && nid > 0 && as != nil {
 		if tr := s.m.Traffic(); tr != nil {
 			if hosts, err := as.HostsByTask(nid); err == nil && len(hosts) > 0 {
-				if n, err := tr.DeleteHostsExact(hosts); err == nil {
+				if n, err := tr.DeleteHostsExactAsync(hosts); err == nil {
 					result["traffic_deleted"] = n
 				}
 			}
